@@ -1,0 +1,155 @@
+[
+  {
+    "id": "health-check",
+    "title": "Health endpoint",
+    "description": "Expose GET /api/health that returns 200 OK with JSON containing status, build version, and timestamp. This is the first vertical slice: it validates the harness, the Spring Boot setup, and the verification pipeline.",
+    "status": "pending",
+    "priority": 1,
+    "acceptance": [
+      "GET /api/health returns 200 with a JSON body containing 'status', 'version', and 'timestamp'.",
+      "A controller test asserts the contract.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "domain-models",
+    "title": "Core domain models",
+    "description": "Define the core domain types: Player, Room, Game, Move, GameStatus, Side. Use records for value objects and entities for things that will be persisted later. No persistence yet — these are in-memory types only.",
+    "status": "pending",
+    "priority": 2,
+    "acceptance": [
+      "Records and enums exist under io.github.dariogguillen.chess.domain.",
+      "Unit tests cover invariants (e.g., a Room cannot have more than 2 players).",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "chesslib-integration",
+    "title": "Server-side move validation",
+    "description": "Integrate the chesslib library. Provide a ChessRules service that, given a current FEN and a proposed move (from-square, to-square, optional promotion), returns the new FEN, whether the move was legal, and the resulting GameStatus (ongoing, check, checkmate, stalemate, draw).",
+    "status": "pending",
+    "priority": 3,
+    "acceptance": [
+      "ChessRules service has a clear API and JavaDoc.",
+      "Tests cover: legal move, illegal move, check, checkmate, stalemate, castling, en passant, promotion.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "room-rest-api",
+    "title": "Room REST endpoints (in-memory)",
+    "description": "REST endpoints to create a room and join a room. State lives in an in-memory store for now (a thread-safe Map). Maps roughly to the Node createRoom and joinRoom events. WebSocket comes later.",
+    "status": "pending",
+    "priority": 4,
+    "acceptance": [
+      "POST /api/rooms creates a room and returns the room ID.",
+      "POST /api/rooms/{id}/join joins an existing room as the second player.",
+      "Errors return appropriate HTTP status with a structured error body (room not found, room full, etc.).",
+      "Integration tests cover happy path and error cases.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "game-rest-api",
+    "title": "Game REST endpoints (in-memory)",
+    "description": "REST endpoints to make a move and to query game state. Move requests are validated by ChessRules. Game state lives in the in-memory store.",
+    "status": "pending",
+    "priority": 5,
+    "acceptance": [
+      "POST /api/games/{id}/moves submits a move; rejects illegal moves with 422.",
+      "GET /api/games/{id} returns the current game state (FEN, turn, status, players).",
+      "Integration tests exercise a full short game (Fool's Mate or similar).",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "websocket-realtime",
+    "title": "Real-time updates over STOMP",
+    "description": "Add Spring WebSocket with STOMP. After a move is accepted by the REST endpoint, the new state is broadcast to all subscribers of the game's topic. Subscribers include the opponent and any future spectators.",
+    "status": "pending",
+    "priority": 6,
+    "acceptance": [
+      "WebSocket configured on /ws with STOMP.",
+      "After a successful move, opponents on /topic/games/{id} receive the new state.",
+      "Integration test connects two STOMP clients, makes a move, asserts the broadcast.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "redis-active-state",
+    "title": "Active game state in Redis",
+    "description": "Move the in-memory state of active games and rooms to Redis. Active rooms get a TTL (e.g., 24h) so abandoned rooms self-clean. Spring Data Redis with a synchronous template.",
+    "status": "pending",
+    "priority": 7,
+    "acceptance": [
+      "Rooms and active games are stored in Redis, keyed by room/game ID.",
+      "TTL is applied and refreshed on activity.",
+      "Existing REST and WebSocket tests still pass, now against Testcontainers-Redis.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "postgres-game-history",
+    "title": "Game history in Postgres",
+    "description": "Persist completed games to Postgres for history. JPA entities, Flyway migrations for the schema. Endpoint to list a player's recent games.",
+    "status": "pending",
+    "priority": 8,
+    "acceptance": [
+      "Flyway migration V1__games.sql creates the games table.",
+      "Completed games are saved with players, result, move history.",
+      "GET /api/players/{id}/games returns the player's history.",
+      "Integration test against Testcontainers-Postgres.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "disconnect-handling",
+    "title": "Disconnect and reconnect",
+    "description": "Track player connection state. On disconnect, start a grace period (e.g., 60s). If the player reconnects within the grace period, restore them to the game. If not, mark the game as abandoned.",
+    "status": "pending",
+    "priority": 9,
+    "acceptance": [
+      "Reconnection within grace period restores game state for the player.",
+      "Timeouts mark the game as abandoned with the opponent as winner.",
+      "Integration tests cover both paths.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "docker-compose",
+    "title": "Docker Compose for local development",
+    "description": "Docker Compose file that spins up the app, Postgres, and Redis. Document the workflow in README.",
+    "status": "pending",
+    "priority": 10,
+    "acceptance": [
+      "docker compose up -d brings up app + postgres + redis on local ports.",
+      "README has a 'Run locally' section.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "github-actions-ci",
+    "title": "CI pipeline on GitHub Actions",
+    "description": "GitHub Actions workflow that runs ./init.sh on every push and pull request. Caches Maven dependencies.",
+    "status": "pending",
+    "priority": 11,
+    "acceptance": [
+      ".github/workflows/ci.yml exists and runs ./init.sh.",
+      "Build passes on main.",
+      "Status badge added to README.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "readme-polish",
+    "title": "Polished README with architecture diagram",
+    "description": "Final README with: project overview, stack, how to run, architecture diagram (Mermaid), API summary, screenshots if available. This is the artifact a recruiter will read.",
+    "status": "pending",
+    "priority": 12,
+    "acceptance": [
+      "README explains what the project is and how to run it in under 5 minutes.",
+      "Mermaid architecture diagram is rendered correctly on GitHub.",
+      "Links to harness engineering files (CLAUDE.md, AGENTS.md) are present so reviewers can see the workflow."
+    ]
+  }
+]
