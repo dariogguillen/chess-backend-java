@@ -1,0 +1,99 @@
+# CHECKPOINTS
+
+This is the checklist a feature must satisfy before it can be marked as
+`done` in `feature_list.json`. It is the canonical "definition of done"
+for this project.
+
+`reviewer` walks through this list and rejects the feature if any item
+fails. `leader` does not mark a feature as `done` before `reviewer`
+approves.
+
+---
+
+## Mandatory checks (every feature)
+
+### Build and test
+
+- [ ] `./init.sh` exits 0.
+- [ ] No tests were skipped, ignored, or commented out to make the
+  build pass.
+- [ ] No assertions were weakened from a previous version of the
+  code.
+
+### Scope and state
+
+- [ ] The feature being closed is the one that was marked
+  `in_progress` in `feature_list.json`.
+- [ ] Only one feature is `in_progress` at any time during the work.
+- [ ] All acceptance criteria for the feature (in
+  `feature_list.json`) are visibly satisfied.
+
+### Code
+
+- [ ] New public service methods have JavaDoc covering contract and
+  exceptions.
+- [ ] No JPA entities are exposed through controllers or WebSocket
+  messages. DTOs (records) are used at the boundary.
+- [ ] Constructor injection only. No `@Autowired` on fields, no
+  setter injection.
+- [ ] No new dependencies in `pom.xml` without a justification in the
+  commit message.
+- [ ] No Lombok. No WebFlux. No H2 or embedded fakes for Postgres
+  or Redis in tests.
+
+### Tests
+
+- [ ] New code at the service or domain layer has unit tests.
+- [ ] New REST endpoints have an integration test (`*IT.java`)
+  covering happy path and at least one error path.
+- [ ] New WebSocket flows have an integration test with a real
+  STOMP client.
+- [ ] New persistence code has an integration test using
+  Testcontainers (real Postgres / real Redis).
+
+### Errors
+
+- [ ] New error conditions throw a specific exception from the
+  hierarchy in `exception/`.
+- [ ] The global handler maps the exception to the right HTTP status
+  and a structured JSON body.
+- [ ] Controllers do not catch their own exceptions.
+
+### Logging
+
+- [ ] Significant state changes are logged at `INFO`.
+- [ ] Unexpected-but-handled situations are logged at `WARN`.
+- [ ] No secrets or sensitive payloads in logs.
+- [ ] Parameterized log messages (no string concatenation).
+
+### Persistence (if applicable)
+
+- [ ] Flyway migrations are forward-only. No edits to migrations that
+  have already been applied.
+- [ ] Migration filenames follow `V{N}__{description}.sql`.
+- [ ] New entities and queries have integration tests.
+
+### Documentation
+
+- [ ] If the feature changed the public API or the way to run the
+  project, `README.md` was updated.
+- [ ] If the feature introduced a new architectural decision,
+  `docs/architecture.md` was updated.
+- [ ] `progress/history.md` has a one-paragraph entry describing the
+  change.
+- [ ] `progress/current.md` was cleared or replaced with a "session
+  closed" note.
+
+---
+
+## Sign-off
+
+When all items above are checked, the feature can move to `done`:
+
+1. Update `feature_list.json` — set `status: "done"`.
+2. Commit the state change with a clear message:
+   `feat(<feature-id>): <short description>`.
+3. Push.
+
+If any item cannot be checked, the feature stays `in_progress`. Do not
+negotiate with the checklist.
