@@ -73,6 +73,24 @@ approves.
 - [ ] Migration filenames follow `V{N}__{description}.sql`.
 - [ ] New entities and queries have integration tests.
 
+### Feature note (mandatory)
+
+- [ ] A file exists at `notes/NN-<feature-id>.md`, where `NN` matches
+  the priority in `feature_list.json` (zero-padded).
+- [ ] The note follows the structure in `notes/_template.md`. Every
+  section from the template is present.
+- [ ] The "What we built" section describes the user-visible behavior
+  in 2-3 sentences.
+- [ ] The "Java / Spring concepts that appear" section names at least
+  one concept and explains how it is used in *this* feature, not in
+  general terms.
+- [ ] The "Decisions taken" section covers at least one non-trivial
+  decision, with alternatives and reasoning.
+- [ ] The "How this compares to what I know" section has at least one
+  concrete comparison with Scala/Typelevel or Node.
+- [ ] The "File map" section lists the files added or modified, with
+  a one-line description each.
+
 ### Documentation
 
 - [ ] If the feature changed the public API or the way to run the

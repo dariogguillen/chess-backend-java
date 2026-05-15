@@ -19,7 +19,9 @@ This repo is a portfolio project. It's a work in progress.
 
 ## Status
 
-Currently in early development. See `PLAN.md` for the current iteration's scope.
+Currently in early development. The current scope and feature plan lives in
+`feature_list.json`; the active session plan (if any) lives in
+`progress/current.md`.
 
 ## Running locally
 

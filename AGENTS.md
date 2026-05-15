@@ -40,13 +40,18 @@ The workflow for every non-trivial change is:
    - Feature ID and title.
    - The files that will be created or modified.
    - The verification approach (which tests prove it works).
+   - The Java / Spring concepts to highlight in the feature note.
 6. Wait for user approval of the plan unless instructed otherwise.
-7. Implement (or delegate to `implementer`). Make small commits.
+7. Hand the plan to `implementer`. The implementer produces code, tests,
+   and the feature note in `notes/NN-<feature-id>.md`.
 8. Run `./init.sh`. All steps must pass.
-9. Have `reviewer` validate, if defined.
-10. Mark the feature as `done` in `feature_list.json`.
-11. Append a one-paragraph entry to `progress/history.md`.
-12. Replace `progress/current.md` with a "session closed" note.
+9. Hand the work to `reviewer`. The reviewer validates against
+   `CHECKPOINTS.md`.
+10. If the reviewer rejects, return to step 7 with specific issues.
+11. When the reviewer approves, mark the feature as `done` in
+    `feature_list.json`.
+12. Append a one-paragraph entry to `progress/history.md`.
+13. Replace `progress/current.md` with a "session closed" note.
 
 ## Where things live
 
@@ -64,6 +69,8 @@ The workflow for every non-trivial change is:
 | "Done" checklist | `CHECKPOINTS.md` |
 | Sub-agent definitions | `.claude/agents/` |
 | Automated hooks | `.claude/settings.json` |
+| Feature learning notes | `notes/` |
+| Feature note template | `notes/_template.md` |
 
 If you need a rule, check the table first. Do not invent rules from memory.
 
@@ -128,6 +135,22 @@ io.github.dariogguillen.chess
 - Prefer the explicit name over the short one.
 - Prefer adding a test over adding a comment.
 - Prefer the standard Spring Boot way over a custom abstraction.
+
+---
+
+## Feature notes
+
+Every feature ships with a learning note at `notes/NN-<feature-id>.md`,
+where `NN` is the zero-padded priority from `feature_list.json`. The
+implementer produces it, the reviewer validates it. The reviewer rejects
+the feature if the note is missing or empty.
+
+The note is written for a reader who knows Scala/Typelevel and Node but
+is learning Java + Spring Boot. It documents what was built, the
+concepts involved, the decisions taken, and the cross-ecosystem
+comparisons.
+
+See `notes/_template.md` for the structure each note must follow.
 
 ---
 
