@@ -3,7 +3,7 @@
     "id": "health-check",
     "title": "Health endpoint",
     "description": "Expose GET /api/health that returns 200 OK with JSON containing status, build version, and timestamp. This is the first vertical slice: it validates the harness, the Spring Boot setup, and the verification pipeline.",
-    "status": "pending",
+    "status": "done",
     "priority": 1,
     "acceptance": [
       "GET /api/health returns 200 with a JSON body containing 'status', 'version', and 'timestamp'.",

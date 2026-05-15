@@ -200,15 +200,57 @@ spring:
 
 ## Tests
 
-- **Unit tests** end with `Test`. They do not boot Spring. They are
-  fast. Examples: `ChessRulesTest`, `RoomServiceTest` (with mocks).
+The integration test is the baseline. The unit test is the supplement.
+Both kinds live in `src/test/java/...`, mirroring the main package
+layout.
+
 - **Integration tests** end with `IT`. They boot the Spring context
   and use Testcontainers for real Postgres and Redis. Examples:
-  `RoomServiceIT`, `GameControllerIT`.
-- One assertion subject per test. Prefer many small tests over a few
-  big ones.
-- Tests for new features must be added in the same PR/commit as the
-  feature.
+  `RoomServiceIT`, `GameControllerIT`. **Every feature ships with an
+  IT** that exercises its user-visible behavior.
+- **Unit tests** end with `Test`. They do not boot Spring. They are
+  fast. Examples: `ChessRulesTest`, `RoomServiceTest` (with mocks).
+  They are added **only when they earn their place**.
+
+### When a unit test earns its place
+
+Add a unit test when at least one of these applies:
+
+- The logic has **non-trivial branching** that the IT cannot
+  reasonably exercise. Canonical example for this project: `ChessRules`
+  validating moves — castling, en passant, promotion, check, mate,
+  stalemate are each a tight unit case and combining them into one IT
+  would be costly and unclear.
+- The code is **pure logic** that does not need a Spring context.
+  Anything in `domain/` is a typical fit.
+- There are **real edge cases** the IT does not touch that represent
+  domain behavior (not cosmetic defensive fallbacks).
+- There are **large input combinations** where one IT per case would
+  be absurd. A unit test with parameterized inputs is the right tool.
+
+### When a unit test is not needed
+
+Do not add one for:
+
+- Controllers that delegate to a service. The IT already covers
+  routing + serialization + wiring.
+- DTOs, records, and value objects without behavior.
+- `@Configuration` classes whose `@Bean`s are trivial (e.g. a single
+  `Clock.systemUTC()`). Spring guarantees the contract.
+- Branches that are **defensive against situations that cannot occur
+  in production** (e.g. a fallback to a constant when an
+  always-present dependency is absent). The branch exists for
+  robustness, not for behavior; cover it only if the situation is
+  reachable in real deployments.
+
+### Style for both flavors
+
+- One assertion subject per test. Many small tests beat a few big
+  ones.
+- Tests for new features ship in the same commit/PR as the feature.
+- Test method names follow `should<Behavior>_when<Condition>` or
+  `<methodName>_<scenario>`. Pick one and stay consistent within a
+  test class.
 
 ## Imports and formatting
 

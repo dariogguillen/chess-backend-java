@@ -43,13 +43,24 @@ approves.
 
 ### Tests
 
-- [ ] New code at the service or domain layer has unit tests.
+Integration tests (`*IT.java`) are the **baseline coverage** for every
+feature. Unit tests (`*Test.java`) are added **only when they earn their
+place** — see `docs/conventions.md` for the criteria.
+
 - [ ] New REST endpoints have an integration test (`*IT.java`)
-  covering happy path and at least one error path.
+  covering happy path and at least one error path (if an error path
+  exists in the endpoint's contract).
 - [ ] New WebSocket flows have an integration test with a real
   STOMP client.
 - [ ] New persistence code has an integration test using
   Testcontainers (real Postgres / real Redis).
+- [ ] New code at the service or domain layer has unit tests **when the
+  logic justifies one** — non-trivial branching, pure logic the IT
+  cannot reasonably exercise, real edge cases the IT does not reach,
+  or large input combinations. Trivial delegation, wiring, DTOs,
+  records, `@Configuration` classes with trivial `@Bean`s, and
+  defensive fallbacks for situations that cannot occur in production
+  do **not** require a unit test.
 
 ### Errors
 

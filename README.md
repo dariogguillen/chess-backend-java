@@ -33,6 +33,12 @@ Currently in early development. The current scope and feature plan lives in
 ./mvnw clean compile
 ```
 
+## API
+
+| Method | Path          | Description                                                                 |
+| ------ | ------------- | --------------------------------------------------------------------------- |
+| `GET`  | `/api/health` | Liveness probe. Returns `200 OK` with `{ status, version, timestamp }`.     |
+
 ## Repository structure
 
 ```
