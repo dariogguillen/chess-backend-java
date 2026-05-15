@@ -34,6 +34,14 @@ The plan **must** cover:
   endpoints / behaviors are exercised).
 - The Java / Spring concepts that should be highlighted in the feature
   note (`notes/`).
+- Whether this feature changes any public-facing API or run procedure
+  (and therefore whether `README.md` will be updated by the
+  implementer). State the answer explicitly — "out of scope" is a
+  valid answer, but it must be written down so the reviewer can
+  confirm it.
+- Whether this feature introduces a new architectural decision (and
+  therefore whether `docs/architecture.md` will be updated by the
+  implementer). Same rule — state the answer.
 
 Wait for the user to approve the plan unless they tell you to skip
 approval.

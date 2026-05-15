@@ -102,27 +102,48 @@ place** — see `docs/conventions.md` for the criteria.
 - [ ] The "File map" section lists the files added or modified, with
   a one-line description each.
 
-### Documentation
+### Documentation (verified at review time)
+
+These are implementer-scope items. They must be satisfied for the
+reviewer to approve.
 
 - [ ] If the feature changed the public API or the way to run the
   project, `README.md` was updated.
 - [ ] If the feature introduced a new architectural decision,
   `docs/architecture.md` was updated.
-- [ ] `progress/history.md` has a one-paragraph entry describing the
-  change.
-- [ ] `progress/current.md` was cleared or replaced with a "session
-  closed" note.
+
+The plan in `progress/current.md` is expected to state explicitly
+whether each of these applies for the feature. If the plan says they
+do not apply (e.g. "feature 2 introduces no public API"), the reviewer
+treats them as N/A.
+
+---
+
+## Closing tasks (leader, post-approval)
+
+These tasks execute **after** the reviewer approves. They are **not**
+reviewer checkpoints — a feature can be approved with them pending,
+because they are sequenced to happen after approval. The leader owns
+them.
+
+1. Update `feature_list.json` — set `status: "done"` on the closed
+   feature.
+2. Append a one-paragraph entry to `progress/history.md` describing
+   what changed, which files were touched, and a link to the feature
+   note.
+3. Replace `progress/current.md` with a "session closed" note.
+
+The reviewer should not fail a feature because these are pending; they
+have not happened yet by design.
 
 ---
 
 ## Sign-off
 
-When all items above are checked, the feature can move to `done`:
+A feature is fully `done` when:
 
-1. Update `feature_list.json` — set `status: "done"`.
-2. Commit the state change with a clear message:
-   `feat(<feature-id>): <short description>`.
-3. Push.
+1. All reviewer checkpoints above pass (reviewer approves).
+2. The leader has completed the three closing tasks above.
 
-If any item cannot be checked, the feature stays `in_progress`. Do not
-negotiate with the checklist.
+If any reviewer checkpoint fails, the feature stays `in_progress`. Do
+not negotiate with the checklist.

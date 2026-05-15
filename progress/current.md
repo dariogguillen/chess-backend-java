@@ -2,8 +2,8 @@
 
 **Status:** No active session.
 
-The most recent feature closed is `health-check`. See
-`progress/history.md` for the summary and `notes/01-health-check.md`
+The most recent feature closed is `domain-models`. See
+`progress/history.md` for the summary and `notes/02-domain-models.md`
 for the learning note.
 
 To start a new session, the `leader` should:

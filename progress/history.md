@@ -60,3 +60,50 @@ converted to `application.yml` to match `docs/conventions.md`.
 - `feature_list.json` (modified: `health-check.status` → `done`)
 
 **Feature note:** `notes/01-health-check.md`.
+
+## 2026-05-15 — domain-models
+
+**Status:** done
+
+**Summary:** Introduced the core domain layer under
+`io.github.dariogguillen.chess.domain` as pure records and enums, with
+no Spring, persistence, or chesslib coupling. Two structural shapes:
+enums (`Side`, `Piece`, `RoomStatus`, `GameStatus`) for closed sets of
+labels, and records (`Square`, `Player`, `Move`, `Room`, `Game`) for
+immutable value objects with invariants enforced at construction via
+compact constructors. Key decisions: `Square` rejects uppercase rather
+than normalizing (so two `Square`s built from different input strings
+never compare equal under records' generated component-wise `equals`);
+`Piece` carries all six chess piece kinds with an `isPromotionTarget()`
+helper instead of splitting into a separate `PromotionPiece` enum
+(single source of truth, avoids constant conversions in later
+features); `Move` validates structurally that promotion is to `KNIGHT`,
+`BISHOP`, `ROOK` or `QUEEN` (rejecting `PAWN`/`KING` as not well-defined,
+which is distinct from chess legality and stays in this layer); `Room`
+and `Game` defensively copy their collection fields via
+`List.copyOf(...)` so callers cannot mutate them after construction.
+Invariant violations raise `IllegalArgumentException` (or
+`NullPointerException` via `Objects.requireNonNull`), reserving the
+`exception/` hierarchy for HTTP-mapped business errors that will land
+with the service layer. 60 new unit tests under `src/test/java/.../domain`,
+no integration tests added (correct for pure-domain code per the refined
+`docs/conventions.md`).
+
+**Files touched:**
+
+- `src/main/java/io/github/dariogguillen/chess/domain/Side.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/domain/Piece.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/domain/RoomStatus.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/domain/GameStatus.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/domain/Square.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/domain/Player.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/domain/Move.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/domain/Room.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/domain/Game.java` (new)
+- `src/test/java/io/github/dariogguillen/chess/domain/SquareTest.java` (new, 27 tests)
+- `src/test/java/io/github/dariogguillen/chess/domain/MoveTest.java` (new, 11 tests)
+- `src/test/java/io/github/dariogguillen/chess/domain/RoomTest.java` (new, 11 tests)
+- `src/test/java/io/github/dariogguillen/chess/domain/GameTest.java` (new, 11 tests)
+- `feature_list.json` (modified: `domain-models.status` → `done`)
+
+**Feature note:** `notes/02-domain-models.md`.
