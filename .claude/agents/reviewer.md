@@ -58,6 +58,51 @@ Examples of vague feedback that are **not** allowed:
 [FAIL] The note could be better.
 ```
 
+## Concrete checks worth scripting
+
+Some checkpoints are easier to verify with a specific grep or command
+than by eyeballing files. Maintain this list as patterns surface; treat
+it as recipes for the corresponding `CHECKPOINTS.md` item, not as a
+substitute for the checklist itself.
+
+### Fully-qualified class names
+
+Checkpoint: "Fully-qualified class names appear only where a
+same-simple-name collision in the same file forces it" (under `Code`
+in `CHECKPOINTS.md`; rule defined in `docs/conventions.md` →
+"Fully-qualified class names").
+
+Recipe:
+
+1. Identify the third-party packages referenced by the feature's main
+   code (look at the new/modified files' `import` statements). For
+   this project, common candidates are
+   `io.github.dariogguillen.chess.`, `com.github.bhlangonijr.`,
+   `org.springframework.`.
+2. For each candidate package, run on `src/main/java`:
+
+   ```
+   grep -rn "<package-prefix>" src/main/java
+   ```
+
+   Filter the matches: anything that is an `import` line, an
+   `@SuppressWarnings`-style annotation argument, or a `{@link …}`
+   JavaDoc tag is fine. The matches to scrutinize are bare
+   fully-qualified references inside code bodies and signatures.
+3. For each scrutinized match, confirm the file references **another
+   class with the same simple name** (e.g. domain `Move` and chesslib
+   `Move`). If yes, the fully-qualification is justified. If no, the
+   type must be imported — flag as `[FAIL]` with the file:line of the
+   offending reference.
+4. The exception always points the import to the domain type; a
+   fully-qualified `io.github.dariogguillen.chess.*` reference in our
+   own code signatures is always a violation.
+
+This catch did not exist in the original feature 3 review; it was
+introduced after the user flagged `com.github.bhlangonijr.chesslib.Board`
+appearing fully-qualified in `ChessRules.java` despite no `Board`
+existing in our domain.
+
 ## Reporting back
 
 When done, write a review report. There are two outcomes.

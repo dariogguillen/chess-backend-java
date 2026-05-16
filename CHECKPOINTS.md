@@ -40,6 +40,15 @@ approves.
   commit message.
 - [ ] No Lombok. No WebFlux. No H2 or embedded fakes for Postgres
   or Redis in tests.
+- [ ] Fully-qualified class names appear only where a same-simple-name
+  collision in the same file forces it. For each fully-qualified
+  occurrence in main code, regardless of package origin (ours, Spring,
+  chesslib, or any dependency), there exists another class with the
+  same simple name referenced in the same file. No "library types are
+  always fully-qualified" exemption — see `docs/conventions.md`,
+  section "Fully-qualified class names". Reviewer verifies by greping
+  for fully-qualified references of every package in use; see
+  `.claude/agents/reviewer.md` for the concrete recipe.
 
 ### Tests
 
@@ -119,19 +128,29 @@ treats them as N/A.
 
 ---
 
-## Closing tasks (leader, post-approval)
+## Closing tasks (leader, post-approval + user sign-off)
 
-These tasks execute **after** the reviewer approves. They are **not**
-reviewer checkpoints — a feature can be approved with them pending,
-because they are sequenced to happen after approval. The leader owns
-them.
+These tasks execute **after** the reviewer approves **and** the user
+gives explicit final approval. They are **not** reviewer checkpoints —
+a feature can be approved by the reviewer with them pending, because
+they are sequenced to happen after approval. The leader owns them.
 
-1. Update `feature_list.json` — set `status: "done"` on the closed
-   feature.
-2. Append a one-paragraph entry to `progress/history.md` describing
-   what changed, which files were touched, and a link to the feature
-   note.
-3. Replace `progress/current.md` with a "session closed" note.
+1. After reviewer approval, the leader reports the outcome to the
+   user (verdict, test counts, files touched, decisions taken,
+   out-of-scope observations) and **waits for the user's explicit
+   OK**. While waiting, the feature stays `in_progress` —
+   `feature_list.json` is NOT flipped. If the user surfaces issues
+   (regressions, bugs caught reading the note, conventions violated,
+   scope to extend), the feature loops back to the implementer
+   without ever flipping to `done`. The reviewer's approval is
+   technical sign-off; the user's OK is the final word.
+2. Once the user OKs:
+   1. Update `feature_list.json` — set `status: "done"` on the closed
+      feature.
+   2. Append a one-paragraph entry to `progress/history.md` describing
+      what changed, which files were touched, and a link to the feature
+      note.
+   3. Replace `progress/current.md` with a "session closed" note.
 
 The reviewer should not fail a feature because these are pending; they
 have not happened yet by design.

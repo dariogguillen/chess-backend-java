@@ -16,7 +16,12 @@
     "PreToolUse": [
       {
         "matcher": "Edit|Write",
-        "command": "bash -c 'path=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$path\" == *\"/db/migration/V\"* ]] && [[ -f \"$path\" ]]; then echo \"BLOCKED: Flyway migration files that already exist are forward-only. Add a new migration instead of editing $path.\" >&2; exit 1; fi; exit 0'"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'path=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$path\" == *\"/db/migration/V\"* ]] && [[ -f \"$path\" ]]; then echo \"BLOCKED: Flyway migration files that already exist are forward-only. Add a new migration instead of editing $path.\" >&2; exit 1; fi; exit 0'"
+          }
+        ]
       }
     ]
   }

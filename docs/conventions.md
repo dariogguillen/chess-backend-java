@@ -258,6 +258,56 @@ Do not add one for:
 - 100-column soft limit, 120 hard limit.
 - Use the Spring Boot defaults for everything else.
 
+### Fully-qualified class names
+
+**Default: import every type you reference, regardless of which package
+or library it comes from.** Fully-qualified names are noise — they
+privilege provenance over semantics. This applies to our own packages
+**and** to third-party libraries (chesslib, Spring, etc.) equally. A
+signature like
+
+```java
+public MoveOutcome applyMove(String fen, io.github.dariogguillen.chess.domain.Move move)
+```
+
+is harder to read than
+
+```java
+import io.github.dariogguillen.chess.domain.Move;
+// ...
+public MoveOutcome applyMove(String fen, Move move)
+```
+
+and the same goes for an unnecessary `com.github.bhlangonijr.chesslib.Board`
+inside a service body — `Board` is just as informative once imported.
+
+**The single exception:** when two classes in different packages share a
+simple name and both are referenced in the same file, Java requires that
+at least one of them be fully-qualified. In that case:
+
+- **Import the type from our own packages** (`io.github.dariogguillen.chess.*`).
+  Our domain types are the primary subjects of our code; they get the
+  import. They must never appear fully-qualified in our own signatures.
+- The external library's type is fully-qualified **only at the specific
+  sites where it would otherwise shadow our domain type** — typically
+  inside the anti-corruption layer that wraps the library (e.g. private
+  helpers in `ChessRules`).
+
+**Fully-qualification is a per-type per-site decision, not a per-file
+blanket.** Even inside a file that legitimately needs to fully-qualify
+some types from a library (because of collisions), other types from the
+same library that do **not** collide with anything must still be
+imported and used by simple name. Example: in `ChessRules.java`,
+chesslib's `Move`, `Square`, `Piece`, and `Side` collide with our domain
+types — those stay fully-qualified inside helpers. chesslib's `Board`
+and `PieceType` collide with nothing — those must be imported.
+
+Spotless does not enforce this. The implementer applies the convention
+while writing; the reviewer validates it during code walk by grepping
+for fully-qualified references of any package — ours or third-party —
+and confirming each match is justified by a real same-simple-name
+collision in the same file.
+
 ## Maven
 
 - Pin the Spring Boot version via the parent POM.

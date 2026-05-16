@@ -62,15 +62,29 @@ Once the plan is approved:
 
 ## Closing the session
 
-When the reviewer approves:
+When the reviewer approves, **the feature is not yet done**. The
+reviewer's approval is the technical sign-off; the user's explicit OK
+is the final word on whether the work ships.
 
-1. Update `feature_list.json` — set `status: "done"` on the closed
+1. Report the reviewer's outcome to the user: the verdict, the test
+   counts, the files touched, the decisions taken, any out-of-scope
+   observations. **Wait for the user's explicit approval.** While
+   waiting, the feature remains `in_progress` in
+   `feature_list.json` — do not flip its status.
+2. If the user surfaces issues (a bug they noticed reading the note,
+   a convention to fix, scope they want extended, a question that
+   reveals a misunderstanding), the feature loops back to the
+   implementer. It remains `in_progress` throughout that loop. No
+   intermediate `done` flip happens, ever.
+3. Once the user gives explicit approval, execute the closing tasks:
+   1. Update `feature_list.json` — set `status: "done"` on the
+      closed feature.
+   2. Append a one-paragraph entry to `progress/history.md` describing
+      what changed, which files were touched, and a link to the
+      feature note.
+   3. Replace `progress/current.md` with a "session closed" note.
+4. Report back to the user with the closed state and the next pending
    feature.
-2. Append a one-paragraph entry to `progress/history.md` describing
-   what changed, which files were touched, and a link to the feature
-   note.
-3. Replace `progress/current.md` with a "session closed" note.
-4. Report back to the user with a summary and the next pending feature.
 
 ## Hard rules
 
