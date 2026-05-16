@@ -147,3 +147,102 @@ scaffold smoke test that was redundant with `HealthControllerIT`
 - `feature_list.json` (modified: `chesslib-integration.status` → `done`)
 
 **Feature note:** `notes/03-chesslib-integration.md`.
+
+## 2026-05-16 — chesslib-integration (reopened and re-closed)
+
+**Status:** done
+
+**Summary:** The feature was reopened the day after the original
+close because the user, while reading the implementation during
+validation, noticed that `ChessRules#applyMove` constructed a fresh
+chesslib `Board` on every call and only invoked `loadFromFen(fen)`.
+A FEN does not carry position history, so chesslib's `board.isDraw()`
+could never detect threefold repetition — `mapStatus(...)` would
+silently return `ONGOING` for what was actually a draw. The existing
+test suite could not catch the bug because the previous API only
+took `(fen, move)`, leaving no place to express a multi-move
+scenario. The fix introduces a new value type
+`service/GameState` (record of `startingFen`, `history`, cached
+`currentFen`, cached `currentStatus`) and reshapes `ChessRules` to
+two operations: `initialState(String startingFen) → GameState` and
+`applyMove(GameState, Move) → MoveOutcome`. Every `applyMove` call
+loads the starting FEN, replays the entire move history on a fresh
+`Board`, then evaluates the candidate move — preserving chesslib's
+internal position-hash history at the cost of a sub-millisecond
+replay per call. `MoveOutcome` was reshaped to
+`record MoveOutcome(boolean legal, GameState state)`, with the
+contract that `state` is the post-move state when legal and the
+input state unchanged when illegal. `initialState` throws
+`IllegalArgumentException` on unparseable FEN — a programmer error,
+distinct from an illegal move at runtime, replacing the previous
+`legal = false` conflation. `ChessRulesTest` grew to 15 tests:
+every prior scenario adapted to the new API, plus the canary
+`threefoldRepetition_returnsDrawStatus` (which exercises
+`Nf3 Nc6 Ng1 Nb8` repeated three times and asserts `DRAW`, a test
+that was impossible to write under the old API) and the
+`replayingHistoryProducesExpectedFen` sanity check. Three
+discarded options for `GameState` shape (opaque class with
+long-lived `Board`, plain tuple parameters, full domain `Game`
+threading) were documented and rejected in favor of the record;
+notes capture the rationale. The SLF4J logger in `ChessRules` was
+removed alongside the refactor — with FEN validation moved to
+`initialState`, there is no longer a code path where `applyMove`
+receives a malformed FEN, so the warn-log no longer made sense.
+
+A second loop opened mid-validation when the user noticed
+`src/main/java/.../service/ChessRules.java` still used chesslib
+types fully-qualified at sites where no name collision with our
+domain existed (`com.github.bhlangonijr.chesslib.Board`,
+`...PieceType`). Root cause was in the harness, not the code: the
+`docs/conventions.md` section "Fully-qualified class names" was
+written around the collision case and left the general "prefer
+imports" principle implicit, so the previous reviewer's grep only
+covered `io.github.dariogguillen.chess.domain.*`. The convention
+was rewritten to make the universal rule explicit and the
+collision case the single acotada exception ("per-type per-site,
+not per-file blanket"). `CHECKPOINTS.md` gained a bullet that
+requires every fully-qualified reference in main code, regardless
+of package, to be justified by a same-simple-name collision in the
+same file. `.claude/agents/reviewer.md` gained a "Concrete checks
+worth scripting" section with the grep recipe (covering ours,
+chesslib, Spring, and any third-party prefix in use). The
+implementer then cleaned `ChessRules.java`: added two imports
+(`Board`, `PieceType`) and replaced the unqualified occurrences,
+while preserving the four chesslib types whose simple names
+genuinely collide with our domain (`Move`, `Square`, `Piece`,
+`Side` — the last kept fully-qualified preventively, deliberately,
+with an out-of-scope observation noted by the reviewer). The
+memory `feedback-no-fully-qualified-names.md` was reframed the
+same way.
+
+A third local-tooling change happened in the same session but
+outside the repo: the user's neovim/lazyvim setup
+(`/home/dariogg/Documents/dotfiles/lazyvim`) was wired to
+`conform.nvim` running `google-java-format-1.22.0-all-deps.jar`
+(matching the Spotless version pinned in `pom.xml:162`) so saves
+from neovim produce output byte-identical to `./mvnw spotless:apply`,
+removing the prior fail loop where jdtls's Eclipse JDT formatter
+would reformat on save and `./init.sh` would fail on
+`spotless:check`. The plugin file lives at
+`/home/dariogg/Documents/dotfiles/lazyvim/lua/plugins/java.lua`
+and the jar at `~/.local/share/google-java-format/`. No repo
+change for this — pure local setup — but worth recording for
+future onboarding.
+
+**Files touched:**
+
+- `src/main/java/io/github/dariogguillen/chess/service/GameState.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/service/MoveOutcome.java` (modified: reshaped to `(boolean legal, GameState state)`)
+- `src/main/java/io/github/dariogguillen/chess/service/ChessRules.java` (modified: new API `initialState` + `applyMove(GameState, Move)`, replay loop, SLF4J removed, fully-qualified cleanup)
+- `src/test/java/io/github/dariogguillen/chess/service/ChessRulesTest.java` (modified: 15 tests under new API, including `threefoldRepetition_returnsDrawStatus` and `replayingHistoryProducesExpectedFen`)
+- `docs/architecture.md` (modified: 6-line note on service-level value types)
+- `docs/conventions.md` (modified: "Fully-qualified class names" section rewritten — universal rule first, collision as the single per-site exception)
+- `CHECKPOINTS.md` (modified: new bullet under `### Code` for fully-qualified names of any package origin; split closing tasks under post-approval + user sign-off)
+- `.claude/agents/reviewer.md` (modified: new "Concrete checks worth scripting" section with the grep recipe)
+- `.claude/agents/leader.md` (modified earlier in session: planning section requires explicit README/architecture impact answer; closing requires user explicit OK)
+- `.claude/settings.json` (modified earlier: hook schema fix)
+- `notes/03-chesslib-integration.md` (modified: "Decisions taken" + "Gotchas" appended with `*(added 2026-05-15)*` markers covering the GameState refactor)
+- `pom.xml` (modified earlier: chesslib 1.3.6 + JitPack + actuator + spotless + failsafe + build-info + CVE overrides for commons-lang3 3.18.0 and commons-compress 1.27.1 test-scope)
+- `feature_list.json` (modified: `chesslib-integration.status` → `done`)
+
+**Feature note:** `notes/03-chesslib-integration.md`.
