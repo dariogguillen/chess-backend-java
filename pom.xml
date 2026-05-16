@@ -76,6 +76,27 @@
 			<artifactId>postgresql</artifactId>
 			<scope>runtime</scope>
 		</dependency>
+
+		<!-- Chess rules engine: legal move generation, FEN parsing, status detection. -->
+		<dependency>
+			<groupId>com.github.bhlangonijr</groupId>
+			<artifactId>chesslib</artifactId>
+			<version>1.3.6</version>
+		</dependency>
+
+		<!--
+			Override the commons-lang3 version that chesslib 1.3.6 pulls in
+			transitively (3.17.0) to mitigate CVE-2025-48924 — uncontrolled
+			recursion in ClassUtils.getClass(String), severity 5.3. Fixed in
+			3.18.0. Maven resolves "nearest wins", so declaring it directly
+			here supersedes the transitive 3.17.0.
+		-->
+		<dependency>
+			<groupId>org.apache.commons</groupId>
+			<artifactId>commons-lang3</artifactId>
+			<version>3.18.0</version>
+		</dependency>
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-test</artifactId>
@@ -94,6 +115,21 @@
 		<dependency>
 			<groupId>org.testcontainers</groupId>
 			<artifactId>postgresql</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<!--
+			Override the commons-compress version that testcontainers 1.21.4
+			pulls in transitively (1.24.0) to mitigate CVE-2024-25710
+			(infinite loop, severity 8.1) and CVE-2024-26308 (unbounded
+			resource allocation, severity 5.5). Both are fixed in 1.26.0+.
+			Scope is test because the only consumer (testcontainers) is
+			test-scope; this override stays out of the production jar.
+		-->
+		<dependency>
+			<groupId>org.apache.commons</groupId>
+			<artifactId>commons-compress</artifactId>
+			<version>1.27.1</version>
 			<scope>test</scope>
 		</dependency>
 	</dependencies>
