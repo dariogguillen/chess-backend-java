@@ -27,7 +27,7 @@
     "id": "chesslib-integration",
     "title": "Server-side move validation",
     "description": "Integrate the chesslib library. Provide a ChessRules service that, given a current FEN and a proposed move (from-square, to-square, optional promotion), returns the new FEN, whether the move was legal, and the resulting GameStatus (ongoing, check, checkmate, stalemate, draw).",
-    "status": "pending",
+    "status": "done",
     "priority": 3,
     "acceptance": [
       "ChessRules service has a clear API and JavaDoc.",

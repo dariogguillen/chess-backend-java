@@ -1,16 +1,11 @@
 # Current session
 
-**Status:** No active session.
+**Status:** session closed.
 
-The most recent feature closed is `domain-models`. See
-`progress/history.md` for the summary and `notes/02-domain-models.md`
-for the learning note.
+Feature 3 (`chesslib-integration`) was closed on 2026-05-16 after a
+reopen for the threefold-repetition fix and a subsequent fully-qualified
+cleanup. See `progress/history.md` for the full close entry.
 
-To start a new session, the `leader` should:
-
-1. Read `AGENTS.md` and this file.
-2. Read `feature_list.json` and pick the pending feature with the
-   lowest `priority`.
-3. Mark that feature as `in_progress` in `feature_list.json`.
-4. Replace the content of this file with a plan for the feature.
-5. Wait for user approval.
+The next feature in `feature_list.json` is `room-rest-api` (priority 4).
+No session is in progress; the leader will open a plan here once the
+scope and key decisions are aligned with the user.

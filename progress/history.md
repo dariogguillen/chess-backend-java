@@ -107,3 +107,43 @@ no integration tests added (correct for pure-domain code per the refined
 - `feature_list.json` (modified: `domain-models.status` → `done`)
 
 **Feature note:** `notes/02-domain-models.md`.
+
+## 2026-05-15 — chesslib-integration
+
+**Status:** done
+
+**Summary:** Introduced `ChessRules` as a `@Service` in
+`io.github.dariogguillen.chess.service` that wraps the `chesslib`
+library and exposes a single method
+`MoveOutcome applyMove(String fen, Move move)`. The service is the
+only file in the codebase that imports `com.github.bhlangonijr.chesslib`
+— a strict anti-corruption layer that translates between domain types
+(`Move`, `Square`, `Piece`, `GameStatus`) and chesslib's API. The
+return type `MoveOutcome` is a record `{ boolean legal, String fen,
+GameStatus status }` with a uniform contract: `fen` always describes
+the current state of the board (post-move when legal, the input fen
+when illegal or unparseable). Implementation surfaced one real bug in
+chesslib's API: `Board.doMove(move, true)` only validates structural
+integrity, accepting moves like `e2-e5` from the starting position;
+the fix uses `board.legalMoves().contains(move)` as the legality
+ground truth, with the `illegalMove_*` test as the canary. The chesslib
+dependency is pulled from JitPack (1.3.6) because the library is not
+published on Maven Central. 13 unit tests cover every chess rule
+required by the acceptance criteria: legal/illegal moves, check,
+fool's mate, stalemate, kingside and queenside castling, en passant,
+queen promotion, parameterized underpromotion to KNIGHT/BISHOP/ROOK,
+and invalid FEN. As part of closing the session, the leader removed
+`src/test/java/.../ChessApplicationTests.java` — the Spring Initializr
+scaffold smoke test that was redundant with `HealthControllerIT`
+(which also boots the full context with Testcontainers).
+
+**Files touched:**
+
+- `src/main/java/io/github/dariogguillen/chess/service/ChessRules.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/service/MoveOutcome.java` (new)
+- `src/test/java/io/github/dariogguillen/chess/service/ChessRulesTest.java` (new, 13 tests)
+- `src/test/java/io/github/dariogguillen/chess/ChessApplicationTests.java` (deleted: redundant scaffold smoke test)
+- `pom.xml` (modified: added JitPack repository and `com.github.bhlangonijr:chesslib:1.3.6`)
+- `feature_list.json` (modified: `chesslib-integration.status` → `done`)
+
+**Feature note:** `notes/03-chesslib-integration.md`.

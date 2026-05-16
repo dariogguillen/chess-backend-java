@@ -63,6 +63,14 @@ web / websocket
 - **`config/`** holds `@Configuration` classes (WebSocket, security
   later, etc.).
 
+`service/` may introduce its own value types when the domain shape does
+not match the service's computational needs. For example, `ChessRules`
+operates on a service-level `GameState` record (`startingFen + history +
+cached current views`) rather than the domain `Game`, because chess-rule
+decisions need position history but not player identity. Such
+service-level types live alongside the service that consumes them and
+are mapped to and from domain types at the service boundary.
+
 ## Source of truth
 
 The **server** is the source of truth for game state. The client can

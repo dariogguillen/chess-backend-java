@@ -29,6 +29,18 @@
 	<properties>
 		<java.version>21</java.version>
 	</properties>
+
+	<repositories>
+		<!--
+			chesslib is published on JitPack, not on Maven Central.
+			See https://jitpack.io/#bhlangonijr/chesslib for available versions.
+		-->
+		<repository>
+			<id>jitpack.io</id>
+			<url>https://jitpack.io</url>
+		</repository>
+	</repositories>
+
 	<dependencies>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
