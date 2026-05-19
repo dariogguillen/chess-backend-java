@@ -79,6 +79,44 @@ place** — see `docs/conventions.md` for the criteria.
   and a structured JSON body.
 - [ ] Controllers do not catch their own exceptions.
 
+### API documentation (if the feature adds or modifies REST endpoints)
+
+Skip this section if the feature ships no `@RestController`
+changes (e.g. a pure domain or persistence feature).
+
+- [ ] Each new or modified `@RestController` class has a
+  class-level `@Tag(name = …, description = …)`.
+- [ ] Each new or modified endpoint handler has
+  `@Operation(summary = …)` with a non-empty `summary`.
+- [ ] Each new or modified endpoint handler has one
+  `@ApiResponse` per status code it can produce — the success
+  path and every error path the `GlobalExceptionHandler` maps
+  for exceptions reachable from the handler. Framework
+  rejections (`VALIDATION_FAILED`, `MALFORMED_REQUEST`) count
+  when the endpoint takes a `@RequestBody`.
+- [ ] Every 4xx `@ApiResponse` references `ErrorResponse` via
+  `@Schema(implementation = ErrorResponse.class)`. No inline
+  4xx schemas.
+- [ ] New DTO records receive `@Schema` annotations on
+  components where the field name and type do not already
+  convey the contract — alphabet rules, UUID formats, enum-like
+  values, nullable semantics, useful examples. Trivial fields
+  stay unannotated.
+- [ ] `/v3/api-docs` returns 200 during `OpenApiIT` and includes
+  the new endpoint(s) with parameters, request body schema,
+  response schemas, and every declared `@ApiResponse`. Reviewer
+  fetches the spec during the review to confirm.
+- [ ] The `OpenApiIT` canary
+  `apiDocs_includesOperationSummaries` passes (it fails if any
+  operation in the spec has an empty `summary` — protects the
+  `@Operation(summary = …)` discipline).
+
+The canonical wording of these rules lives in
+`docs/conventions.md` → "API documentation". The reviewer's
+concrete grep recipe lives in `.claude/agents/reviewer.md` →
+"Concrete checks worth scripting" → "Springdoc API
+documentation".
+
 ### Logging
 
 - [ ] Significant state changes are logged at `INFO`.

@@ -161,6 +161,106 @@ status and a structured JSON response:
 
 Controllers do **not** wrap calls in try/catch.
 
+## API documentation
+
+The REST API surface is documented via **springdoc-openapi**:
+each `@RestController` and its DTOs are annotated, and the
+running application serves the generated OpenAPI 3 spec at
+`/v3/api-docs` and an interactive Swagger UI at
+`/swagger-ui.html`. The spec is the source of truth for the API
+contract; do not maintain a parallel manual description in the
+README. WebSocket / STOMP surfaces are intentionally out of
+scope for this convention — they are documented separately in
+the README when they land.
+
+### Controller annotations
+
+Every `@RestController` class declares a class-level
+`@Tag(name = …, description = …)` so Swagger UI groups its
+endpoints under a meaningful heading:
+
+```java
+@Tag(name = "Rooms", description = "Create and join chess rooms.")
+@RestController
+@RequestMapping("/api/rooms")
+public class RoomController { … }
+```
+
+Every endpoint handler declares:
+
+- `@Operation(summary = …, description = …)`. `summary` is
+  mandatory and short; `description` is optional and used to
+  surface contract subtleties the handler signature does not
+  reveal (case-insensitive path variables, idempotency, cross-
+  resource side effects).
+- One `@ApiResponse` per status code the endpoint can produce —
+  the 2xx success path **and** every 4xx the
+  `GlobalExceptionHandler` maps for exceptions reachable from
+  the handler. Framework rejections (`VALIDATION_FAILED` for
+  `@Valid` failures, `MALFORMED_REQUEST` for unparseable JSON)
+  count when the endpoint takes a `@RequestBody`.
+
+```java
+@Operation(summary = "Join a room",
+           description = "Path id is case-insensitive; canonical uppercase is returned in the body.")
+@ApiResponse(responseCode = "200", description = "Joined; game created",
+    content = @Content(schema = @Schema(implementation = RoomResponse.class)))
+@ApiResponse(responseCode = "404", description = "Room does not exist",
+    content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
+@ApiResponse(responseCode = "409", description = "Room already has two players",
+    content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
+@PostMapping("/{id}/join")
+public RoomResponse joinRoom(@PathVariable String id, @Valid @RequestBody JoinRoomRequest body) { … }
+```
+
+`ErrorResponse` is the canonical 4xx body across the entire
+API. Every 4xx `@ApiResponse` references it via
+`@Schema(implementation = ErrorResponse.class)`. Defining the
+schema once and referencing it from many sites is what keeps
+the spec consistent without per-endpoint duplication.
+
+### DTO annotations
+
+`@Schema` annotations on record components are **selective** —
+add them where they convey information beyond what the field
+name and type already make obvious:
+
+- Alphabet rules (`roomId`: 6-char short code, case-insensitive
+  in URLs).
+- Format expectations (UUID, ISO-8601 instant).
+- Enum-like values (`role`: WHITE or BLACK).
+- Nullable semantics (`gameId`: null on create, non-null on
+  join).
+- Example values where they aid Swagger UI exploration
+  (`displayName`: "Alice").
+
+Trivial fields (a `message` string, a generic `name`) stay
+unannotated. The JavaDoc on the record itself remains the
+primary documentation source; `@Schema` augments the generated
+spec, it does not replace JavaDoc.
+
+The Jakarta validation annotations (`@NotBlank`, `@Size`, etc.)
+are reflected in the spec automatically by springdoc; do not
+duplicate them in `@Schema(description = …)`.
+
+### Top-level info
+
+The application exposes top-level OpenAPI info — title,
+description, version — via an `@Bean OpenAPI` in `config/`. The
+`version` reads from `BuildProperties` (already injected by the
+`spring-boot-maven-plugin` `build-info` execution). The
+description names what the spec covers (REST) and what it does
+not (WebSocket / STOMP).
+
+### Verification
+
+An IT under `src/test/java/.../config/OpenApiIT.java` asserts
+that `/v3/api-docs` returns 200 with each documented operation,
+that `/swagger-ui.html` renders, and — as a canary — that every
+operation in the spec has a non-empty `summary`. A new endpoint
+that ships without `@Operation(summary = …)` fails the canary
+by design.
+
 ## Logging
 
 - Use SLF4J. Get loggers via `LoggerFactory.getLogger(MyClass.class)`.

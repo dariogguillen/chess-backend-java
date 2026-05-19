@@ -103,6 +103,78 @@ introduced after the user flagged `com.github.bhlangonijr.chesslib.Board`
 appearing fully-qualified in `ChessRules.java` despite no `Board`
 existing in our domain.
 
+### Springdoc API documentation
+
+Checkpoint: "API documentation (if the feature adds or modifies
+REST endpoints)" section in `CHECKPOINTS.md`; canonical wording
+in `docs/conventions.md` → "API documentation".
+
+Skip the recipe if the feature ships no `@RestController`
+changes.
+
+Recipe:
+
+1. List every `@RestController` class touched (new or modified)
+   by the feature. Read the imports section of each file you
+   touched in step 3 of the at-the-start protocol.
+2. For each controller class, confirm a class-level
+   `@Tag(name = …, description = …)` exists:
+
+   ```
+   grep -B5 "@RestController" src/main/java/.../<file>.java | grep "@Tag("
+   ```
+
+   No match → `[FAIL]`.
+3. For each `@*Mapping` method in those controllers:
+   - Confirm `@Operation(summary = "<non-empty>")` is present.
+     Grep `@Operation(` in the file; cross-check against the
+     count of `@*Mapping` methods.
+   - Confirm one `@ApiResponse` per status code the method can
+     produce. Cross-check the handler's possible exception
+     sources (method body + service call chain + global
+     handler) against the declared `@ApiResponse` set. The
+     `GlobalExceptionHandler` is the authoritative mapping
+     from exception type → status code. For every exception
+     reachable from the handler, a matching `@ApiResponse` must
+     be declared.
+   - Every `@ApiResponse` whose `responseCode` starts with `4`
+     declares
+     `content = @Content(schema = @Schema(implementation = ErrorResponse.class))`.
+     Grep:
+     `grep -B0 -A2 '@ApiResponse(responseCode = "4' src/main/java/.../<file>.java`
+     and inspect that the `content` block references
+     `ErrorResponse`. No reference → `[FAIL]`.
+4. For new DTO records, spot-check whether `@Schema`
+   annotations would meaningfully aid Swagger UI exploration on
+   the non-obvious components (alphabet rules, UUID formats,
+   nullable semantics, useful examples). Absence on a
+   `displayName` or a `message` is fine; absence on a `roomId`
+   short-code or a nullable `gameId` is a `[FAIL]`.
+5. Load the generated spec to confirm it matches:
+
+   ```
+   ./mvnw spring-boot:test-run &
+   sleep 30
+   curl -s http://localhost:8080/v3/api-docs | jq '.paths, .components.schemas | keys'
+   ```
+
+   Confirm each new endpoint path appears, with parameters,
+   request body schema, response schemas, and every declared
+   `@ApiResponse`. Confirm `ErrorResponse` is one of the
+   component schemas. Stop the server when done.
+6. Confirm `OpenApiIT` is green, including the
+   `apiDocs_includesOperationSummaries` canary that fails if
+   any operation in the spec has an empty `summary`.
+
+If a new endpoint is undocumented (no `@Operation`, missing
+`@ApiResponse` for a 4xx the handler can produce, missing
+`ErrorResponse` schema link, missing `@Schema` on a non-obvious
+DTO field), that is a `[FAIL]`. Flag the file:line and the
+missing piece.
+
+This recipe was introduced alongside feature 4.5 (`api-docs`)
+to keep feature 5+ from accumulating documentation drift.
+
 ## Reporting back
 
 When done, write a review report. There are two outcomes.
