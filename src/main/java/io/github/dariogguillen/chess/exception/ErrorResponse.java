@@ -1,5 +1,6 @@
 package io.github.dariogguillen.chess.exception;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.Instant;
 
 /**
@@ -14,4 +15,13 @@ import java.time.Instant;
  * @param timestamp the instant the response was produced, in UTC; serialized as ISO-8601 by
  *     Jackson's {@code JavaTimeModule}.
  */
-public record ErrorResponse(String error, String message, Instant timestamp) {}
+@Schema(
+    name = "ErrorResponse",
+    description = "Standard error envelope returned by every 4xx response from the API.")
+public record ErrorResponse(
+    @Schema(
+            description = "Stable upper-snake-case error code; intended for programmatic matching.",
+            example = "ROOM_NOT_FOUND")
+        String error,
+    String message,
+    Instant timestamp) {}

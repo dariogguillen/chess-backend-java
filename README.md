@@ -35,38 +35,37 @@ Currently in early development. The current scope and feature plan lives in
 
 ## API
 
-| Method | Path                       | Description                                                                                                                                                |
-| ------ | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/api/health`              | Liveness probe. Returns `200 OK` with `{ status, version, timestamp }`.                                                                                    |
-| `POST` | `/api/rooms`               | Creates a room with the caller as the single player (becomes `WHITE`). Returns `201 Created` with `{ roomId, playerId, role, gameId }` (`gameId` is null). |
-| `POST` | `/api/rooms/{id}/join`     | Joins an existing room as the second player (becomes `BLACK`) and starts the game. Returns `200 OK` with `{ roomId, playerId, role, gameId }`.             |
+The application exposes a small REST surface: a liveness probe and the room lifecycle
+(create / join). The WebSocket (STOMP) surface for real-time game updates lands with feature 6
+and is documented separately in this README when it does.
 
-### Room endpoint examples
+### API documentation
 
-Create a room:
+The HTTP API is documented via an auto-generated OpenAPI 3 spec.
 
-```bash
-curl -X POST http://localhost:8080/api/rooms \
-  -H 'Content-Type: application/json' \
-  -d '{"displayName":"Alice"}'
-# 201 Created
-# { "roomId": "K7M3X9", "playerId": "8b3c...-...", "role": "WHITE", "gameId": null }
-```
+- Interactive Swagger UI: <http://localhost:8080/swagger-ui.html>
+- Machine-readable JSON spec: <http://localhost:8080/v3/api-docs>
 
-Join an existing room:
+To import into Insomnia or Postman, create a new collection from the `/v3/api-docs` URL.
+
+### Quick curl examples
 
 Room IDs are case-insensitive in URLs; responses always return the canonical uppercase form.
 
 ```bash
+# Health probe.
+curl http://localhost:8080/api/health
+
+# Create a room (caller becomes WHITE).
+curl -X POST http://localhost:8080/api/rooms \
+  -H 'Content-Type: application/json' \
+  -d '{"displayName":"Alice"}'
+
+# Join an existing room (caller becomes BLACK; game is created).
 curl -X POST http://localhost:8080/api/rooms/K7M3X9/join \
   -H 'Content-Type: application/json' \
   -d '{"displayName":"Bob"}'
-# 200 OK
-# { "roomId": "K7M3X9", "playerId": "1f04...-...", "role": "BLACK", "gameId": "0d52...-..." }
 ```
-
-Errors come back as `{ error, message, timestamp }`: `ROOM_NOT_FOUND` (404), `ROOM_FULL` (409),
-`VALIDATION_FAILED` / `MALFORMED_REQUEST` (400).
 
 ## Repository structure
 

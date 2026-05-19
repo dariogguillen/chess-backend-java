@@ -1,5 +1,6 @@
 package io.github.dariogguillen.chess.web.room;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 
 /**
@@ -9,4 +10,4 @@ import jakarta.validation.constraints.NotBlank;
  *
  * @param displayName the name to display for the joining player; non-blank.
  */
-public record JoinRoomRequest(@NotBlank String displayName) {}
+public record JoinRoomRequest(@NotBlank @Schema(example = "Bob") String displayName) {}

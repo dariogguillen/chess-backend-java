@@ -50,6 +50,22 @@
     ]
   },
   {
+    "id": "api-docs",
+    "title": "OpenAPI spec and Swagger UI via springdoc",
+    "description": "Adopt springdoc-openapi-starter-webmvc-ui to auto-generate an OpenAPI 3 spec from the existing REST endpoints and mount Swagger UI for interactive exploration. Enrich the spec with @Operation summaries and @ApiResponse declarations so every 2xx and 4xx response is documented honestly, with ErrorResponse as the body schema for error cases. Adopted now (between room-rest-api and game-rest-api) so each subsequent REST feature ships its endpoints with springdoc annotations from day one rather than accumulating retroactive doc churn. WebSocket/STOMP is intentionally out of scope; that surface is documented in the README when feature 6 lands.",
+    "status": "done",
+    "priority": 4.5,
+    "acceptance": [
+      "springdoc-openapi-starter-webmvc-ui is added to pom.xml.",
+      "GET /v3/api-docs returns a valid OpenAPI 3 JSON spec covering /api/health, POST /api/rooms, and POST /api/rooms/{id}/join.",
+      "Swagger UI is reachable at /swagger-ui.html and renders the three endpoints with their parameters, request/response schemas, and error responses.",
+      "Each endpoint declares its 2xx and the relevant 4xx responses via @ApiResponse, with ErrorResponse as the body schema for 4xx.",
+      "README documents the Swagger UI URL and /v3/api-docs for client codegen, and trims the manual endpoint table in favor of a link to the spec.",
+      "An integration test asserts that /v3/api-docs returns 200 with a payload containing each documented operation and that /swagger-ui.html returns a 200 HTML response.",
+      "./init.sh passes."
+    ]
+  },
+  {
     "id": "game-rest-api",
     "title": "Game REST endpoints (in-memory)",
     "description": "REST endpoints to make a move and to query game state. Move requests are validated by ChessRules. Game state lives in the in-memory store.",

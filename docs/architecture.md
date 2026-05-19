@@ -81,6 +81,19 @@ Putting the seam in `service/` rather than `cache/` keeps the
 interface owner and its sole consumer close together until the second
 implementation arrives.
 
+### API contract
+
+The REST surface is documented via an OpenAPI 3 spec generated at
+runtime by **springdoc-openapi**. The spec is served at
+`/v3/api-docs` (JSON) and `/swagger-ui.html` (interactive UI). The
+source of truth lives in the controllers themselves: `@Tag`,
+`@Operation`, and `@ApiResponse` annotations on each `@RestController`,
+plus selective `@Schema` annotations on the record DTOs. A
+top-level `@Bean OpenAPI` in `config/` contributes the title,
+description, and build version. The WebSocket / STOMP surface
+(feature 6+) is intentionally out of springdoc's scope; it is
+documented separately in the README when it lands.
+
 ## Source of truth
 
 The **server** is the source of truth for game state. The client can

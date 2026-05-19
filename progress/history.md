@@ -386,3 +386,128 @@ behaviour issue.
 - `feature_list.json` (modified: `room-rest-api.status` → `done`; new `api-docs` entry inserted at priority 4.5)
 
 **Feature note:** `notes/04-room-rest-api.md`.
+
+## 2026-05-18 — api-docs
+
+**Status:** done
+
+**Summary:** Adopted `springdoc-openapi-starter-webmvc-ui` 2.8.6
+to auto-generate the OpenAPI 3 spec from existing REST
+controllers and mount Swagger UI for interactive exploration.
+The application now serves the machine-readable spec at
+`/v3/api-docs` and the interactive UI at `/swagger-ui.html`
+(which springdoc 302-redirects to `/swagger-ui/index.html`).
+The three pre-existing endpoints (`GET /api/health`,
+`POST /api/rooms`, `POST /api/rooms/{id}/join`) were annotated
+inline: `@Tag` per controller, `@Operation(summary, description)`
+per handler, one `@ApiResponse` per status code the handler can
+produce — cross-checked against `GlobalExceptionHandler` so the
+spec is honest about what the API actually returns. Every 4xx
+references `ErrorResponse` via
+`@Schema(implementation = ErrorResponse.class)`, defined once
+and reused from every error site. DTO `@Schema` annotations
+are selective — alphabet rules on `roomId`, UUID formats on ids,
+`nullable = true` on `gameId`, examples where they aid Swagger
+UI exploration. Trivial fields (`message`, blank-eligible
+`displayName` beyond its `@NotBlank`) stay unannotated. The
+top-level `Info` (title, description, version) is built via
+`@Bean OpenAPI` in `config/OpenApiConfig`, reading the version
+from `BuildProperties` via `ObjectProvider` with a graceful
+`"unknown"` fallback — the same pattern `HealthController`
+already uses. The README's per-endpoint manual contracts and
+the error-codes summary table were **removed** in favor of two
+links (`/swagger-ui.html` and `/v3/api-docs`) and one curl per
+endpoint for paste-and-run convenience. `docs/architecture.md`
+gained an "API contract" subsection naming the code-first
+approach. The case-insensitive note from feature 4 was
+preserved.
+
+`OpenApiIT` adds three integration tests: well-formedness of
+`/v3/api-docs` (paths present, schemas present, every 4xx
+references `ErrorResponse` via `$ref`), Swagger UI redirect
+(`/swagger-ui.html` → 302 → `/swagger-ui/index.html` → 200 +
+`text/html`), and the **canary**
+`apiDocs_includesOperationSummaries` which walks every operation
+in the spec and asserts a non-empty `summary`. The canary is
+the durable defense: a future endpoint shipped without
+`@Operation(summary = …)` fails the build, by design. The walk
+uses `paths.fields()` × nested `methodEntries.fields()` so new
+endpoints get coverage automatically.
+
+The feature was preceded by a **harness update** codifying
+the springdoc convention as a first-class rule, not just the
+shape of this one feature. The convention lives in three
+places, mirroring the pattern established for "Fully-qualified
+class names" in feature 3:
+
+- `docs/conventions.md` → new section **"API documentation"**
+  between "Exception handling" and "Logging". Documents the
+  controller annotation policy, `ErrorResponse` as the
+  canonical 4xx schema, selective `@Schema` on DTOs, top-level
+  `@Bean OpenAPI` reading `BuildProperties`, and verification
+  via the canary IT.
+- `CHECKPOINTS.md` → new section **"API documentation (if the
+  feature adds or modifies REST endpoints)"** between "Errors"
+  and "Logging". Seven verifiable bullets, gated by the "if
+  the feature ships `@RestController` changes" clause so
+  pure-domain features skip the section.
+- `.claude/agents/reviewer.md` → new subsection **"Springdoc
+  API documentation"** under "Concrete checks worth scripting".
+  Six-step grep recipe with concrete commands for inspecting
+  `@Tag` / `@Operation` / `@ApiResponse` / `@Schema` on touched
+  files, cross-checking against `GlobalExceptionHandler`, and
+  loading the running spec for visual confirmation.
+
+From feature 5 onwards the convention is the source of truth;
+the implementer reads `docs/conventions.md` once and applies it
+without each new feature having to re-derive the rules.
+
+Five implementer-extra decisions were made during execution,
+all justified and recorded in the feature note's "Gotchas":
+
+1. **Explicit `mediaType = MediaType.APPLICATION_JSON_VALUE` on
+   every `@Content`.** Without it, springdoc emits the schema
+   under `*/*` rather than `application/json`, and the
+   `$ref` lookup at `content.application/json.schema.$ref`
+   fails in `OpenApiIT`. Applied uniformly across `RoomController`
+   and `HealthController` for consistency.
+2. **Path template form `{id}`** (springdoc's emit), confirmed
+   in the test against `/api/rooms/{id}/join`.
+3. **`/swagger-ui.html` redirect handling.** Springdoc serves a
+   302 to `/swagger-ui/index.html`; the IT does two MockMvc
+   calls — `is3xxRedirection()` + `redirectedUrl(…)` on the
+   first, then `200 + text/html` on the redirect target.
+4. **Temporary `SpecDumpHelper.java`** was created during
+   implementation to capture spec excerpts for the report, then
+   deleted. `find -name "SpecDumpHelper*"` returns empty.
+5. **Spotless multi-line `@Schema` formatting.** Google Java
+   Format wraps annotation arguments at the 100-col soft limit,
+   producing wordier blocks in the five touched DTOs. Cosmetic;
+   reads cleanly.
+
+**Final test counts:** surefire 80 (`ChessRulesTest` 16,
+`RoomCodeGeneratorTest` 4, domain tests 60). Failsafe 13
+(`HealthControllerIT` 3, `RoomControllerIT` 7, `OpenApiIT` 3).
+Grand total 93.
+
+**Files touched:**
+
+- `src/main/java/io/github/dariogguillen/chess/config/OpenApiConfig.java` (new; `@Bean OpenAPI` with `BuildProperties` fallback)
+- `src/main/java/io/github/dariogguillen/chess/web/health/HealthController.java` (modified: `@Tag`, `@Operation`, `@ApiResponse`)
+- `src/main/java/io/github/dariogguillen/chess/web/health/HealthResponse.java` (modified: `@Schema` on all three components)
+- `src/main/java/io/github/dariogguillen/chess/web/room/RoomController.java` (modified: `@Tag` class-level, full `@Operation` + `@ApiResponse` matrix on both handlers; explicit `MediaType.APPLICATION_JSON_VALUE` everywhere)
+- `src/main/java/io/github/dariogguillen/chess/web/room/CreateRoomRequest.java` (modified: `@Schema(example = "Alice")` on `displayName`)
+- `src/main/java/io/github/dariogguillen/chess/web/room/JoinRoomRequest.java` (modified: `@Schema(example = "Bob")` on `displayName`)
+- `src/main/java/io/github/dariogguillen/chess/web/room/RoomResponse.java` (modified: `@Schema` on all four components, `nullable = true` on `gameId`)
+- `src/main/java/io/github/dariogguillen/chess/exception/ErrorResponse.java` (modified: class-level `@Schema(name = "ErrorResponse")` + `@Schema` on `error`)
+- `src/test/java/io/github/dariogguillen/chess/config/OpenApiIT.java` (new, 3 tests including the canary)
+- `pom.xml` (modified: `springdoc-openapi-starter-webmvc-ui:2.8.6` added in the third-party block)
+- `README.md` (modified: manual per-endpoint table and error codes summary removed; "API documentation" subsection with both URLs added; one curl per endpoint preserved)
+- `docs/architecture.md` (modified: "API contract" subsection under "Layered architecture")
+- `docs/conventions.md` (modified earlier in session: new "API documentation" section between "Exception handling" and "Logging")
+- `CHECKPOINTS.md` (modified earlier in session: new "API documentation (if the feature adds or modifies REST endpoints)" section between "Errors" and "Logging")
+- `.claude/agents/reviewer.md` (modified earlier in session: new "Springdoc API documentation" subsection under "Concrete checks worth scripting")
+- `notes/04.5-api-docs.md` (new; filename uses `04.5-` per the priority)
+- `feature_list.json` (modified: `api-docs.status` → `done`)
+
+**Feature note:** `notes/04.5-api-docs.md`.
