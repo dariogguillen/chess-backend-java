@@ -2,10 +2,16 @@
 
 **Status:** session closed.
 
-Feature 3 (`chesslib-integration`) was closed on 2026-05-16 after a
-reopen for the threefold-repetition fix and a subsequent fully-qualified
-cleanup. See `progress/history.md` for the full close entry.
+Feature 4 (`room-rest-api`) was closed on 2026-05-18 after three
+late additions on top of the initial reviewer approval: explicit
+`spring-boot-starter-validation` discovery during implementation,
+case-insensitive room id lookup, and removal of an unreachable
+defensive branch. See `progress/history.md` for the full close
+entry.
 
-The next feature in `feature_list.json` is `room-rest-api` (priority 4).
-No session is in progress; the leader will open a plan here once the
-scope and key decisions are aligned with the user.
+The next feature in `feature_list.json` is `api-docs` (priority
+4.5), inserted between `room-rest-api` and `game-rest-api` so
+that REST features 5+ ship their springdoc annotations from day
+one rather than accumulating retroactive doc churn. The leader
+will open a plan here once the scope and key decisions for
+`api-docs` are aligned with the user.

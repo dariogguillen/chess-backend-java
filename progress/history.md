@@ -246,3 +246,143 @@ future onboarding.
 - `feature_list.json` (modified: `chesslib-integration.status` → `done`)
 
 **Feature note:** `notes/03-chesslib-integration.md`.
+
+## 2026-05-18 — room-rest-api
+
+**Status:** done
+
+**Summary:** First feature shipping HTTP endpoints to real users.
+Two operations under `/api/rooms`: `POST` creates a room with the
+caller as White (in `WAITING_FOR_PLAYER`), `POST /{id}/join`
+joins the second player as Black, mutates the room to `ACTIVE`,
+**and creates the `Game` in the same atomic step**. The second
+behaviour was a deliberate decision against splitting "join" and
+"start" into separate endpoints; the user confirmed the
+trade-off in the planning phase. Room ids are 6-char short codes
+from the alphabet `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (no
+visually-ambiguous chars), generated via `SecureRandom`, with up
+to 5 collision retries before the service throws an internal
+`IllegalStateException`. Player ids are server-generated UUIDs.
+The atomic "read room → mutate room → write game" sequence runs
+inside `ConcurrentHashMap.compute(roomId, …)` so a losing
+concurrent joiner sees the room as full and surfaces
+`RoomFullException`, never a half-state; the game write happens
+inside the lambda which preserves the cross-store invariant "a
+`Game` exists iff its `Room` is `ACTIVE`". `RoomStore` and
+`GameStore` exist as interfaces with `InMemoryRoomStore` /
+`InMemoryGameStore` as the only registered beans today — the
+seam that feature 7's Redis swap will pivot on without touching
+the consuming `RoomService`. The `exception/` hierarchy lands
+for the first time (`ChessException` → `NotFoundException` /
+`ConflictException` with concrete `RoomNotFoundException` and
+`RoomFullException`), as does the first `@RestControllerAdvice`
+(`GlobalExceptionHandler`), which derives the response body's
+`error` code mechanically from the exception's simple name
+(`RoomFullException` → `ROOM_FULL`) so future exceptions plug
+in without per-class branches. Two framework exceptions
+(`MethodArgumentNotValidException` for `@Valid` failures,
+`HttpMessageNotReadableException` for malformed JSON) get
+explicit handlers with hardcoded codes (`VALIDATION_FAILED`,
+`MALFORMED_REQUEST`). `ErrorResponse` is a `record(String error,
+String message, Instant timestamp)`; timestamp uses the injected
+`Clock` so error bodies are deterministic in tests. `ChessRules`
+gained `standardInitialState()` (returns the starting position
+as a `GameState`) so `RoomService` does not have to import
+chesslib to spell the standard FEN — the anti-corruption
+boundary stays strict.
+
+Three late additions landed on top of the initial close,
+before flipping to `done`:
+
+1. **Validation starter discovery (mid-implementation).**
+   `spring-boot-starter-validation` does not resolve
+   `jakarta.validation.constraints.NotBlank` transitively from
+   `starter-web` in Spring Boot 3.5.14; the implementer added
+   the starter explicitly to `pom.xml`. The `@Valid`/`@NotBlank`
+   wiring is proven by `createRoom_blankDisplayName_returns400`.
+
+2. **`Constants.startStandardFENPosition` instead of
+   `Board.STARTING_POSITION_FEN`.** The plan referenced
+   `Board.STARTING_POSITION_FEN`, but chesslib 1.3.6 places the
+   constant at `com.github.bhlangonijr.chesslib.Constants.startStandardFENPosition`.
+   Verified with `javap` on the jar. `ChessRules.java` imports
+   `Constants` and uses the simple name; `Board.STARTING_POSITION_FEN`
+   does not exist on this version.
+
+3. **Case-insensitive room id lookup (user catch during Insomnia
+   validation, 2026-05-18).** Shared short codes are read,
+   dictated, and retyped by humans; requiring exact-case typing
+   was brittle and inconsistent with the alphabet decision (we
+   already excluded `O`/`I`/`L`/`0`/`1` for visual ambiguity).
+   `RoomController` normalizes the `{id}` path variable via
+   `id.toUpperCase(Locale.ROOT)` before calling
+   `RoomService.joinRoom`. Storage and responses always use the
+   canonical uppercase form — the client never sees two
+   representations. The rule is roomId-only: other ids in later
+   features (`gameId`, `playerId`) are server-generated UUIDs,
+   not human-shared, and stay case-sensitive. Documented in
+   `notes/04-room-rest-api.md` under "Gotchas".
+
+4. **Removal of the unreachable third branch (user catch,
+   2026-05-18).** The `compute` lambda in `RoomService.joinRoom`
+   originally had three checks; the third
+   (`existing.status() != WAITING_FOR_PLAYER` →
+   `RoomAlreadyStartedException`) was not reachable from any
+   HTTP path because no production code today produces
+   `RoomStatus.CLOSED`. The test that "covered" it only worked
+   by seeding `CLOSED` directly through the autowired
+   `RoomStore`. Per `docs/conventions.md` ("Branches that are
+   defensive against situations that cannot occur in
+   production … do not require a unit test") and the project
+   preface ("Don't design for hypothetical future requirements"),
+   the branch, the exception class, the test, and all doc
+   references were removed. Feature 9 (`disconnect-handling`)
+   is the first place expected to produce `CLOSED` from a real
+   path; it will reintroduce the appropriate check (possibly
+   with a different exception name matching abandonment
+   semantics) along with a real HTTP-path test.
+
+One reviewer observation flagged but not corrected: the feature
+note's "Java/Spring concepts" section said the validation
+starter "is already on the classpath transitively via
+`spring-boot-starter-web` — see 'Decisions taken' for the
+verification step", but "Decisions taken" did not circle back
+to validation. The actual `pom.xml` and the IT are correct;
+this is a minor doc cross-reference inconsistency, not a
+behaviour issue.
+
+**Final test counts:** surefire 80 (`ChessRulesTest` 16,
+`RoomCodeGeneratorTest` 4, domain tests 60). Failsafe 10
+(`HealthControllerIT` 3, `RoomControllerIT` 7). Grand total 90.
+
+**Files touched:**
+
+- `src/main/java/io/github/dariogguillen/chess/exception/ChessException.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/exception/NotFoundException.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/exception/ConflictException.java` (new; JavaDoc cleaned of removed `RoomAlreadyStartedException` reference in late addition #4)
+- `src/main/java/io/github/dariogguillen/chess/exception/RoomNotFoundException.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/exception/RoomFullException.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/exception/ErrorResponse.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/exception/GlobalExceptionHandler.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/service/RoomCodeGenerator.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/service/RoomStore.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/service/InMemoryRoomStore.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/service/GameStore.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/service/InMemoryGameStore.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/service/RoomService.java` (new; lambda trimmed from three checks to two in late addition #4)
+- `src/main/java/io/github/dariogguillen/chess/service/ChessRules.java` (modified: `standardInitialState()` added)
+- `src/main/java/io/github/dariogguillen/chess/web/room/RoomController.java` (new; `Locale.ROOT` normalization added in late addition #3)
+- `src/main/java/io/github/dariogguillen/chess/web/room/CreateRoomRequest.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/web/room/JoinRoomRequest.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/web/room/RoomResponse.java` (new)
+- `src/test/java/io/github/dariogguillen/chess/service/RoomCodeGeneratorTest.java` (new, 4 tests)
+- `src/test/java/io/github/dariogguillen/chess/web/room/RoomControllerIT.java` (new, 7 tests after late addition #4)
+- `src/test/java/io/github/dariogguillen/chess/service/ChessRulesTest.java` (modified: `standardInitialState_returnsStartingPositionWithEmptyHistory` added — total 16)
+- `pom.xml` (modified: `spring-boot-starter-validation` added)
+- `README.md` (modified: two new endpoints, case-insensitive note, error codes)
+- `docs/architecture.md` (modified: paragraph on `RoomStore`/`GameStore` interface seam for feature 7)
+- `docs/conventions.md` (modified: `RoomAlreadyStartedException` entry trimmed from the exception-hierarchy diagram in late addition #4)
+- `notes/04-room-rest-api.md` (new; updated through three late additions)
+- `feature_list.json` (modified: `room-rest-api.status` → `done`; new `api-docs` entry inserted at priority 4.5)
+
+**Feature note:** `notes/04-room-rest-api.md`.

@@ -39,7 +39,7 @@
     "id": "room-rest-api",
     "title": "Room REST endpoints (in-memory)",
     "description": "REST endpoints to create a room and join a room. State lives in an in-memory store for now (a thread-safe Map). Maps roughly to the Node createRoom and joinRoom events. WebSocket comes later.",
-    "status": "pending",
+    "status": "done",
     "priority": 4,
     "acceptance": [
       "POST /api/rooms creates a room and returns the room ID.",

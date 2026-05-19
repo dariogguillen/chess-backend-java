@@ -1,6 +1,7 @@
 package io.github.dariogguillen.chess.service;
 
 import com.github.bhlangonijr.chesslib.Board;
+import com.github.bhlangonijr.chesslib.Constants;
 import com.github.bhlangonijr.chesslib.PieceType;
 import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.domain.Move;
@@ -33,6 +34,17 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class ChessRules {
+
+  /**
+   * Convenience for callers that need the standard chess starting position without having to depend
+   * on the chesslib package directly — strengthens the anti-corruption boundary by keeping the
+   * {@code com.github.bhlangonijr.chesslib} import contained inside this service.
+   *
+   * @return the {@link GameState} for the standard chess starting position with no moves played.
+   */
+  public GameState standardInitialState() {
+    return initialState(Constants.startStandardFENPosition);
+  }
 
   /**
    * Builds a fresh {@link GameState} from a starting FEN, with no moves played.

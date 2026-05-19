@@ -71,6 +71,16 @@ decisions need position history but not player identity. Such
 service-level types live alongside the service that consumes them and
 are mapped to and from domain types at the service boundary.
 
+`service/` also holds the **storage seams** for active state: small
+interfaces like `RoomStore` and `GameStore`, with `InMemoryRoomStore` /
+`InMemoryGameStore` as the only registered implementations today. The
+seam is the swap point for feature 7 (Redis-backed active state) — the
+in-memory beans are replaced by `RedisRoomStore` / `RedisGameStore`
+without touching `RoomService` or any consumer above the service layer.
+Putting the seam in `service/` rather than `cache/` keeps the
+interface owner and its sole consumer close together until the second
+implementation arrives.
+
 ## Source of truth
 
 The **server** is the source of truth for game state. The client can

@@ -142,8 +142,7 @@ ChessException (abstract, RuntimeException)
 │   ├── RoomNotFoundException
 │   └── GameNotFoundException
 ├── ConflictException
-│   ├── RoomFullException
-│   └── RoomAlreadyStartedException
+│   └── RoomFullException
 └── UnprocessableException
     ├── IllegalMoveException
     └── NotYourTurnException

@@ -217,6 +217,19 @@ class ChessRulesTest {
   }
 
   @Test
+  void standardInitialState_returnsStartingPositionWithEmptyHistory() {
+    // Sanity: the convenience overload must produce the same result as the explicit FEN-driven
+    // initialState() called with the standard starting position. This is the boundary that lets
+    // callers outside this service avoid touching chesslib for the FEN constant.
+    GameState state = rules.standardInitialState();
+
+    assertThat(state.startingFen()).isEqualTo(START_FEN);
+    assertThat(state.currentFen()).isEqualTo(START_FEN);
+    assertThat(state.history()).isEmpty();
+    assertThat(state.currentStatus()).isEqualTo(GameStatus.ONGOING);
+  }
+
+  @Test
   void invalidFen_throwsIllegalArgumentException() {
     // Gibberish that chesslib cannot parse. Under the new API, an unparseable
     // starting FEN is a
