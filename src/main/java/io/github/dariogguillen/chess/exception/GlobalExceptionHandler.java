@@ -8,6 +8,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -19,13 +20,15 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  * <p>Two families of inputs are handled:
  *
  * <ul>
- *   <li><strong>Our hierarchy</strong> ({@link NotFoundException}, {@link ConflictException}) —
- *       mapped to the corresponding HTTP status and an {@code error} code derived from the simple
- *       class name (e.g. {@code RoomFullException} → {@code ROOM_FULL}).
+ *   <li><strong>Our hierarchy</strong> ({@link NotFoundException}, {@link ConflictException},
+ *       {@link UnprocessableException}) — mapped to the corresponding HTTP status and an {@code
+ *       error} code derived from the simple class name (e.g. {@code RoomFullException} → {@code
+ *       ROOM_FULL}).
  *   <li><strong>Spring's framework exceptions</strong> ({@link MethodArgumentNotValidException} for
  *       Bean Validation failures, {@link HttpMessageNotReadableException} for malformed JSON
- *       bodies) — mapped to HTTP 400 with the codes {@code VALIDATION_FAILED} and {@code
- *       MALFORMED_REQUEST} respectively, so clients see a single response shape regardless of which
+ *       bodies, {@link MissingRequestHeaderException} for missing required headers) — mapped to
+ *       HTTP 400 with the codes {@code VALIDATION_FAILED}, {@code MALFORMED_REQUEST}, and {@code
+ *       MISSING_HEADER} respectively, so clients see a single response shape regardless of which
  *       layer produced the rejection.
  * </ul>
  *
@@ -55,6 +58,12 @@ public class GlobalExceptionHandler {
     return build(HttpStatus.CONFLICT, codeOf(ex), ex.getMessage());
   }
 
+  @ExceptionHandler(UnprocessableException.class)
+  public ResponseEntity<ErrorResponse> handleUnprocessable(UnprocessableException ex) {
+    log.warn("Unprocessable: {}", ex.getMessage());
+    return build(HttpStatus.UNPROCESSABLE_ENTITY, codeOf(ex), ex.getMessage());
+  }
+
   @ExceptionHandler(MethodArgumentNotValidException.class)
   public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException ex) {
     String message =
@@ -70,6 +79,13 @@ public class GlobalExceptionHandler {
   public ResponseEntity<ErrorResponse> handleMalformed(HttpMessageNotReadableException ex) {
     log.warn("Malformed request body: {}", ex.getMessage());
     return build(HttpStatus.BAD_REQUEST, "MALFORMED_REQUEST", "Request body could not be parsed.");
+  }
+
+  @ExceptionHandler(MissingRequestHeaderException.class)
+  public ResponseEntity<ErrorResponse> handleMissingHeader(MissingRequestHeaderException ex) {
+    String message = "Required header '" + ex.getHeaderName() + "' is missing.";
+    log.warn("Missing request header: {}", ex.getHeaderName());
+    return build(HttpStatus.BAD_REQUEST, "MISSING_HEADER", message);
   }
 
   private ResponseEntity<ErrorResponse> build(HttpStatus status, String error, String message) {

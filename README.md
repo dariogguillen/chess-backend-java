@@ -35,9 +35,10 @@ Currently in early development. The current scope and feature plan lives in
 
 ## API
 
-The application exposes a small REST surface: a liveness probe and the room lifecycle
-(create / join). The WebSocket (STOMP) surface for real-time game updates lands with feature 6
-and is documented separately in this README when it does.
+The application exposes a small REST surface: a liveness probe, the room lifecycle
+(create / join), and the game endpoints (read state, apply moves). The WebSocket (STOMP) surface
+for real-time game updates lands with feature 6 and is documented separately in this README when
+it does.
 
 ### API documentation
 
@@ -65,6 +66,19 @@ curl -X POST http://localhost:8080/api/rooms \
 curl -X POST http://localhost:8080/api/rooms/K7M3X9/join \
   -H 'Content-Type: application/json' \
   -d '{"displayName":"Bob"}'
+```
+
+### Games
+
+```bash
+# Read the current state of a game.
+curl -X GET http://localhost:8080/api/games/<gameId>
+
+# Apply a move (caller identified by X-Player-Id).
+curl -X POST http://localhost:8080/api/games/<gameId>/moves \
+  -H "Content-Type: application/json" \
+  -H "X-Player-Id: <playerId>" \
+  -d '{"from": "e2", "to": "e4"}'
 ```
 
 ## Repository structure

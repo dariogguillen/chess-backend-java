@@ -1,11 +1,12 @@
-package io.github.dariogguillen.chess.service;
+package io.github.dariogguillen.chess.cache;
 
 import io.github.dariogguillen.chess.domain.Room;
+import io.github.dariogguillen.chess.service.RoomStore;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.BiFunction;
-import org.springframework.stereotype.Service;
+import org.springframework.stereotype.Component;
 
 /**
  * Thread-safe in-memory implementation of {@link RoomStore} backed by a {@link ConcurrentHashMap}.
@@ -18,7 +19,7 @@ import org.springframework.stereotype.Service;
  * that to make the join sequence ({@code read room → check invariants → build updated room → write
  * game}) atomic against another concurrent join.
  */
-@Service
+@Component
 public class InMemoryRoomStore implements RoomStore {
 
   private final ConcurrentMap<String, Room> rooms = new ConcurrentHashMap<>();

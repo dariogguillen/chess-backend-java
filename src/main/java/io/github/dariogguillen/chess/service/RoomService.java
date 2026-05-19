@@ -131,13 +131,15 @@ public class RoomService {
               bothPlayers.add(creator);
               bothPlayers.add(joiner);
               Room nextRoom = new Room(id, bothPlayers, RoomStatus.ACTIVE);
+              String initialFen = chessRules.standardInitialState().currentFen();
               Game game =
                   new Game(
                       UUID.randomUUID().toString(),
                       id,
                       creator,
                       joiner,
-                      chessRules.standardInitialState().currentFen(),
+                      initialFen,
+                      initialFen,
                       GameStatus.ONGOING,
                       List.of());
               gameStore.save(game);

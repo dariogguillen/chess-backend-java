@@ -1,0 +1,188 @@
+package io.github.dariogguillen.chess.web.game;
+
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.empty;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.hasSize;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.dariogguillen.chess.TestcontainersConfiguration;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+
+/**
+ * Integration tests for {@code GET /api/games/{id}} and {@code POST /api/games/{id}/moves}. Boots
+ * the full Spring context (Testcontainers wiring so production beans we don't exercise here still
+ * resolve) and drives the endpoints through {@link MockMvc}. Each test that needs an existing game
+ * creates a room and joins it via the room endpoints — the resulting {@code gameId} plus the two
+ * synthesised player ids drive the rest of the scenario.
+ */
+@Import(TestcontainersConfiguration.class)
+@SpringBootTest
+@AutoConfigureMockMvc
+class GameControllerIT {
+
+  @Autowired private MockMvc mockMvc;
+
+  @Autowired private ObjectMapper objectMapper;
+
+  @Test
+  void getGame_unknownId_returns404() throws Exception {
+    mockMvc
+        .perform(get("/api/games/{id}", "non-existent-id"))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.error", equalTo("GAME_NOT_FOUND")))
+        .andExpect(jsonPath("$.message").exists())
+        .andExpect(jsonPath("$.timestamp").exists());
+  }
+
+  @Test
+  void getGame_existingGame_returns200WithState() throws Exception {
+    GameSetup setup = createGame("Alice", "Bob");
+
+    mockMvc
+        .perform(get("/api/games/{id}", setup.gameId()))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.id", equalTo(setup.gameId())))
+        .andExpect(jsonPath("$.white.id", equalTo(setup.whitePlayerId())))
+        .andExpect(jsonPath("$.white.displayName", equalTo("Alice")))
+        .andExpect(jsonPath("$.black.id", equalTo(setup.blackPlayerId())))
+        .andExpect(jsonPath("$.black.displayName", equalTo("Bob")))
+        .andExpect(jsonPath("$.status", equalTo("ONGOING")))
+        .andExpect(jsonPath("$.turn", equalTo("WHITE")))
+        .andExpect(jsonPath("$.moves", empty()));
+  }
+
+  @Test
+  void moveSequence_foolsMate_returns200AndCheckmateStatus() throws Exception {
+    // Fool's Mate, the shortest possible checkmate in chess:
+    //   1. f2-f3  (White's weakening pawn push)
+    //      e7-e5  (Black opens the diagonal towards h4)
+    //   2. g2-g4  (White further weakens the king's diagonal)
+    //      d8-h4# (Black's queen delivers mate on h4; White has no legal response)
+    GameSetup setup = createGame("Alice", "Bob");
+
+    applyMove(setup.gameId(), setup.whitePlayerId(), "f2", "f3").andExpect(status().isOk());
+    applyMove(setup.gameId(), setup.blackPlayerId(), "e7", "e5").andExpect(status().isOk());
+    applyMove(setup.gameId(), setup.whitePlayerId(), "g2", "g4").andExpect(status().isOk());
+
+    applyMove(setup.gameId(), setup.blackPlayerId(), "d8", "h4")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status", equalTo("CHECKMATE")))
+        // chesslib reports CHECKMATE regardless of which side delivered it; the `turn` field
+        // still reflects whose turn it would be next (white, who is in fact mated here).
+        .andExpect(jsonPath("$.turn", equalTo("WHITE")))
+        .andExpect(jsonPath("$.moves", hasSize(4)));
+  }
+
+  @Test
+  void moveByWrongPlayer_returns422NotYourTurn() throws Exception {
+    GameSetup setup = createGame("Alice", "Bob");
+
+    applyMove(setup.gameId(), setup.blackPlayerId(), "e7", "e5")
+        .andExpect(status().isUnprocessableEntity())
+        .andExpect(jsonPath("$.error", equalTo("NOT_YOUR_TURN")))
+        .andExpect(jsonPath("$.message").exists())
+        .andExpect(jsonPath("$.timestamp").exists());
+  }
+
+  @Test
+  void illegalMove_returns422IllegalMove() throws Exception {
+    // White pawn jumping three squares (e2-e5) is structurally valid (passes @Pattern + Square +
+    // Move constructors) but illegal in chess; chesslib's legalMoves does not contain it.
+    GameSetup setup = createGame("Alice", "Bob");
+
+    applyMove(setup.gameId(), setup.whitePlayerId(), "e2", "e5")
+        .andExpect(status().isUnprocessableEntity())
+        .andExpect(jsonPath("$.error", equalTo("ILLEGAL_MOVE")))
+        .andExpect(jsonPath("$.message").exists())
+        .andExpect(jsonPath("$.timestamp").exists());
+  }
+
+  @Test
+  void moveAfterCheckmate_returns409GameAlreadyEnded() throws Exception {
+    // Play Fool's Mate to completion, then attempt one more move.
+    GameSetup setup = createGame("Alice", "Bob");
+
+    applyMove(setup.gameId(), setup.whitePlayerId(), "f2", "f3").andExpect(status().isOk());
+    applyMove(setup.gameId(), setup.blackPlayerId(), "e7", "e5").andExpect(status().isOk());
+    applyMove(setup.gameId(), setup.whitePlayerId(), "g2", "g4").andExpect(status().isOk());
+    applyMove(setup.gameId(), setup.blackPlayerId(), "d8", "h4").andExpect(status().isOk());
+
+    applyMove(setup.gameId(), setup.whitePlayerId(), "a2", "a3")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.error", equalTo("GAME_ALREADY_ENDED")))
+        .andExpect(jsonPath("$.message").exists())
+        .andExpect(jsonPath("$.timestamp").exists());
+  }
+
+  @Test
+  void moveWithoutPlayerIdHeader_returns400MissingHeader() throws Exception {
+    GameSetup setup = createGame("Alice", "Bob");
+
+    mockMvc
+        .perform(
+            post("/api/games/{id}/moves", setup.gameId())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"from\":\"e2\",\"to\":\"e4\"}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.error", equalTo("MISSING_HEADER")))
+        .andExpect(jsonPath("$.message", containsString("X-Player-Id")))
+        .andExpect(jsonPath("$.timestamp").exists());
+  }
+
+  private org.springframework.test.web.servlet.ResultActions applyMove(
+      String gameId, String playerId, String from, String to) throws Exception {
+    return mockMvc.perform(
+        post("/api/games/{id}/moves", gameId)
+            .contentType(MediaType.APPLICATION_JSON)
+            .header("X-Player-Id", playerId)
+            .content("{\"from\":\"" + from + "\",\"to\":\"" + to + "\"}"));
+  }
+
+  /**
+   * Creates a room as {@code whiteName} and joins it as {@code blackName}, returning the gameId and
+   * both player ids in a single record.
+   */
+  private GameSetup createGame(String whiteName, String blackName) throws Exception {
+    MvcResult createResult =
+        mockMvc
+            .perform(
+                post("/api/rooms")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"displayName\":\"" + whiteName + "\"}"))
+            .andExpect(status().isCreated())
+            .andReturn();
+    JsonNode createBody = objectMapper.readTree(createResult.getResponse().getContentAsString());
+    String roomId = createBody.get("roomId").asText();
+    String whitePlayerId = createBody.get("playerId").asText();
+
+    MvcResult joinResult =
+        mockMvc
+            .perform(
+                post("/api/rooms/{id}/join", roomId)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"displayName\":\"" + blackName + "\"}"))
+            .andExpect(status().isOk())
+            .andReturn();
+    JsonNode joinBody = objectMapper.readTree(joinResult.getResponse().getContentAsString());
+    String gameId = joinBody.get("gameId").asText();
+    String blackPlayerId = joinBody.get("playerId").asText();
+
+    return new GameSetup(gameId, whitePlayerId, blackPlayerId);
+  }
+
+  /** Tuple returned by {@link #createGame(String, String)}. */
+  private record GameSetup(String gameId, String whitePlayerId, String blackPlayerId) {}
+}

@@ -69,7 +69,7 @@
     "id": "game-rest-api",
     "title": "Game REST endpoints (in-memory)",
     "description": "REST endpoints to make a move and to query game state. Move requests are validated by ChessRules. Game state lives in the in-memory store.",
-    "status": "pending",
+    "status": "done",
     "priority": 5,
     "acceptance": [
       "POST /api/games/{id}/moves submits a move; rejects illegal moves with 422.",

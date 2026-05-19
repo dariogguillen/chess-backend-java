@@ -511,3 +511,168 @@ Grand total 93.
 - `feature_list.json` (modified: `api-docs.status` → `done`)
 
 **Feature note:** `notes/04.5-api-docs.md`.
+
+## 2026-05-19 — game-rest-api
+
+**Status:** done
+
+**Summary:** Two HTTP endpoints close the game lifecycle until
+WebSocket arrives in feature 6: `POST /api/games/{id}/moves`
+applies a move (caller identified via `X-Player-Id` header,
+validated by `ChessRules`, atomic per game), and `GET /api/games/{id}`
+reads the current state (no auth on read — feature 6.5 spectators
+will rely on this). The service is `GameService`, mirroring
+`RoomService`'s pattern: stateless, orchestrates `GameStore` +
+`ChessRules` inside a single `ConcurrentHashMap.compute(gameId, …)`
+block so a losing concurrent move sees the post-move state and
+surfaces `NotYourTurnException` rather than a half-state. The
+domain `Game` record gained an immutable `startingFen` field
+(between `black` and `fen`) so `ChessRules.applyMove(GameState, Move)`
+can rebuild the position with full history-replay for
+threefold-repetition detection; `RoomService.joinRoom` passes the
+same value to both `startingFen` and `fen` at game creation.
+`GameStatus.isTerminal()` was added as a pure-enum helper used
+once in the move path to reject moves on ended games before the
+turn check. Five new exceptions land in the hierarchy:
+`UnprocessableException` (new abstract type for 422, the
+forward-looking entry already documented in
+`docs/conventions.md`'s diagram) with two concretes
+`IllegalMoveException` and `NotYourTurnException`; plus
+`GameNotFoundException` under `NotFoundException` and
+`GameAlreadyEndedException` under `ConflictException`. The
+mechanical `codeOf` derivation in `GlobalExceptionHandler`
+produces `ILLEGAL_MOVE` / `NOT_YOUR_TURN` / `GAME_NOT_FOUND` /
+`GAME_ALREADY_ENDED` from the simple class names — no per-class
+branches added. Two new framework handlers complete the picture:
+`UnprocessableException` → 422, `MissingRequestHeaderException`
+→ 400 with hardcoded `MISSING_HEADER` so the response body shape
+remains the canonical `ErrorResponse` envelope even when Spring
+itself rejects the request.
+
+This is the **first feature** that lived entirely under the
+springdoc convention codified in feature 4.5 — every new
+`@RestController` class and every new endpoint handler shipped
+with its `@Tag`, `@Operation`, and full `@ApiResponse` matrix
+from the initial implementer pass, plus selective `@Schema`
+annotations on DTOs. The convention pays off: zero retroactive
+annotation work, the canary IT
+`apiDocs_includesOperationSummaries` passes without test
+changes, and the OpenAPI components.schemas block now reflects
+`GameStateResponse`, `MoveRequest`, `MoveSummary` (post-cleanup),
+plus the existing entries from feature 4.5.
+
+The `GameStore` interface gained a `compute(String, BiFunction)`
+method mirroring `RoomStore.compute` — added by the implementer
+as a justified decision beyond the brief because the original
+plan called `gameStore.compute(...)` without first declaring the
+seam. Six implementer decisions beyond the brief landed in the
+initial pass; the reviewer validated each (promotion wire format
+uses full enum names like `KNIGHT`, `Enum::name` for round-trip
+on output, no `Locale.ROOT` because gameIds are case-sensitive
+UUIDs, no extra `@Schema`/`@Parameter` on `@RequestHeader`
+because springdoc reflects it, and the `turn` derivation in a
+private static mapper rather than a separate `GameMapper`
+class).
+
+A second iteration of the feature applied **two architectural
+cleanups before close**, driven by the user's architectural
+audit during validation:
+
+1. **`MoveDto.java` removed; replaced by a nested
+   `public record MoveSummary` inside `GameStateResponse`.** The
+   suffix `Dto` is not in the official list
+   (`Request`/`Response`/`Event`/`Message`), and a record whose
+   only purpose is to be a sub-shape of another record (`MoveDto`
+   had no reference site outside `List<MoveDto> moves`) is
+   idiomatic in Java 17+ as a nested record on the parent. The
+   wire format did not change — the JSON keys remain
+   `from`/`to`/`promotion`. The OpenAPI `components.schemas`
+   entry renamed silently from `MoveDto` to `MoveSummary`. The
+   only externally visible side effect of the refactor is that
+   component schema name; no breaking change to consumers
+   reading the JSON.
+
+2. **`InMemoryRoomStore` and `InMemoryGameStore` moved from
+   `service/` to `cache/`.** The package convention in
+   `docs/conventions.md` → "Package layout" already named
+   `cache/` as the home for Spring Data Redis repositories and
+   caches; the in-memory implementations are the first
+   inhabitants of `cache/`, and feature 7's Redis-backed siblings
+   will land alongside them without further restructuring. The
+   interfaces (`RoomStore`, `GameStore`) stay in `service/` — they
+   are the port the service layer consumes. The two moved
+   classes changed annotation from `@Service` to `@Component` to
+   match the new location's semantics: these are adapters, not
+   service-layer use cases. Spring DI resolves the implementation
+   by interface type regardless of package, so no consumer or
+   test needed a code change beyond the two moved files
+   themselves. `docs/architecture.md` received a surgical update
+   on lines 74-82 to fix the now-inverted comparative sentence
+   (interfaces in `service/`, adapters in `cache/`).
+
+Both cleanups were anchored to a broader discussion about the
+codebase layout, in which the user also raised whether two
+records with the same shape (`MoveRequest` and the
+since-renamed-and-relocated `MoveSummary`) constituted
+duplication. The discussion concluded that direction-based
+separation (Request for input + Jakarta validation, response DTO
+for output + selective `@Schema`) is a deliberate pattern, not
+accidental duplication — the two types are likely to diverge as
+`MoveSummary` is later enriched with fields the response cares
+about (move number, side, SAN notation, etc.) that the request
+does not. The records dispersed across `domain/`, `service/`,
+and `web/` were validated as deliberate layer separation
+(domain value objects, service-internal value types, wire-format
+DTOs); no records were moved or merged.
+
+Three follow-up sub-sections were identified for `docs/conventions.md`
+and deferred to later features:
+`@ConfigurationProperties` type-safe binding (apply when feature
+7 introduces Redis TTL configuration), Spring Boot test slices
+(apply when a slice test earns its place), and JPA projections
+(apply in feature 8 alongside the first JPA entity). External
+skills from `skills.sh` were evaluated and not adopted — the
+catalog has nothing that fits our stack better than
+`docs/conventions.md` already does.
+
+A minor doc cleanup applied at the very end: the "File map → New
+files" section of `notes/05-game-rest-api.md` originally listed
+`MoveDto.java` as a new file; the entry was removed and the
+`GameStateResponse.java` entry was extended to mention the
+nested `MoveSummary` record, keeping the note factually correct
+after the closing iteration.
+
+**Final test counts:** surefire **82** (`ChessRulesTest` 16,
+`RoomCodeGeneratorTest` 4, `GameTest` 13, `RoomTest` 11,
+`SquareTest` 27, `MoveTest` 11). Failsafe **20**
+(`HealthControllerIT` 3, `RoomControllerIT` 7, `OpenApiIT` 3,
+`GameControllerIT` 7). Grand total **102** (was 93 after
+feature 4.5; delta +9 = +2 in `GameTest` for the new
+`startingFen` invariant tests, +7 in the new `GameControllerIT`).
+
+**Files touched:**
+
+- `src/main/java/io/github/dariogguillen/chess/domain/Game.java` (modified: added `startingFen` field with null + blank invariant)
+- `src/main/java/io/github/dariogguillen/chess/domain/GameStatus.java` (modified: added `isTerminal()` helper)
+- `src/main/java/io/github/dariogguillen/chess/service/GameService.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/service/GameStore.java` (modified: added `compute(String, BiFunction)` to the interface)
+- `src/main/java/io/github/dariogguillen/chess/service/RoomService.java` (modified: `joinRoom` passes `startingFen`)
+- `src/main/java/io/github/dariogguillen/chess/cache/InMemoryGameStore.java` (moved from `service/`; implements new `compute`; `@Service` → `@Component`)
+- `src/main/java/io/github/dariogguillen/chess/cache/InMemoryRoomStore.java` (moved from `service/`; `@Service` → `@Component`)
+- `src/main/java/io/github/dariogguillen/chess/exception/UnprocessableException.java` (new; abstract, mapped to 422)
+- `src/main/java/io/github/dariogguillen/chess/exception/IllegalMoveException.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/exception/NotYourTurnException.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/exception/GameNotFoundException.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/exception/GameAlreadyEndedException.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/exception/GlobalExceptionHandler.java` (modified: 2 new handlers — `UnprocessableException` and `MissingRequestHeaderException`)
+- `src/main/java/io/github/dariogguillen/chess/web/game/GameController.java` (new; `@Tag` + per-handler `@Operation` + full `@ApiResponse` matrix from initial pass; private static mapper `toMoveSummary` after closing iteration)
+- `src/main/java/io/github/dariogguillen/chess/web/game/MoveRequest.java` (new; Jakarta-validated request record)
+- `src/main/java/io/github/dariogguillen/chess/web/game/GameStateResponse.java` (new; unified response record; carries the nested `MoveSummary` record after closing iteration)
+- `src/test/java/io/github/dariogguillen/chess/domain/GameTest.java` (modified: 2 new tests for the `startingFen` invariant, prior tests threaded with the new field)
+- `src/test/java/io/github/dariogguillen/chess/web/game/GameControllerIT.java` (new; 7-test IT covering get-unknown, get-existing, Fool's Mate sequence, wrong-player, illegal-move, move-after-checkmate, missing-header)
+- `docs/architecture.md` (modified: surgical update on lines 74-82 reflecting the `cache/` move)
+- `README.md` (modified: added "Games" subsection with two curl examples)
+- `notes/05-game-rest-api.md` (new; two "Gotchas" paragraphs dated 2026-05-19 added during closing iteration; File map fixed to reflect post-cleanup state)
+- `feature_list.json` (modified: `game-rest-api.status` → `done`)
+
+**Feature note:** `notes/05-game-rest-api.md`.

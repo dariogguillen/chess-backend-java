@@ -21,5 +21,10 @@ public enum GameStatus {
   CHECKMATE,
   STALEMATE,
   DRAW,
-  ABANDONED
+  ABANDONED;
+
+  /** Whether this status means the game has ended (no further moves allowed). */
+  public boolean isTerminal() {
+    return this == CHECKMATE || this == STALEMATE || this == DRAW || this == ABANDONED;
+  }
 }

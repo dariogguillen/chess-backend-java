@@ -1,0 +1,113 @@
+package io.github.dariogguillen.chess.service;
+
+import io.github.dariogguillen.chess.domain.Game;
+import io.github.dariogguillen.chess.domain.Move;
+import io.github.dariogguillen.chess.domain.Player;
+import io.github.dariogguillen.chess.exception.GameAlreadyEndedException;
+import io.github.dariogguillen.chess.exception.GameNotFoundException;
+import io.github.dariogguillen.chess.exception.IllegalMoveException;
+import io.github.dariogguillen.chess.exception.NotYourTurnException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+/**
+ * Use-case orchestration for the chess-game lifecycle: read game state and apply a move on behalf
+ * of one of the two players. The service is the entry point that the REST controller (and later the
+ * WebSocket controller) will share; it holds no state of its own and delegates persistence to
+ * {@link GameStore} and rule evaluation to {@link ChessRules}.
+ *
+ * <p>{@link #applyMove(String, String, Move)} runs the read-check-write block inside {@link
+ * GameStore#compute(String, java.util.function.BiFunction)}, which serializes concurrent move
+ * requests on the same {@code gameId}. The second of two racing callers either succeeds with the
+ * next side's move (because the first one moved already and the turn has flipped) or receives a
+ * {@link NotYourTurnException}; it never observes a half-state.
+ */
+@Service
+public class GameService {
+
+  private static final Logger log = LoggerFactory.getLogger(GameService.class);
+
+  private final GameStore gameStore;
+  private final ChessRules chessRules;
+
+  public GameService(GameStore gameStore, ChessRules chessRules) {
+    this.gameStore = gameStore;
+    this.chessRules = chessRules;
+  }
+
+  /**
+   * Reads the current game state by id.
+   *
+   * @param gameId the game identifier.
+   * @return the game with the given id.
+   * @throws GameNotFoundException if no game exists for {@code gameId}.
+   */
+  public Game findById(String gameId) {
+    return gameStore.findById(gameId).orElseThrow(() -> new GameNotFoundException(gameId));
+  }
+
+  /**
+   * Applies {@code move} on behalf of the player identified by {@code playerId}.
+   *
+   * <p>The read-check-write block runs inside {@link GameStore#compute(String,
+   * java.util.function.BiFunction)}, atomic per {@code gameId}. The checks run in fixed order:
+   * existence → not-already-ended → turn-belongs-to-caller → move-is-legal. Each failure throws a
+   * specific exception that {@code GlobalExceptionHandler} maps to its documented HTTP status.
+   *
+   * @param gameId the game to mutate; non-null.
+   * @param playerId the id of the caller (matches the {@code X-Player-Id} header at the HTTP
+   *     boundary); non-null.
+   * @param move the candidate move; non-null. Structural validity is enforced by {@link Move}'s
+   *     compact constructor; chess legality is enforced here via {@link ChessRules}.
+   * @return the updated {@link Game} after the move was applied; never null.
+   * @throws GameNotFoundException if no game exists for {@code gameId}.
+   * @throws GameAlreadyEndedException if the game is already in a terminal status.
+   * @throws NotYourTurnException if it is not {@code playerId}'s turn to move.
+   * @throws IllegalMoveException if chesslib rejects the move in the current position.
+   */
+  public Game applyMove(String gameId, String playerId, Move move) {
+    // Mirrors the Game[1] holder idiom in RoomService.joinRoom: the lambda's return type is fixed
+    // to Game, so we surface the produced value to the outer scope via a one-element array. The
+    // alternative (re-reading the value after compute returns) would race against other writers.
+    Game[] holder = new Game[1];
+    gameStore.compute(
+        gameId,
+        (id, existing) -> {
+          if (existing == null) {
+            throw new GameNotFoundException(id);
+          }
+          if (existing.status().isTerminal()) {
+            throw new GameAlreadyEndedException(id, existing.status());
+          }
+          boolean whiteToMove = existing.moves().size() % 2 == 0;
+          Player expected = whiteToMove ? existing.white() : existing.black();
+          if (!expected.id().equals(playerId)) {
+            throw new NotYourTurnException(id, expected.id());
+          }
+          GameState state =
+              new GameState(
+                  existing.startingFen(), existing.moves(), existing.fen(), existing.status());
+          MoveOutcome outcome = chessRules.applyMove(state, move);
+          if (!outcome.legal()) {
+            throw new IllegalMoveException(id, move);
+          }
+          Game updated =
+              new Game(
+                  existing.id(),
+                  existing.roomId(),
+                  existing.white(),
+                  existing.black(),
+                  existing.startingFen(),
+                  outcome.state().currentFen(),
+                  outcome.state().currentStatus(),
+                  outcome.state().history());
+          holder[0] = updated;
+          return updated;
+        });
+    Game updated = holder[0];
+    log.info(
+        "Move applied: gameId={}, move={}, newStatus={}", updated.id(), move, updated.status());
+    return updated;
+  }
+}
