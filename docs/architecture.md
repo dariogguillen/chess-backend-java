@@ -94,6 +94,39 @@ description, and build version. The WebSocket / STOMP surface is
 intentionally out of springdoc's scope; it is documented in the
 "STOMP API contract" section below.
 
+#### Error codes
+
+All 4xx responses use the `ErrorResponse` schema. The `error` field is
+constrained to the following enum, captured in the OpenAPI spec as
+`components.schemas.ErrorResponse.properties.error.enum`. Clients
+consuming the spec (e.g. via `openapi-typescript`) get a TypeScript
+union literal automatically, without having to maintain a parallel
+list on the client side.
+
+| Code | HTTP | Source |
+|---|---|---|
+| `ROOM_NOT_FOUND` | 404 | `RoomNotFoundException` |
+| `ROOM_FULL` | 409 | `RoomFullException` |
+| `GAME_NOT_FOUND` | 404 | `GameNotFoundException` |
+| `GAME_ALREADY_ENDED` | 409 | `GameAlreadyEndedException` |
+| `ILLEGAL_MOVE` | 422 | `IllegalMoveException` |
+| `NOT_YOUR_TURN` | 422 | `NotYourTurnException` |
+| `VALIDATION_FAILED` | 400 | `MethodArgumentNotValidException` (`@Valid` failure) |
+| `MALFORMED_REQUEST` | 400 | `HttpMessageNotReadableException` (unparseable JSON body) |
+| `MISSING_HEADER` | 400 | `MissingRequestHeaderException` (e.g. `X-Player-Id` missing) |
+
+The first six codes are produced mechanically by `GlobalExceptionHandler`'s
+`codeOf(ChessException)` derivation — simple class name minus the
+trailing `Exception` suffix, converted from camelCase to
+UPPER_SNAKE_CASE. The last three are hardcoded literals in the
+framework-exception handlers because Spring's own exception types do
+not follow our naming.
+
+Adding a new code requires updating both `GlobalExceptionHandler` and
+`ErrorResponse.error`'s `@Schema(allowableValues = {...})`. The
+`OpenApiIT` drift canary asserts the enum array matches the expected
+set exactly, so forgetting one of the two halves fails the build.
+
 ## STOMP API contract
 
 REST is the entry point for **mutations** (create room, join room,

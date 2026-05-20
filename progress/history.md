@@ -914,3 +914,96 @@ Failsafe **30** (`HealthControllerIT` 3, `RoomControllerIT` 7,
 - `feature_list.json` (modified: `spectator-mode.status` → `done`)
 
 **Feature note:** `notes/06.5-spectator-mode.md`.
+
+## 2026-05-20 — constrain-error-codes
+
+**Status:** done
+
+**Summary:** Cross-repo-driven feature, inserted at priority 6.6
+between `spectator-mode` and the devops block. Trigger:
+`chess-frontend` feature 3 (`rest-room-integration`) is about to
+consume the backend's OpenAPI spec via `openapi-typescript` codegen +
+`openapi-fetch` typed client. As the spec stood, `ErrorResponse.error`
+was an unconstrained `string` field; the frontend would have received
+`error: string` and had to either maintain a parallel TS union by hand
+(drift risk) or do runtime string matching with no compiler help.
+
+The fix is a single annotation on the field: `@Schema(allowableValues
+= {ROOM_NOT_FOUND, ROOM_FULL, GAME_NOT_FOUND, GAME_ALREADY_ENDED,
+ILLEGAL_MOVE, NOT_YOUR_TURN, VALIDATION_FAILED, MALFORMED_REQUEST,
+MISSING_HEADER})` enumerating the 9 codes that `GlobalExceptionHandler`
+actually emits today. Springdoc renders this as an `enum` array in the
+OpenAPI spec; `openapi-typescript` turns it into a TypeScript union
+literal automatically. The frontend gets compile-time narrowing for
+free without maintaining the list.
+
+A handler audit was performed by both the implementer and the
+reviewer independently. The 9 codes break down as: **6 from
+mechanical `codeOf` derivation** on typed exceptions
+(`RoomNotFoundException`, `RoomFullException`, `GameNotFoundException`,
+`GameAlreadyEndedException`, `IllegalMoveException`,
+`NotYourTurnException`) and **3 hardcoded literals** in the
+framework-exception handlers (`VALIDATION_FAILED` for
+`MethodArgumentNotValidException`, `MALFORMED_REQUEST` for
+`HttpMessageNotReadableException`, `MISSING_HEADER` for
+`MissingRequestHeaderException` — these have hardcoded literals
+because Spring's own exceptions do not follow our naming convention).
+Both surfaces (handler + annotation) cross-checked: no orphans, no
+missing codes, no 10th code lurking. `ROOM_ALREADY_STARTED` was
+explicitly excluded — it existed transiently in feature 4 but was
+removed in its late-addition #4 cleanup.
+
+The drift canary is a new IT in `OpenApiIT`:
+`errorResponseSchema_listsExactlyTheNineKnownErrorCodes`. It pulls
+`/v3/api-docs` via `MockMvc`, walks
+`components.schemas.ErrorResponse.properties.error.enum`, sort-then-
+compares against the expected 9. The test fails if the enum is
+missing (springdoc dropped the annotation), if any code is added
+without updating the annotation, or if any code is removed. Sort-
+then-compare makes the test independent of source ordering of the
+`allowableValues` array.
+
+The cross-repo doc was extended: `docs/architecture.md`'s existing
+"API contract" section gained a `#### Error codes` subsection
+(heading depth confirmed correct against the existing hierarchy:
+`## Layered architecture` > `### API contract` > `#### Error codes`)
+with a table mapping each of the 9 codes to its HTTP status and
+originating exception. The frontend's own `docs/architecture.md` can
+mirror this table when it reaches feature 3.
+
+Three implementer-extra decisions, all validated by the reviewer:
+
+1. **Spotless reflowed** the `StreamSupport.stream(...).map(...).
+   sorted().toList()` chain in the new test from multi-line (as the
+   plan showed) to a single line. Stays under the 120-column hard
+   limit; reads cleanly.
+2. **`####` heading depth** for "Error codes" in
+   `docs/architecture.md` rather than `###`. Correct because "API
+   contract" is at `###` under `## Layered architecture`; "Error
+   codes" as a child of "API contract" preserves the hierarchy.
+3. **Plan-wording adopted verbatim** for the field description
+   ("Stable upper-snake-case error code identifying the error class.
+   Intended for programmatic matching by clients."). More
+   informative than the pre-existing shorter text, brief explicitly
+   allowed.
+
+**Final test counts:** surefire **82** (unchanged), failsafe was 30
+→ now **31** (+1 in `OpenApiIT`). Grand total **113** (was 112; delta
++1).
+
+**Files touched:**
+
+- `src/main/java/io/github/dariogguillen/chess/exception/ErrorResponse.java` (modified: added `allowableValues`, expanded `description`, kept `example` on the field-level `@Schema`)
+- `src/test/java/io/github/dariogguillen/chess/config/OpenApiIT.java` (modified: added drift-canary test `errorResponseSchema_listsExactlyTheNineKnownErrorCodes`)
+- `docs/architecture.md` (modified: added `#### Error codes` subsection under `### API contract` with table + drift-canary note)
+- `notes/06.6-constrain-error-codes.md` (new; filename uses decimal verbatim per convention)
+- `feature_list.json` (modified: `constrain-error-codes.status` → `done`; also: `backend-containerize.status` → `in_progress` so the parked plan can resume)
+
+**Feature note:** `notes/06.6-constrain-error-codes.md`.
+
+Process note: the plan for `backend-containerize` (priority 7) was
+parked at `progress/parked-backend-containerize.md` while this
+feature shipped, and restored to `progress/current.md` at close. The
+leader did not re-discuss the containerize plan with the user before
+restoring — it was approved verbatim before the cross-repo trigger
+appeared, and the parking was a pause, not a withdrawal.

@@ -20,7 +20,20 @@ import java.time.Instant;
     description = "Standard error envelope returned by every 4xx response from the API.")
 public record ErrorResponse(
     @Schema(
-            description = "Stable upper-snake-case error code; intended for programmatic matching.",
+            description =
+                "Stable upper-snake-case error code identifying the error class. "
+                    + "Intended for programmatic matching by clients.",
+            allowableValues = {
+              "ROOM_NOT_FOUND",
+              "ROOM_FULL",
+              "GAME_NOT_FOUND",
+              "GAME_ALREADY_ENDED",
+              "ILLEGAL_MOVE",
+              "NOT_YOUR_TURN",
+              "VALIDATION_FAILED",
+              "MALFORMED_REQUEST",
+              "MISSING_HEADER"
+            },
             example = "ROOM_NOT_FOUND")
         String error,
     String message,

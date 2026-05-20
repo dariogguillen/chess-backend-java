@@ -1,5 +1,6 @@
 package io.github.dariogguillen.chess.config;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -10,7 +11,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.dariogguillen.chess.TestcontainersConfiguration;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.StreamSupport;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -96,6 +99,39 @@ class OpenApiIT {
         }
       }
     }
+  }
+
+  @Test
+  void errorResponseSchema_listsExactlyTheNineKnownErrorCodes() throws Exception {
+    MvcResult result = mockMvc.perform(get("/v3/api-docs")).andExpect(status().isOk()).andReturn();
+
+    JsonNode spec = objectMapper.readTree(result.getResponse().getContentAsString());
+    JsonNode enumNode =
+        spec.path("components")
+            .path("schemas")
+            .path("ErrorResponse")
+            .path("properties")
+            .path("error")
+            .path("enum");
+
+    assertThat(enumNode.isArray())
+        .as("ErrorResponse.error must declare an enum array in the OpenAPI spec")
+        .isTrue();
+
+    List<String> actual =
+        StreamSupport.stream(enumNode.spliterator(), false).map(JsonNode::asText).sorted().toList();
+    List<String> expected =
+        List.of(
+            "GAME_ALREADY_ENDED",
+            "GAME_NOT_FOUND",
+            "ILLEGAL_MOVE",
+            "MALFORMED_REQUEST",
+            "MISSING_HEADER",
+            "NOT_YOUR_TURN",
+            "ROOM_FULL",
+            "ROOM_NOT_FOUND",
+            "VALIDATION_FAILED");
+    assertThat(actual).isEqualTo(expected);
   }
 
   private static void assertThatPathExists(JsonNode paths, String path) {

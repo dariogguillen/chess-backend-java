@@ -106,11 +106,82 @@
     ]
   },
   {
+    "id": "constrain-error-codes",
+    "title": "Constrain ErrorResponse.error to the known error code enum",
+    "description": "Annotate ErrorResponse.error with @Schema(allowableValues = {...}) enumerating the 9 error codes the GlobalExceptionHandler actually emits today (ROOM_NOT_FOUND, ROOM_FULL, GAME_NOT_FOUND, GAME_ALREADY_ENDED, ILLEGAL_MOVE, NOT_YOUR_TURN, VALIDATION_FAILED, MALFORMED_REQUEST, MISSING_HEADER). Springdoc renders this as an enum array in the OpenAPI spec; openapi-typescript on the frontend turns it into a TypeScript union literal automatically. Driven by cross-repo coordination with chess-frontend feature 3 (rest-room-integration). Includes an OpenApiIT canary asserting the enum array matches exactly, protecting against silent drift when a future feature adds a new error code without updating the @Schema.",
+    "status": "done",
+    "priority": 6.6,
+    "acceptance": [
+      "ErrorResponse.error annotated with @Schema(allowableValues = {...}) listing all 9 codes currently emitted by GlobalExceptionHandler.",
+      "@Schema description on the field explains its purpose and points to the exception hierarchy.",
+      "OpenApiIT extended (or new test) asserting components.schemas.ErrorResponse.properties.error.enum is an array of exactly the 9 expected codes, in a deterministic order.",
+      "Audit of GlobalExceptionHandler documented in the feature note: every handler path produces one of the 9 codes; no orphans, no missed codes.",
+      "docs/architecture.md API contract section lists the 9 codes with their HTTP status mappings (404/409/422/400).",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "backend-containerize",
+    "title": "Containerize the backend (Dockerfile + local docker-compose)",
+    "description": "Multi-stage Dockerfile (Eclipse Temurin JRE Jammy) producing a runnable image of the Spring Boot fat jar. docker-compose.yml for local development bringing up the app + Postgres + Redis as a self-contained stack. application.yml gains env-var-with-default configuration so the same artifact runs locally with Testcontainers, locally with docker-compose, and in production (set in features 7.5 and 7.7). README documents the three local-dev workflows. No CI/CD yet; that's feature 7.7.",
+    "status": "in_progress",
+    "priority": 7,
+    "acceptance": [
+      "Dockerfile multi-stage: builder stage with Maven + JDK, runtime stage with Temurin JRE Jammy. Final image runs the Spring Boot fat jar.",
+      "Dockerfile includes HEALTHCHECK directive hitting /api/health.",
+      ".dockerignore excludes target/, .git/, .claude/, progress/, notes/, IDE files.",
+      "docker-compose.yml brings up app + Postgres 16 + Redis 7-alpine. depends_on with healthcheck conditions. Volumes for Postgres data persistence. Host port mappings: 8080 (app), 5432 (postgres), 6379 (redis).",
+      "application.yml uses ${SPRING_DATASOURCE_URL:fallback} env-var-with-default pattern for datasource (Postgres) and Redis. Local Testcontainers run still works (TestcontainersConfiguration sets the URLs via @ServiceConnection).",
+      "docker compose up --build starts the full stack; /api/health returns 200; /v3/api-docs returns valid OpenAPI 3 JSON.",
+      "README.md adds a 'Running with Docker' section documenting three local-dev workflows: (a) ./mvnw spring-boot:test-run with Testcontainers, (b) docker compose up, (c) hybrid (compose for infra + spring-boot:run for app).",
+      "docs/architecture.md mentions the container layer briefly as the deployment artifact shape.",
+      "./init.sh passes unchanged (no Docker steps added to init.sh; verification of Docker is manual + by feature 7.7's CI smoke test)."
+    ]
+  },
+  {
+    "id": "backend-aws-infra",
+    "title": "Provision AWS infrastructure for the backend",
+    "description": "Provision the AWS Free Tier infrastructure manually first, scripts after: EC2 t3.micro (Ubuntu 22.04), RDS Postgres db.t3.micro, Security Groups, Elastic IP. Set up Caddy as reverse proxy with auto-TLS via Let's Encrypt, pointing at a Duck DNS subdomain. Deploy the Docker image manually (pull from local for now; ECR auth comes in feature 7.7). Set up AWS Budget alarm at $1/month. Document everything in a runbook so the steps can be re-executed (and so feature 7.7's automation has clear targets).",
+    "status": "pending",
+    "priority": 7.5,
+    "acceptance": [
+      "EC2 t3.micro running Ubuntu 22.04 in us-east-1, with Docker installed and a non-root user for app operations.",
+      "RDS Postgres db.t3.micro in the same region, security group allowing only the EC2 instance's IP.",
+      "Elastic IP attached to the EC2 instance.",
+      "Duck DNS subdomain (e.g. chess-backend.duckdns.org) pointing at the Elastic IP.",
+      "Caddy reverse-proxy on the EC2 instance terminating TLS via Let's Encrypt for the Duck DNS subdomain, proxying to the backend container on port 8080.",
+      "Redis self-hosted in a Docker container on the same EC2 (no ElastiCache; Redis is not in AWS free tier).",
+      "Backend container running, healthcheck green, /api/health reachable over HTTPS at the public subdomain.",
+      "AWS Budget alarm at $1/month with email notification.",
+      "ECR repository created (lifecycle policy: keep last 5 images). No push automation yet (that's 7.7).",
+      "Runbook in docs/ (or notes/) capturing every manual step taken, with the exact AWS console paths or CLI invocations, so the steps can be replayed or migrated."
+    ]
+  },
+  {
+    "id": "backend-cicd-pipeline",
+    "title": "GitHub Actions CI/CD pipeline with OIDC and ECR",
+    "description": "Automate the deploy. GitHub Actions workflow runs ./init.sh, builds the Docker image, pushes to ECR using OIDC-federated authentication (no long-lived AWS access keys), SSHes into the EC2 instance, and triggers a docker pull + container restart. Includes a post-deploy smoke test against the production /api/health endpoint. Idempotent: pushing the same commit twice is safe.",
+    "status": "pending",
+    "priority": 7.7,
+    "acceptance": [
+      ".github/workflows/deploy-backend.yml triggers on push to main.",
+      "Job runs ./init.sh; build fails if init.sh red.",
+      "AWS OIDC trust configured: IAM identity provider for token.actions.githubusercontent.com, IAM role with trust policy for the repo, scoped permissions (ECR push + minimal else).",
+      "GitHub Actions uses aws-actions/configure-aws-credentials with role-to-assume; no AWS_ACCESS_KEY_ID secret stored.",
+      "Docker image tagged with both the commit SHA and 'latest'; pushed to ECR.",
+      "SSH step uses a deploy-specific key (stored in GitHub Actions secret), pulls the new image on EC2, restarts the container via docker compose pull + up -d.",
+      "Post-deploy smoke test: curl https://<duckdns-subdomain>/api/health; fail the workflow on non-200.",
+      "Concurrency group set so two pushes to main don't deploy in parallel.",
+      "README documents the deploy flow with a high-level diagram or sequence.",
+      "Feature 12 (github-actions-ci) is re-scoped to PR-only validation workflow (this feature covered the deploy automation)."
+    ]
+  },
+  {
     "id": "redis-active-state",
     "title": "Active game state in Redis",
     "description": "Move the in-memory state of active games and rooms to Redis. Active rooms get a TTL (e.g., 24h) so abandoned rooms self-clean. Spring Data Redis with a synchronous template.",
     "status": "pending",
-    "priority": 7,
+    "priority": 8,
     "acceptance": [
       "Rooms and active games are stored in Redis, keyed by room/game ID.",
       "TTL is applied and refreshed on activity.",
@@ -123,7 +194,7 @@
     "title": "Game history in Postgres",
     "description": "Persist completed games to Postgres for history. JPA entities, Flyway migrations for the schema. Endpoint to list a player's recent games.",
     "status": "pending",
-    "priority": 8,
+    "priority": 9,
     "acceptance": [
       "Flyway migration V1__games.sql creates the games table.",
       "Completed games are saved with players, result, move history.",
@@ -137,7 +208,7 @@
     "title": "Disconnect and reconnect",
     "description": "Track player connection state. On disconnect, start a grace period (e.g., 60s). If the player reconnects within the grace period, restore them to the game. If not, mark the game as abandoned.",
     "status": "pending",
-    "priority": 9,
+    "priority": 10,
     "acceptance": [
       "Reconnection within grace period restores game state for the player.",
       "Timeouts mark the game as abandoned with the opponent as winner.",
@@ -150,7 +221,7 @@
     "title": "Docker Compose for local development",
     "description": "Docker Compose file that spins up the app, Postgres, and Redis. Document the workflow in README.",
     "status": "pending",
-    "priority": 10,
+    "priority": 11,
     "acceptance": [
       "docker compose up -d brings up app + postgres + redis on local ports.",
       "README has a 'Run locally' section.",
@@ -162,7 +233,7 @@
     "title": "CI pipeline on GitHub Actions",
     "description": "GitHub Actions workflow that runs ./init.sh on every push and pull request. Caches Maven dependencies.",
     "status": "pending",
-    "priority": 11,
+    "priority": 12,
     "acceptance": [
       ".github/workflows/ci.yml exists and runs ./init.sh.",
       "Build passes on main.",
@@ -175,7 +246,7 @@
     "title": "Polished README with architecture diagram",
     "description": "Final README with: project overview, stack, how to run, architecture diagram (Mermaid), API summary, screenshots if available. This is the artifact a recruiter will read.",
     "status": "pending",
-    "priority": 12,
+    "priority": 13,
     "acceptance": [
       "README explains what the project is and how to run it in under 5 minutes.",
       "Mermaid architecture diagram is rendered correctly on GitHub.",
