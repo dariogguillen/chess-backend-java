@@ -95,7 +95,7 @@
     "id": "spectator-mode",
     "title": "Spectator mode with live viewer count",
     "description": "Allow non-player participants to subscribe to a game's STOMP topic and receive live state. The server tracks the current viewer count per game and publishes it so the UI can render it live. TENTATIVE: the exact approach — anonymous STOMP subscribers (no domain change) vs. domain-modeled viewers with identity — is decided during or after feature 6 (websocket-realtime), once the bus is in place and the trade-offs are concrete. The user explicitly wants the viewer count visible regardless of which path is taken.",
-    "status": "pending",
+    "status": "done",
     "priority": 6.5,
     "acceptance": [
       "Non-player clients can subscribe to /topic/games/{id} and receive state updates.",

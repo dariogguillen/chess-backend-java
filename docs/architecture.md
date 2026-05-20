@@ -254,13 +254,84 @@ in the order they were applied. Broadcasts for **different**
 games run in parallel; `SimpMessagingTemplate.convertAndSend` is
 thread-safe.
 
+### Viewer count broadcasts
+
+Feature 6.5 (spectator mode) layers a second broadcast onto the
+same `/ws` endpoint. Every time the set of sessions subscribed to
+`/topic/games/{gameId}` changes — a new subscribe, an explicit
+unsubscribe, or a session disconnect — the server publishes a
+`ViewerCountEvent` to **`/topic/games/{gameId}/viewers`**:
+
+```json
+{
+  "gameId": "0d52a8a0-bea0-4b21-bbe3-3df7f8e83bfb",
+  "count": 3
+}
+```
+
+- **`gameId`** — the game the count is for; matches the
+  `{gameId}` segment in the topic. Clients may subscribe to
+  several `/viewers` topics in parallel and use this field to
+  demultiplex.
+- **`count`** — the current number of subscribers to
+  `/topic/games/{gameId}` that are **not** players of the game
+  (see the `playerId` convention below).
+
+The viewer-count topic exists separately from the game topic so
+that count updates are decoupled from move cadence: a game with
+no moves but lots of joiners and leavers still produces a stream
+of count changes. The two topics are independent — clients can
+subscribe to one, the other, or both.
+
+The viewer-count broadcast is fire-and-forget on the same
+failure-mode policy as `MoveEvent`: any `RuntimeException` from
+the broker is logged at `WARN` and not rethrown.
+
+### `playerId` header convention
+
+Clients that are one of the two players of a game declare it by
+sending their player id as a native STOMP header on the
+`SUBSCRIBE` frame to `/topic/games/{gameId}`:
+
+```
+SUBSCRIBE
+id:sub-0
+destination:/topic/games/<gameId>
+playerId:<playerId-uuid>
+
+^@
+```
+
+The server compares the header value against `white.id()` and
+`black.id()` of the game. A match means "this subscriber is a
+player, not a spectator" and they are excluded from the viewer
+count for that game. No header (or no match) means "this
+subscriber is a spectator" and they are counted.
+
+**Trust model:** the server takes the header at face value.
+There is no authentication today, so the claim cannot be
+verified — a malicious client could omit the header to inflate
+the count, or forge another player's id to exclude itself. This
+is a **deliberate portfolio-level trade-off**, consistent with
+the rest of the no-auth design described above. A future auth
+feature would replace "trust" with "verify" without changing the
+header name or its semantics; only the validation step on the
+server changes.
+
 ### Cross-repo coordination
 
 The `chess-frontend` repo mirrors this section in its own
 `docs/architecture.md` when it reaches feature 5
 (`stomp-live-updates`). Until then, the contract above is the
 single source of truth. Changes here must be reflected in the
-frontend doc the next time the two are touched.
+frontend doc the next time the two are touched. With feature 6.5
+in place, the frontend's feature 5 should additionally:
+
+- Subscribe to `/topic/games/{gameId}/viewers` to render the
+  live spectator count.
+- Optionally send the `playerId` native header on the
+  `SUBSCRIBE` to `/topic/games/{gameId}` when the current user
+  is one of the two players of the game.
 
 ## Source of truth
 

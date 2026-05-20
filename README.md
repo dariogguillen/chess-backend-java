@@ -89,9 +89,14 @@ successful `POST /api/games/{id}/moves`, the server broadcasts a
 
 - Endpoint: `ws://localhost:8080/ws`
 - Subscribe to `/topic/games/{gameId}` to receive a `MoveEvent` per move.
+- Subscribe to `/topic/games/{gameId}/viewers` to receive a `ViewerCountEvent`
+  on every spectator join/leave (feature 6.5). Players self-exclude from the
+  count by sending a `playerId:<uuid>` native STOMP header on their
+  `SUBSCRIBE` to `/topic/games/{gameId}`.
 
 See `docs/architecture.md` → "STOMP API contract" for the full
-contract (payload shape, allowed origins, failure mode).
+contract (payload shape, allowed origins, failure mode, viewer
+count broadcasts, and the `playerId` header convention).
 
 Smoke-test from the terminal with [`wscat`](https://github.com/websockets/wscat)
 (any STOMP-aware client works the same way):

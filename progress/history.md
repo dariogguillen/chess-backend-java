@@ -798,3 +798,119 @@ Grand total **107** (was 102; delta +5).
 - `feature_list.json` (modified: `websocket-realtime.status` → `done`)
 
 **Feature note:** `notes/06-websocket-realtime.md`.
+
+## 2026-05-19 — spectator-mode
+
+**Status:** done
+
+**Summary:** Added live viewer count to the STOMP surface introduced
+in feature 6. The chosen approach is the simplest workable: listen to
+Spring's STOMP session events (`SessionSubscribeEvent`,
+`SessionUnsubscribeEvent`, `SessionDisconnectEvent`), maintain
+in-memory per-game viewer sets in a new `@Component`
+`ViewerCountTracker`, and broadcast `ViewerCountEvent` to a new
+dedicated topic `/topic/games/{gameId}/viewers` on every count
+change. The previously-pending choice between domain-modeled viewers
+and anonymous-subscriber tracking was resolved in favor of the
+latter — no new endpoints, no new domain types, no auth surface.
+
+Player exclusion uses a STOMP header convention: clients that are
+players of a game include `playerId:<uuid>` as a native header on
+their SUBSCRIBE frame to the game topic. The tracker calls
+`gameService.findById(gameId)` and compares against
+`white.id()`/`black.id()`; on match, the subscriber is excluded from
+the count entirely (no `subscriptionToGame` write, no broadcast).
+The trust model is "trust at face value" — there is no auth in this
+project — and the trade-off is documented in `docs/architecture.md`
+as a portfolio-level choice. A future auth feature would replace
+"trust" with "verify" without touching the tracker structure.
+
+The tracker keeps three `ConcurrentHashMap` data structures:
+`sessionsByGame: Map<gameId, Set<sessionId>>` (the actual viewer
+set, dedupes by session so multiple subscriptions of the same
+session count as one viewer), `gamesBySession: Map<sessionId,
+Set<gameId>>` (for disconnect cleanup), and `subscriptionToGame:
+Map<subscriptionId, GameSubscription>` where `GameSubscription` is
+a private nested record `(sessionId, gameId)`. The third map is
+necessary because `SessionUnsubscribeEvent` does not carry the
+destination — only the subscription id; without recording the
+mapping on subscribe, the unsubscribe handler cannot determine
+which game to decrement.
+
+The topic regex `^/topic/games/([^/]+)$` is end-anchored. Without
+the `$`, the prefix matches `/topic/games/{gameId}/viewers` and the
+tracker would count subscribers-of-the-count as if they were
+subscribers-of-the-game — doubling the count. End-anchoring excludes
+the `/viewers` sub-topic explicitly, which lets clients subscribe to
+the count broadcast without affecting the count itself.
+
+Six implementer-extra decisions landed and were validated:
+
+1. **`playerId` header on the SUBSCRIBE frame, not CONNECT.**
+   `SessionSubscribeEvent` carries the SUBSCRIBE frame's native
+   headers; placing the header on CONNECT would require a different
+   lookup path via session attributes populated from
+   `SessionConnectEvent`. `docs/architecture.md` commits explicitly
+   to SUBSCRIBE; the example STOMP frame in the doc is a literal
+   SUBSCRIBE block.
+2. **Defensive null guards** on `StompHeaderAccessor.getDestination()`,
+   `getSessionId()`, and `getSubscriptionId()`. Spring's API returns
+   `@Nullable`; these should never be null on real STOMP frames but
+   the guards cost one line each.
+3. **End-anchored regex** (`$` at the end), documented above and in
+   the feature note's "Gotchas" section.
+4. **Helper duplication** between `GameWebSocketIT` and
+   `ViewerCountIT` (no shared `testsupport/` extraction). Rationale:
+   two callers is the cutoff where extraction pays off, the
+   helpers are small, and the two ITs may diverge further (this one
+   needs `subscribeGame(playerId)` with custom headers). Decision
+   captured in the note.
+5. **Per-handler 1-second subscribe delay** (`SUBSCRIBE_REGISTRATION_DELAY_MS`)
+   matching feature 6's pattern. The ~27s total IT runtime is
+   dominated by these sleeps; tightening is documented as a
+   tighten-later candidate.
+6. **Broadcast completely skipped when the subscriber is a player.**
+   The early `return` happens before any map write and before the
+   broadcast call. The IT `playerSubscribes_countStaysAtZero_*`
+   asserts no event reaches the player's viewer queue within 500ms,
+   and that a subsequent non-player subscribe produces `count: 1`
+   (not 2) — proving the player was excluded from the state, not
+   just from the broadcast.
+
+The cross-repo contract documentation extends (rather than rewrites)
+the "STOMP API contract" section of `docs/architecture.md` added in
+feature 6. Two new subsections — "Viewer count broadcasts" and
+"`playerId` header convention" — sit at the end of that section,
+followed by the existing cross-repo coordination note (updated to
+mention both the new topic and the new header convention for
+`chess-frontend`'s upcoming feature 5).
+
+Five new tests in `ViewerCountIT` cover the contract end-to-end:
+non-player subscribes ticks to one; player subscribes stays at zero
+and excluding logic verified by a subsequent non-player joining and
+seeing count one not two; two non-player subscribers tick to two;
+disconnect ticks down; explicit UNSUBSCRIBE (without disconnect)
+also ticks down — the last test specifically exercises the
+`subscriptionToGame` cleanup path separately from disconnect.
+
+Manual end-to-end testing with a real STOMP client is deferred to
+`chess-frontend`'s feature 5 (`stomp-live-updates`), where the
+actual `@stomp/stompjs` library and real CORS handshake will
+exercise the contract in a browser.
+
+**Final test counts:** surefire **82** (unchanged from feature 6).
+Failsafe **30** (`HealthControllerIT` 3, `RoomControllerIT` 7,
+`OpenApiIT` 3, `GameControllerIT` 7, `GameWebSocketIT` 5,
+`ViewerCountIT` 5). Grand total **112** (was 107; delta +5).
+
+**Files touched:**
+
+- `src/main/java/io/github/dariogguillen/chess/websocket/ViewerCountEvent.java` (new; record `(gameId, count)`)
+- `src/main/java/io/github/dariogguillen/chess/websocket/ViewerCountTracker.java` (new; `@Component` with three `@EventListener` handlers)
+- `src/test/java/io/github/dariogguillen/chess/websocket/ViewerCountIT.java` (new, 5 tests)
+- `docs/architecture.md` (modified: "STOMP API contract" section extended with "Viewer count broadcasts" + "`playerId` header convention" subsections; cross-repo coordination note updated)
+- `README.md` (modified: "WebSocket (STOMP)" subsection extended with viewers topic + header convention bullets)
+- `notes/06.5-spectator-mode.md` (new; filename uses `06.5-` decimal verbatim)
+- `feature_list.json` (modified: `spectator-mode.status` → `done`)
+
+**Feature note:** `notes/06.5-spectator-mode.md`.
