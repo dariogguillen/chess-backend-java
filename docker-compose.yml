@@ -1,0 +1,53 @@
+# Local development stack: Postgres + Redis + the containerized app.
+#
+# The `version:` field is intentionally omitted — Compose v2 deprecated
+# it. Host port mappings expose each service for tools running on the
+# host (psql, redis-cli, an IDE-attached app). The app waits for the
+# database and cache health probes via `depends_on: service_healthy`
+# so it never starts against an un-ready dependency.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: chess
+      POSTGRES_PASSWORD: chess
+      POSTGRES_DB: chess
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "chess"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/chess
+      SPRING_DATASOURCE_USERNAME: chess
+      SPRING_DATASOURCE_PASSWORD: chess
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:

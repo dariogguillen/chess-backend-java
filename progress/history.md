@@ -1007,3 +1007,109 @@ feature shipped, and restored to `progress/current.md` at close. The
 leader did not re-discuss the containerize plan with the user before
 restoring — it was approved verbatim before the cross-repo trigger
 appeared, and the parking was a pause, not a withdrawal.
+
+## 2026-05-20 — backend-containerize
+
+**Status:** done
+
+**Summary:** First of three sub-features (7, 7.5, 7.7) that take the
+backend from "runs locally with Testcontainers" to "deployable on AWS
+Free Tier with CI/CD". This one ships the containerization layer: a
+multi-stage `Dockerfile`, a local-stack `docker-compose.yml`, and an
+`application.yml` upgrade so the same artifact runs under three
+contexts (Testcontainers, docker-compose, production-pending).
+
+The Dockerfile uses `eclipse-temurin:21-jdk-jammy` for the builder
+stage and `eclipse-temurin:21-jre-jammy` for the runtime — JRE-only
+keeps the image around the ~200MB mark without the Alpine glibc quirks
+or distroless's lack-of-shell tradeoff. `dependency:go-offline` runs
+before `COPY src` so the Maven dependency layer caches independently
+of code changes. `HEALTHCHECK` hits `/api/health` with a 60s start
+period (Spring Boot warmup budget). The `chess-*.jar` glob in the
+`COPY --from=builder` line deliberately matches only the repackaged
+fat jar, not the `.jar.original` sibling that `spring-boot:repackage`
+also produces.
+
+`docker-compose.yml` is Compose v2 (no `version:` field), bringing up
+Postgres 16, Redis 7-alpine, and the containerized app with
+`depends_on: service_healthy` so the app waits for actual readiness,
+not just process-up. The app service has `build: .` and no explicit
+`image:` field — feature 7.7 (`backend-cicd-pipeline`) will own the
+canonical tag (likely ECR) and adding one now would either pre-decide
+or get clobbered. Host port mappings (5432, 6379, 8080) let tools on
+the host reach each service.
+
+`application.yml` upgraded from a single-line `spring.application.name`
+to a full env-var-with-default block for `spring.datasource.*` and
+`spring.data.redis.*`. Critical: this is purely additive. The
+`TestcontainersConfiguration` uses `@ServiceConnection` which
+overrides these properties at test runtime, so the Testcontainers
+pipeline keeps working unchanged. The defaults (`localhost:5432`,
+`localhost:6379`) match the hybrid workflow (compose for infra +
+`./mvnw spring-boot:run` for the app). docker-compose sets the env
+vars explicitly to in-network hostnames (`postgres`, `redis`).
+
+README's "Running locally" section was rewritten with three
+sub-sections covering the three workflows (Testcontainers,
+docker-compose, hybrid) plus a closing paragraph on the env-var
+pattern. `docs/architecture.md` got a new "Deployment artifact"
+subsection under "Layered architecture" — 4 sentences covering
+container as the artifact, multi-stage build, env-var-with-default
+pattern, three runtime contexts, and the explicit decision to keep
+`init.sh` Docker-free (with a forward reference to feature 7.7 for
+the CI Docker smoke test).
+
+Four implementer-extra decisions, all validated by the reviewer:
+
+1. **`curl` availability in `eclipse-temurin:21-jre-jammy`** verified
+   empirically (`docker run --rm ... which curl` → present). No
+   `apt-get install` fallback needed.
+2. **Compose v2 syntax** (no `version:` field; `docker compose` not
+   `docker-compose` in README).
+3. **No `image:` field** on the `app` service in `docker-compose.yml`
+   — feature 7.7 will own the canonical tag.
+4. **`chess-*.jar` glob** in the runtime stage's `COPY --from=builder`
+   line — matches the executable fat jar but not the `.jar.original`
+   sibling.
+
+A late-in-feature small follow-up was applied before close:
+`TestcontainersConfiguration` was pinned from `postgres:latest` /
+`redis:latest` to `postgres:16` / `redis:7-alpine`. This makes the
+test environment track the deployment environment — same Postgres and
+Redis versions in tests and in docker-compose (and, by extension,
+features 7.5/7.7 in production). Side effect: the Flyway WARN
+("PostgreSQL 18.4 is newer than this version of Flyway and support
+has not been tested") is gone because Flyway fully supports Postgres
+16. The reviewer flagged this as out-of-scope drift risk; the user
+chose to fold it into feature 7 rather than spin a separate
+follow-up.
+
+The reviewer also flagged two other lower-priority observations
+left as future polish: `docker-compose.yml` does not pin a patch
+version of `postgres:16` (floats within the 16 line, which is
+typically desirable) and the Dockerfile does not use BuildKit cache
+mounts for the Maven local repo (would shave time off rebuilds but
+hide the layering — the layer-cache approach was the right
+"learning-material" version).
+
+The frontend is unaffected by this feature; containerization is pure
+internal infrastructure.
+
+**Final test counts:** surefire **82** (unchanged), failsafe **31**
+(unchanged), grand total **113**. Test pipeline now runs against
+`postgres:16` and `redis:7-alpine` (matching deployment) instead of
+`postgres:latest` and `redis:latest`.
+
+**Files touched:**
+
+- `Dockerfile` (new; multi-stage JDK→JRE, healthcheck, repackaged-jar glob)
+- `.dockerignore` (new; excludes target/, .git/, harness directories, IDE files)
+- `docker-compose.yml` (new; app + Postgres 16 + Redis 7-alpine with health-aware depends_on)
+- `src/main/resources/application.yml` (modified: extended from one-line to env-var-with-default for datasource and Redis)
+- `src/test/java/io/github/dariogguillen/chess/TestcontainersConfiguration.java` (modified: pinned to `postgres:16` and `redis:7-alpine` to match docker-compose; late-in-feature follow-up)
+- `README.md` (modified: rewrote "Running locally" with three workflows + closing paragraph on env-var pattern)
+- `docs/architecture.md` (modified: added "Deployment artifact" subsection under "Layered architecture")
+- `notes/07-backend-containerize.md` (new; filename uses `07-` zero-padded)
+- `feature_list.json` (modified: `backend-containerize.status` → `done`)
+
+**Feature note:** `notes/07-backend-containerize.md`.

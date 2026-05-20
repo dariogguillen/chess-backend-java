@@ -81,6 +81,21 @@ Putting the interfaces in `service/` and their implementations in `cache/`
 keeps the port next to its sole consumer while the adapters live alongside
 the future Redis-backed siblings.
 
+### Deployment artifact
+
+The deployment artifact is a single Docker image produced by a
+multi-stage build (`Dockerfile`): a JDK + Maven wrapper builder stage
+that runs `spring-boot:repackage`, and a JRE-only runtime stage that
+ships nothing but the resulting fat jar. `application.yml` uses the
+env-var-with-default pattern (`${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/chess}`,
+etc.) so the same image runs under three contexts — Testcontainers in
+integration tests (via `@ServiceConnection` overrides),
+`docker-compose.yml` for local stack runs (via explicit env vars
+pointing at in-network hostnames), and production (features 7.5 / 7.7)
+without rebuilding. `init.sh` deliberately stays scoped to "compile +
+lint + test" and does **not** build the image; feature 7.7's CI workflow
+will add a Docker smoke test in GitHub Actions.
+
 ### API contract
 
 The REST surface is documented via an OpenAPI 3 spec generated at

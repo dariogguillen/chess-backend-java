@@ -124,7 +124,7 @@
     "id": "backend-containerize",
     "title": "Containerize the backend (Dockerfile + local docker-compose)",
     "description": "Multi-stage Dockerfile (Eclipse Temurin JRE Jammy) producing a runnable image of the Spring Boot fat jar. docker-compose.yml for local development bringing up the app + Postgres + Redis as a self-contained stack. application.yml gains env-var-with-default configuration so the same artifact runs locally with Testcontainers, locally with docker-compose, and in production (set in features 7.5 and 7.7). README documents the three local-dev workflows. No CI/CD yet; that's feature 7.7.",
-    "status": "in_progress",
+    "status": "done",
     "priority": 7,
     "acceptance": [
       "Dockerfile multi-stage: builder stage with Maven + JDK, runtime stage with Temurin JRE Jammy. Final image runs the Spring Boot fat jar.",

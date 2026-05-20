@@ -1,3 +1,11 @@
 spring:
   application:
     name: chess
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/chess}
+    username: ${SPRING_DATASOURCE_USERNAME:chess}
+    password: ${SPRING_DATASOURCE_PASSWORD:chess}
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}

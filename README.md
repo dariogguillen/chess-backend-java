@@ -25,13 +25,52 @@ Currently in early development. The current scope and feature plan lives in
 
 ## Running locally
 
-> Coming soon. The project bootstraps with Maven and runs against Postgres and
-> Redis via Docker Compose. Detailed instructions will be added once the first
-> end-to-end flow is wired up.
+The application ships three workflows. Pick the one that matches your task:
+fast inner-loop iteration, a production-like containerized run, or a hybrid
+where the IDE drives the app and Docker drives the infrastructure.
+
+### With Testcontainers (primary dev loop)
+
+`./mvnw spring-boot:test-run` boots the app with Testcontainers-managed
+Postgres and Redis. No Docker image build is required; Spring Boot's
+`spring-boot.run.test-only` hook applies the
+`@TestConfiguration` containers automatically. Use this for everyday
+development — it is the fastest path from change to running app.
 
 ```bash
-./mvnw clean compile
+./mvnw spring-boot:test-run
 ```
+
+### With docker-compose (production-like stack)
+
+`docker compose up --build` brings up Postgres, Redis, and the
+containerized app. The first build pulls base images and resolves Maven
+dependencies (~2–3 minutes); subsequent builds reuse the cached layers
+(~30s when only sources change). Use this to validate the actual
+deployment artifact end-to-end before opening a PR.
+
+```bash
+docker compose up --build
+# stop and clean volumes when done
+docker compose down -v
+```
+
+### Hybrid (Docker infra + IDE-attached app)
+
+`docker compose up postgres redis -d` brings up only the dependencies,
+and `./mvnw spring-boot:run` runs the app on the host against them via
+the published ports (`localhost:5432`, `localhost:6379`). Use this for
+debugging when you want breakpoints attached to the app process.
+
+```bash
+docker compose up postgres redis -d
+./mvnw spring-boot:run
+```
+
+Configuration follows the env-var-with-default pattern in
+`application.yml`: the same artifact runs locally, under Compose, and
+in production by overriding `SPRING_DATASOURCE_*` and
+`SPRING_DATA_REDIS_*` at start time.
 
 ## API
 
