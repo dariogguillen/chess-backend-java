@@ -676,3 +676,125 @@ feature 4.5; delta +9 = +2 in `GameTest` for the new
 - `feature_list.json` (modified: `game-rest-api.status` → `done`)
 
 **Feature note:** `notes/05-game-rest-api.md`.
+
+## 2026-05-19 — websocket-realtime
+
+**Status:** done
+
+**Summary:** First non-REST surface of the project. Added Spring
+WebSocket + STOMP so that after a move is accepted via REST, a
+`MoveEvent` is broadcast to all subscribers of
+`/topic/games/{gameId}`. The endpoint lives at `/ws`; the in-process
+`SimpleBroker` handles `/topic` destinations; the application prefix
+`/app` is registered for future server-bound client messages but
+unused today. Allowed origin patterns cover the production frontend
+(`https://dariogguillen.github.io`) and any localhost port for dev.
+
+The broadcast is triggered from `GameService.applyMove` **after**
+the successful `gameStore.compute(...)` returns — outside the
+lambda. If `SimpMessagingTemplate.convertAndSend` throws (broker
+hiccup, serialization issue), the failure is caught and logged at
+WARN with the gameId; the REST POST response is unaffected. The
+mutation has already committed, and subscribers that missed an event
+recover via reconnect + resync (a downstream concern handled by the
+frontend in its feature 5). The cross-store invariant that already
+existed (a `Game` exists iff its `Room` is `ACTIVE`, atomic per
+`ConcurrentHashMap.compute`) is preserved unchanged; the broadcast
+is a pure side channel.
+
+`MoveEvent` is a `record` with 11 flat fields:
+`(gameId, movedBy, side, from, to, promotion, fen, status, turn,
+moveNumber, playedAt)`. The shape is deliberately **flat** rather
+than nested (no shared `MoveDto` with the `web/game/` package) so
+the `websocket/` layer does not depend on the `web/` layer. The
+`from`/`to`/`promotion` wire shape is identical to the REST DTOs;
+the Java type is independent. `movedBy` and `side` let the client
+filter its own moves to avoid redundant local update after
+submitting via REST. `playedAt` is derived from the injected
+`Clock` so tests can pin time deterministically.
+
+This is the **first cross-contract feature** under the discipline
+added on 2026-05-19 to `AGENTS.md` and `.claude/agents/leader.md`.
+The canonical doc for the STOMP surface is `docs/architecture.md`'s
+new section "STOMP API contract"; it documents the endpoint URL,
+broker choice and scale-out constraint, allowed origins, the
+`/topic/games/{gameId}` subscription, the full `MoveEvent` JSON
+example with every field annotated, the no-STOMP-auth design choice
+(spectator-mode in feature 6.5 relies on it), the failure mode,
+ordering/concurrency guarantees, and an explicit cross-repo note
+naming `chess-frontend`'s feature 5 (`stomp-live-updates`) as the
+mirror target. The frontend can copy the section verbatim when it
+gets there.
+
+`GameWebSocketIT` (5 tests) validates the contract end-to-end with
+a real Spring context, a real WebSocket client, real STOMP frames,
+and asserts on every field of the received `MoveEvent`:
+
+1. `singleSubscriber_receivesMoveEvent_afterSuccessfulMove` —
+   happy path, every field validated.
+2. `twoSubscribers_bothReceiveMoveEvent` — two subscribers on the
+   same topic both receive identical events.
+3. `subscribingToOtherGame_doesNotReceiveBroadcast` — topic isolation.
+4. `illegalMove_doesNotBroadcast` — 422 ILLEGAL_MOVE does not
+   trigger a broadcast.
+5. `moveByWrongPlayer_doesNotBroadcast` — 422 NOT_YOUR_TURN does
+   not trigger a broadcast.
+
+Five implementer-extra decisions landed and were validated by the
+reviewer:
+
+1. **`wscat` snippet in README**: a paste-and-run STOMP-frame
+   example replaced the originally-considered JS snippet. More
+   universal across tooling.
+2. **Subscription registration delay = 1 second** in the IT (vs
+   the brief's 200ms suggestion). The implementer started at 200ms,
+   hit a different failure caused by a missing `JavaTimeModule` on
+   the client-side message converter, fixed the converter, and
+   kept 1s as a CI safety margin. Test suite still runs in ~16s.
+3. **Helper structure in the IT**: `setupGame(white, black)`
+   returns a `GameSetup(gameId, whitePlayerId, blackPlayerId)`
+   record; `connect()` and `subscribe(session, gameId)` helpers
+   factored out. All 5 tests route through them.
+4. **`RestTemplate` 4xx handling**: wrapped in `try/catch
+   (HttpStatusCodeException)` and reconstructed a `ResponseEntity`
+   for uniform assertions across 2xx and 4xx paths.
+5. **`JavaTimeModule` registered on the client-side
+   `MappingJackson2MessageConverter`** in tests. Critical: without
+   it, `MoveEvent.playedAt` silently fails to deserialize and the
+   tests time out with no exception. The production side is fine
+   because Spring Boot's autoconfigured `ObjectMapper` already has
+   the module registered.
+
+Out-of-scope observations (flagged for future awareness, not
+blocking): the production message converter inherits Boot's
+autoconfigured `ObjectMapper`; a future change that replaces it
+explicitly must remember to register `JavaTimeModule`. The IT
+shares one `WebSocketStompClient` across two sessions in the
+two-subscribers test, which works but multiplexes on a single task
+scheduler. Spotless re-flowed JavaDoc paragraphs in three files —
+behaviour unchanged.
+
+Manual end-to-end testing with a STOMP client (Insomnia, wscat,
+`@stomp/stompjs` script) was discussed and intentionally **deferred
+to the frontend's feature 5** (`stomp-live-updates`). That feature
+will exercise the contract in a browser with the real client
+library and over real CORS, which the IT cannot cover from inside
+the JVM.
+
+**Final test counts:** surefire **82** (unchanged from feature 5
+close). Failsafe **25** (`HealthControllerIT` 3, `RoomControllerIT`
+7, `OpenApiIT` 3, `GameControllerIT` 7, `GameWebSocketIT` 5).
+Grand total **107** (was 102; delta +5).
+
+**Files touched:**
+
+- `src/main/java/io/github/dariogguillen/chess/config/WebSocketConfig.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/websocket/MoveEvent.java` (new)
+- `src/main/java/io/github/dariogguillen/chess/service/GameService.java` (modified: +2 deps injected, +broadcastMoveEvent helper called after compute, try/catch with WARN-and-continue)
+- `src/test/java/io/github/dariogguillen/chess/websocket/GameWebSocketIT.java` (new, 5 tests)
+- `docs/architecture.md` (modified: new "STOMP API contract" section)
+- `README.md` (modified: new "WebSocket (STOMP)" subsection with wscat example)
+- `notes/06-websocket-realtime.md` (new)
+- `feature_list.json` (modified: `websocket-realtime.status` → `done`)
+
+**Feature note:** `notes/06-websocket-realtime.md`.

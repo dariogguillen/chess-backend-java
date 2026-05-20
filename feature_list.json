@@ -82,7 +82,7 @@
     "id": "websocket-realtime",
     "title": "Real-time updates over STOMP",
     "description": "Add Spring WebSocket with STOMP. After a move is accepted by the REST endpoint, the new state is broadcast to all subscribers of the game's topic. Subscribers include the opponent and any future spectators.",
-    "status": "pending",
+    "status": "done",
     "priority": 6,
     "acceptance": [
       "WebSocket configured on /ws with STOMP.",

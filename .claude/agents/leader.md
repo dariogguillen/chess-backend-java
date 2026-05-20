@@ -43,6 +43,17 @@ The plan **must** cover:
   therefore whether `docs/architecture.md` will be updated by the
   implementer). Same rule — state the answer.
 
+- Whether this feature affects the contract with the
+  [`chess-frontend`](https://github.com/dariogguillen/chess-frontend)
+  repo — REST endpoints, STOMP topics, DTO shapes, error codes. If
+  yes, the plan must either reference the corresponding work on the
+  frontend side or state explicitly that the change is additive /
+  backwards-compatible and does not require frontend changes yet. The
+  reviewer cross-checks this claim against the actual change. The
+  canonical references for the contract live in `docs/architecture.md`
+  ("API contract" section) and the running OpenAPI spec served at
+  `/v3/api-docs`.
+
 Wait for the user to approve the plan unless they tell you to skip
 approval.
 

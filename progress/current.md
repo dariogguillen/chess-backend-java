@@ -2,22 +2,22 @@
 
 **Status:** session closed.
 
-Feature 5 (`game-rest-api`) was closed on 2026-05-19. The feature shipped
-`POST /api/games/{id}/moves` and `GET /api/games/{id}`, the supporting
-`GameService`, five new exceptions (including the new abstract
-`UnprocessableException` → 422), the `Game` domain change adding
-`startingFen`, and the `GameStatus.isTerminal()` helper. A closing
-iteration applied two architectural cleanups: `MoveDto` became a
-nested `MoveSummary` inside `GameStateResponse`, and the in-memory
-stores moved from `service/` to `cache/` with their annotation changed
-from `@Service` to `@Component`. See `progress/history.md` for the full
-close entry.
+Feature 6 (`websocket-realtime`) was closed on 2026-05-19. The feature
+added Spring WebSocket + STOMP, broadcasting a `MoveEvent` to
+`/topic/games/{gameId}` after every successful move via REST. The
+canonical STOMP contract lives in `docs/architecture.md` → "STOMP API
+contract" and will be mirrored by `chess-frontend` when it reaches its
+own feature 5 (`stomp-live-updates`). Manual end-to-end testing with a
+STOMP client was intentionally deferred to that frontend feature, where
+the real `@stomp/stompjs` client and real CORS handshake will exercise
+the contract in a browser. See `progress/history.md` for the full close
+entry.
 
-The next feature in `feature_list.json` is `websocket-realtime`
-(priority 6). It introduces Spring WebSocket with STOMP so that after
-a move is accepted by the REST endpoint, the new state is broadcast
-to all subscribers of the game's topic. This is the first feature
-where the springdoc OpenAPI spec stops being the sole source of truth
-for the API — STOMP surfaces are documented separately in the README.
-The leader will open a plan here once the scope and key decisions for
-`websocket-realtime` are aligned with the user.
+The next feature in `feature_list.json` is `spectator-mode`
+(priority 6.5). It builds directly on `websocket-realtime`: non-player
+participants subscribe to the game's STOMP topic and receive live
+state updates, and the server tracks a live viewer count per game and
+publishes it so the UI can render it. The user explicitly requested
+the viewer count be visible — see the project memory and the feature's
+acceptance criteria. The leader will open a plan here once the scope
+and key decisions for `spectator-mode` are aligned with the user.

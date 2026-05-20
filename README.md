@@ -81,6 +81,40 @@ curl -X POST http://localhost:8080/api/games/<gameId>/moves \
   -d '{"from": "e2", "to": "e4"}'
 ```
 
+### WebSocket (STOMP)
+
+Live game updates are pushed over STOMP-over-WebSocket. After every
+successful `POST /api/games/{id}/moves`, the server broadcasts a
+`MoveEvent` to subscribers of the game's topic.
+
+- Endpoint: `ws://localhost:8080/ws`
+- Subscribe to `/topic/games/{gameId}` to receive a `MoveEvent` per move.
+
+See `docs/architecture.md` → "STOMP API contract" for the full
+contract (payload shape, allowed origins, failure mode).
+
+Smoke-test from the terminal with [`wscat`](https://github.com/websockets/wscat)
+(any STOMP-aware client works the same way):
+
+```bash
+# Connect to the WS endpoint.
+wscat -c ws://localhost:8080/ws
+
+# Once connected, paste the STOMP frames (each ends with a NUL byte,
+# typed as ^@ in most terminals):
+# CONNECT
+# accept-version:1.2
+# host:localhost
+#
+# ^@
+#
+# SUBSCRIBE
+# id:sub-0
+# destination:/topic/games/<gameId>
+#
+# ^@
+```
+
 ## Repository structure
 
 ```

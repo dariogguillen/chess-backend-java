@@ -3,12 +3,17 @@ package io.github.dariogguillen.chess.service;
 import io.github.dariogguillen.chess.domain.Game;
 import io.github.dariogguillen.chess.domain.Move;
 import io.github.dariogguillen.chess.domain.Player;
+import io.github.dariogguillen.chess.domain.Side;
 import io.github.dariogguillen.chess.exception.GameAlreadyEndedException;
 import io.github.dariogguillen.chess.exception.GameNotFoundException;
 import io.github.dariogguillen.chess.exception.IllegalMoveException;
 import io.github.dariogguillen.chess.exception.NotYourTurnException;
+import io.github.dariogguillen.chess.websocket.MoveEvent;
+import java.time.Clock;
+import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
 /**
@@ -30,10 +35,18 @@ public class GameService {
 
   private final GameStore gameStore;
   private final ChessRules chessRules;
+  private final SimpMessagingTemplate messagingTemplate;
+  private final Clock clock;
 
-  public GameService(GameStore gameStore, ChessRules chessRules) {
+  public GameService(
+      GameStore gameStore,
+      ChessRules chessRules,
+      SimpMessagingTemplate messagingTemplate,
+      Clock clock) {
     this.gameStore = gameStore;
     this.chessRules = chessRules;
+    this.messagingTemplate = messagingTemplate;
+    this.clock = clock;
   }
 
   /**
@@ -54,6 +67,15 @@ public class GameService {
    * java.util.function.BiFunction)}, atomic per {@code gameId}. The checks run in fixed order:
    * existence → not-already-ended → turn-belongs-to-caller → move-is-legal. Each failure throws a
    * specific exception that {@code GlobalExceptionHandler} maps to its documented HTTP status.
+   *
+   * <p><strong>Side effect on success:</strong> after {@code compute} returns with the updated
+   * game, this method broadcasts a {@link MoveEvent} to {@code /topic/games/{gameId}} via {@link
+   * SimpMessagingTemplate}. The broadcast happens <em>outside</em> the atomic block so that a
+   * broker-side failure cannot look like a failed mutation. If the broadcast itself fails (broker
+   * misconfigured, serialization throws, etc.), the failure is logged at {@code WARN} and
+   * <em>not</em> rethrown: the REST POST has already mutated state successfully and the response
+   * carries the new state. Subscribers may miss this update; recovery is a client concern
+   * (reconnect + resync).
    *
    * @param gameId the game to mutate; non-null.
    * @param playerId the id of the caller (matches the {@code X-Player-Id} header at the HTTP
@@ -108,6 +130,42 @@ public class GameService {
     Game updated = holder[0];
     log.info(
         "Move applied: gameId={}, move={}, newStatus={}", updated.id(), move, updated.status());
+    broadcastMoveEvent(updated, playerId, move);
     return updated;
+  }
+
+  /**
+   * Builds and broadcasts a {@link MoveEvent} for the just-applied move. Runs <em>outside</em> the
+   * {@code compute} lambda so that a broker-side failure cannot propagate out and look like a
+   * failed mutation. Any {@link RuntimeException} thrown by the broker is caught and logged at
+   * {@code WARN}; the broadcast is fire-and-forget by design.
+   */
+  private void broadcastMoveEvent(Game updated, String playerId, Move move) {
+    int moveNumber = updated.moves().size();
+    // After the move is appended, an odd moveNumber means White's move just landed (move 1 is
+    // White's first), an even moveNumber means Black's. The next turn is therefore the inverse.
+    Side side = (moveNumber % 2 == 1) ? Side.WHITE : Side.BLACK;
+    Side turn = (side == Side.WHITE) ? Side.BLACK : Side.WHITE;
+    String promotion = move.promotion().map(Enum::name).orElse(null);
+
+    MoveEvent event =
+        new MoveEvent(
+            updated.id(),
+            playerId,
+            side,
+            move.from().value(),
+            move.to().value(),
+            promotion,
+            updated.fen(),
+            updated.status(),
+            turn,
+            moveNumber,
+            Instant.now(clock));
+
+    try {
+      messagingTemplate.convertAndSend("/topic/games/" + updated.id(), event);
+    } catch (RuntimeException ex) {
+      log.warn("Failed to broadcast MoveEvent for game {}: {}", updated.id(), ex.getMessage());
+    }
   }
 }

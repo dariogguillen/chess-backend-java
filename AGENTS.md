@@ -10,8 +10,17 @@ things up on demand instead of carrying everything in context.
 
 `chess-backend-java` is a Java + Spring Boot backend for an online multiplayer
 chess game. Two players connect through a shareable room and play in real
-time. This is a rewrite of an earlier Node + TypeScript backend at
-`https://github.com/dariogguillen/chess-game` (folder `backend/`).
+time. The frontend that consumes this API lives in a separate repo,
+[`chess-frontend`](https://github.com/dariogguillen/chess-frontend), which
+hosts a React + TypeScript + Vite SPA. The two repos coordinate around the API
+contract; see "Cross-repo coordination" below.
+
+This backend is a rewrite of an earlier Node + TypeScript implementation that
+originally lived in `chess-frontend`'s monorepo predecessor (under a `backend/`
+folder; the folder was removed on 2026-05-19 when the repo was flattened to a
+frontend-only layout and renamed from `chess-game` to `chess-frontend`). The
+historical Node source is preserved in the `refactor-base` branch of
+`chess-frontend`.
 
 The Node version is a **behavioral specification**, not a code reference. The
 Java version intentionally improves on it by:
@@ -154,12 +163,47 @@ See `notes/_template.md` for the structure each note must follow.
 
 ---
 
-## Reference: the Node backend
+## Cross-repo coordination
 
-The Node backend at `https://github.com/dariogguillen/chess-game`
-(`backend/src/index.ts`) is a behavioral specification. Treat its socket
-events as the source of truth for *what* the system does, not *how* it
-should be coded.
+This backend's REST and STOMP surfaces are consumed by the
+[`chess-frontend`](https://github.com/dariogguillen/chess-frontend) repo.
+When a feature in this repo changes the contract — a new endpoint, a new
+STOMP topic, a DTO shape, an error code — the plan in
+`progress/current.md` must reference whether the frontend side needs
+coordination, and document the change in `docs/architecture.md`'s
+"API contract" section so the frontend can align.
+
+The canonical sources of truth for the REST surface are:
+
+- `GET /v3/api-docs` — machine-readable OpenAPI 3 JSON spec served by
+  the running application (feature 4.5 added springdoc).
+- `GET /swagger-ui.html` — interactive UI for exploration.
+
+The frontend's typed API client aligns to those specs via
+`openapi-typescript` codegen (planned in the frontend's feature 3). STOMP
+topics and message shapes are documented in `docs/architecture.md` and
+mirrored in the frontend's own `docs/architecture.md`. When STOMP
+contracts change, both architecture docs update in coordination.
+
+The frontend operates on its own harness (leader / implementer / reviewer)
+and its own `feature_list.json`. The two repos do not share git history
+or a monorepo; coordination happens through the contract docs and the
+discipline enforced by each side's leader role at planning time. Feature
+5 of `chess-backend-java` (`game-rest-api`) and feature 4.5 (`api-docs`)
+were closed with this discipline already in place; future features that
+touch the contract should continue it.
+
+---
+
+## Reference: the historical Node backend
+
+The Node backend that originally lived alongside this code — in the
+predecessor of `chess-frontend`, when that repo was still called
+`chess-game` and contained both frontend and backend — is a behavioral
+specification, not a code reference. Its source is preserved in the
+`refactor-base` branch of `chess-frontend` (`backend/src/index.ts` on
+that branch). Treat its socket events as the source of truth for *what*
+the system does, not *how* it should be coded.
 
 Notable behaviors:
 
@@ -174,8 +218,9 @@ Notable behaviors:
 - `closeRoom` — explicit close that removes remaining sockets from the
   room and deletes it.
 
-The Java version will use REST + STOMP rather than raw Socket.IO events.
-The conceptual mapping is part of each feature's plan in `progress/current.md`.
+The Java version uses REST + STOMP rather than raw Socket.IO events. The
+conceptual mapping was developed feature by feature in `progress/current.md`
+and `progress/history.md`.
 
 ---
 

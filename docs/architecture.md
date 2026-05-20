@@ -90,9 +90,177 @@ source of truth lives in the controllers themselves: `@Tag`,
 `@Operation`, and `@ApiResponse` annotations on each `@RestController`,
 plus selective `@Schema` annotations on the record DTOs. A
 top-level `@Bean OpenAPI` in `config/` contributes the title,
-description, and build version. The WebSocket / STOMP surface
-(feature 6+) is intentionally out of springdoc's scope; it is
-documented separately in the README when it lands.
+description, and build version. The WebSocket / STOMP surface is
+intentionally out of springdoc's scope; it is documented in the
+"STOMP API contract" section below.
+
+## STOMP API contract
+
+REST is the entry point for **mutations** (create room, join room,
+apply a move). STOMP is the side channel for **read-only push** —
+after a move is accepted on the REST side, the server broadcasts a
+`MoveEvent` to every subscriber of that game's topic. This section
+is the source of truth for the STOMP surface; the `chess-frontend`
+repo mirrors it in its own `docs/architecture.md` when it reaches
+its feature 5 (`stomp-live-updates`).
+
+### Endpoint and broker
+
+- **WebSocket endpoint:** `/ws`. Clients perform a STOMP `CONNECT`
+  over native WebSocket. SockJS fallback is **not** enabled —
+  modern browsers plus the targeted `@stomp/stompjs` frontend
+  client handle native WebSocket fine, and SockJS would add
+  surface area we do not need.
+- **Broker:** Spring's in-process `SimpleBroker`, registered on
+  the `/topic` prefix. Subscriptions and fan-out happen inside
+  the application process — sufficient for a single-instance
+  deployment. Scaling out to multiple instances would require an
+  external broker (RabbitMQ, ActiveMQ, or equivalent) so that a
+  broadcast on instance A reaches subscribers connected to
+  instance B. That is a documented constraint to revisit, not a
+  current concern.
+- **Application destination prefix:** `/app`, registered for
+  future-proofing. This feature does not introduce any client-to-
+  server STOMP messages — `MoveEvent` is the only traffic, and it
+  flows server-to-client. The prefix is in place so a future
+  `@MessageMapping` endpoint can land without a config change.
+
+### Allowed origins (CORS for the WebSocket handshake)
+
+The `/ws` endpoint's allowed origin patterns:
+
+- `https://dariogguillen.github.io` (production frontend, GitHub
+  Pages).
+- `http://localhost:*` (development frontend on any localhost
+  port).
+
+We use `setAllowedOriginPatterns` (not `setAllowedOrigins`)
+because Spring disallows `setAllowedOrigins("*")` combined with
+credentials; an explicit pattern list is the canonical workaround.
+The list mirrors the existing CORS strategy on the REST side.
+
+### Subscriptions
+
+Clients subscribe to **`/topic/games/{gameId}`** — one logical
+channel per game. Every successful move applied via
+`POST /api/games/{id}/moves` produces exactly one `MoveEvent` on
+this channel. There is no replay — subscribers only see events
+that occur while they are subscribed. A client that joins late
+catches up by calling `GET /api/games/{id}` once and then relying
+on STOMP for the live tail.
+
+### `MoveEvent` shape
+
+Broadcast payload, serialized as JSON by Spring's default Jackson
+converter:
+
+```json
+{
+  "gameId": "550e8400-e29b-41d4-a716-446655440000",
+  "movedBy": "8f14e45f-ceea-467a-9575-d4b9b3e8b3a3",
+  "side": "WHITE",
+  "from": "e2",
+  "to": "e4",
+  "promotion": null,
+  "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+  "status": "ONGOING",
+  "turn": "BLACK",
+  "moveNumber": 1,
+  "playedAt": "2026-05-19T10:23:11.123Z"
+}
+```
+
+Field documentation:
+
+- **`gameId`** — the id of the game the move was applied to;
+  matches the `{gameId}` segment in the topic.
+- **`movedBy`** — the id of the player that submitted the move
+  (the value of `X-Player-Id` on the REST request). Lets a client
+  filter out its own moves; the REST response already carried the
+  new state, so re-processing the STOMP event would be redundant.
+- **`side`** — `WHITE` or `BLACK`, the side that played this
+  move. Redundant with `movedBy` server-side (we know which side
+  each player is) but a convenience for the client.
+- **`from`** — the origin square in lowercase algebraic
+  notation, e.g. `"e2"`. Same alphabet as the REST `MoveRequest`.
+- **`to`** — the destination square, same alphabet.
+- **`promotion`** — `"KNIGHT"`, `"BISHOP"`, `"ROOK"`, `"QUEEN"`,
+  or `null` for non-promotion moves. Mirrors the REST request's
+  optional promotion field.
+- **`fen`** — the resulting position after the move was applied,
+  in Forsyth-Edwards Notation.
+- **`status`** — the resulting `GameStatus`: `ONGOING`, `CHECK`,
+  `CHECKMATE`, `STALEMATE`, `DRAW`, or `ABANDONED`.
+- **`turn`** — the side whose turn it is now (the inverse of
+  `side`). Convenience for the client.
+- **`moveNumber`** — the 1-based count of half-moves played in
+  the game after this move. Useful for ordering and for
+  detecting missed events (a gap in the sequence means the
+  subscriber missed something and should re-sync via REST).
+- **`playedAt`** — ISO-8601 instant in UTC, sourced from the
+  service's injected `Clock` so tests can pin it deterministically.
+
+### No STOMP-level authentication
+
+STOMP `CONNECT` does not carry credentials. Anyone who knows a
+`gameId` can subscribe to its topic and observe the live move
+stream. This is a **deliberate** choice for the portfolio scope:
+
+- It mirrors the REST `GET /api/games/{id}` design, which is also
+  unauthenticated.
+- It is the foundation that **feature 6.5 (spectator mode)**
+  builds on — a spectator is just any party that subscribed to the
+  topic without being one of the two players.
+- A real product would lock both surfaces behind the same auth
+  layer (OAuth, session cookies, JWT — pick one). We have not
+  introduced that layer; when we do, both surfaces gain it
+  together.
+
+The mutation surface (REST `POST /api/games/{id}/moves`) is
+already gated on `X-Player-Id` matching the side to move — a
+subscriber who is not one of the two players cannot inject moves
+into the game, only observe them.
+
+### Failure mode
+
+Broadcasts are **fire-and-forget**. After `GameStore.compute`
+returns successfully and the mutation is persisted, the service
+attempts `SimpMessagingTemplate.convertAndSend("/topic/games/" +
+gameId, event)`. If the call throws a `RuntimeException` (broker
+misconfigured, serialization fails, etc.), the service logs at
+`WARN` with the `gameId` and the exception message, and does not
+rethrow. Specifically:
+
+- The REST POST still returns 200 with the updated state — the
+  client that submitted the move has authoritative confirmation
+  via REST, and broadcast loss does not break the originator.
+- Subscribers may miss this update. Recovery is a client concern
+  handled by the standard pattern: on STOMP disconnect or
+  inconsistency, re-fetch state via
+  `GET /api/games/{id}` and resume on the topic.
+
+The broadcast happens **outside** the `compute` lambda. A failing
+broadcast inside the lambda would propagate out of `compute` and
+look like a failed mutation, which it is not — the state is
+already committed. This is the same separation-of-concerns
+principle that keeps controllers free of try/catch.
+
+### Ordering and concurrency
+
+`ConcurrentHashMap.compute` serializes concurrent moves on the
+same `gameId`, so the broadcast for move N completes (or fails)
+before the broadcast for move N+1 begins. Subscribers see moves
+in the order they were applied. Broadcasts for **different**
+games run in parallel; `SimpMessagingTemplate.convertAndSend` is
+thread-safe.
+
+### Cross-repo coordination
+
+The `chess-frontend` repo mirrors this section in its own
+`docs/architecture.md` when it reaches feature 5
+(`stomp-live-updates`). Until then, the contract above is the
+single source of truth. Changes here must be reflected in the
+frontend doc the next time the two are touched.
 
 ## Source of truth
 
