@@ -29,8 +29,8 @@ push to main / workflow_dispatch
 │                                                                 │
 │   ssh deploy@chess-backend.duckdns.org                          │
 │     aws ecr get-login-password | docker login                   │
-│     APP_IMAGE=…:<sha> docker compose -f docker-compose.prod.yml │
-│                       pull && up -d                             │
+│     export APP_IMAGE_REPO=<ecr-url> APP_IMAGE_TAG=<sha>          │
+│     docker compose -f docker-compose.prod.yml pull && up -d     │
 │                                                                 │
 │   curl https://chess-backend.duckdns.org/api/health  ──► "UP"   │
 └─────────────────────────────────────────────────────────────────┘

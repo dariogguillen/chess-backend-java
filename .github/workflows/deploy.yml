@@ -92,14 +92,20 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
 
-          APP_IMAGE="${ECR_REPO}:${IMAGE_TAG}"
-
+          # Compose v5.1.4 mis-parses `${VAR:-default}` when the default
+          # contains a colon, so docker-compose.prod.yml splits the image
+          # reference into APP_IMAGE_REPO (the ECR URL) and APP_IMAGE_TAG
+          # (the commit SHA). Both must be `export`ed before each compose
+          # call so they are in the environment when compose evaluates the
+          # variable references.
           ssh -i ~/.ssh/deploy_key "deploy@${EC2_HOST}" \
-            "aws ecr get-login-password --region ${AWS_REGION} \
-              | docker login --username AWS --password-stdin ${ECR_REPO} \
+            "export APP_IMAGE_REPO='${ECR_REPO}' \
+             && export APP_IMAGE_TAG='${IMAGE_TAG}' \
+             && aws ecr get-login-password --region '${AWS_REGION}' \
+                | docker login --username AWS --password-stdin '${ECR_REPO}' \
              && cd /opt/chess \
-             && APP_IMAGE=${APP_IMAGE} docker compose -f docker-compose.prod.yml pull \
-             && APP_IMAGE=${APP_IMAGE} docker compose -f docker-compose.prod.yml up -d"
+             && docker compose -f docker-compose.prod.yml pull \
+             && docker compose -f docker-compose.prod.yml up -d"
 
       - name: Smoke test /api/health
         run: |
