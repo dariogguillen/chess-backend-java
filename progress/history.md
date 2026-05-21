@@ -1271,3 +1271,200 @@ end. `/api/health` and core endpoints are unaffected.
 - `feature_list.json` (modified: us-east-1 → us-east-2, Ubuntu 22.04 → Ubuntu 24.04, added acceptance bullet for the `forward-headers-strategy` regression IT, `backend-aws-infra.status` → `done`)
 
 **Feature note:** `notes/07.5-backend-aws-infra.md`.
+
+## 2026-05-20 — backend-cicd-pipeline
+
+**Status:** done
+
+**Summary:** Automated the production deploy. A push to `main` now
+triggers `.github/workflows/deploy.yml` which runs `./init.sh`,
+authenticates to AWS via **OIDC** (no static keys anywhere — the IAM
+role is scoped by trust policy to
+`repo:dariogguillen/chess-backend-java:ref:refs/heads/main`), builds
++ tags + pushes the Docker image to ECR (commit SHA + `latest`), SSHes
+into EC2 as `deploy` with a dedicated CI key, runs
+`docker compose pull && up -d` from `/opt/chess/`, and smoke-tests
+`https://chess-backend.duckdns.org/api/health` until it returns 200.
+Cleanly closes the trifecta 7 → 7.5 → 7.7 that took the backend from
+"runs locally in Docker" to "production HTTPS deploys on every push to
+main, fully reproducible from source".
+
+**Terraform additions (6 resources + 1 in-place modify):**
+
+1. `aws_iam_openid_connect_provider.github` — registers
+   `token.actions.githubusercontent.com` as a trusted OIDC provider.
+   Thumbprint `6938fd4d98bab03faadb97b34396831e3780aea1` hardcoded
+   (modern AWS validates via JWKS, but the thumbprint is required to
+   create the provider).
+2. `aws_iam_role.github_actions` — assumable by the OIDC provider
+   with a trust policy that requires both `aud = sts.amazonaws.com`
+   and `sub LIKE "repo:dariogguillen/chess-backend-java:ref:refs/heads/main"`.
+   Without the `sub` condition, ANY GitHub workflow could assume the
+   role.
+3. `aws_iam_role_policy_attachment` — attaches
+   `AmazonEC2ContainerRegistryPowerUser` to the GHA role. Power-user is
+   the conventional starting point; a future polish would tighten
+   this to a least-privilege custom policy scoped to
+   `arn:aws:ecr:us-east-2:546046686081:repository/chess-backend`.
+4. `aws_iam_role.ec2_ecr_pull` — assumable by `ec2.amazonaws.com`.
+5. `aws_iam_role_policy_attachment` — attaches
+   `AmazonEC2ContainerRegistryReadOnly` (pull only, no push from EC2).
+6. `aws_iam_instance_profile.ec2` — wraps the EC2 role.
+7. `aws_instance.app` modified **in-place** to add
+   `iam_instance_profile = aws_iam_instance_profile.ec2.name`. EC2
+   stayed running during the `terraform apply` (~14s in-place modify,
+   no replacement).
+
+**Cloud-init template additions:**
+
+- Replaced the (since removed by Ubuntu 24.04) `apt install awscli`
+  with the **official AWS CLI v2 installer** pattern: `apt install -y
+  unzip && curl -fsSL ... awscli-exe-linux-x86_64.zip -o /tmp/... &&
+  unzip ... && /tmp/aws/install`. This affects future EC2 instances
+  only; the user manually ran the same installer on the existing
+  instance (documented in runbook section 11).
+
+**Workflow shape (`.github/workflows/deploy.yml`):**
+
+- Triggers: `push: branches: [main]` + `workflow_dispatch`.
+- `concurrency: group: deploy-prod, cancel-in-progress: false` —
+  queues rapid pushes instead of dropping them.
+- `permissions: id-token: write, contents: read` — the single line
+  that enables OIDC. Misconfiguring this is the #1 OIDC gotcha.
+- 8 steps: Checkout → Set up Java 21 → Run init.sh → Configure AWS
+  (OIDC) → Login to ECR → Build + tag + push → Deploy via SSH →
+  Smoke test (12 retries × 5s = 60s cap).
+
+**Manual one-time setup (documented in runbook sections 11/12/13):**
+
+1. Install AWS CLI v2 on the existing EC2 via the official installer
+   (cloud-init was retrofit for future instances).
+2. Generate a dedicated CI SSH key (`~/.ssh/chess_ci`, ed25519, no
+   passphrase) and append the pubkey to `/home/deploy/.ssh/authorized_keys`.
+3. Set GitHub secrets `AWS_DEPLOY_ROLE_ARN` (Terraform output
+   `github_actions_role_arn`) and `DEPLOY_SSH_KEY` (the chess_ci
+   private key) via `gh secret set` from inside the repo dir.
+
+**Decisions captured in the note:**
+
+1. **OIDC over static IAM user keys**: short-lived STS credentials,
+   no leakable secret, scoped to specific workflows by `sub` claim.
+   The conventional pattern circa 2025+.
+2. **`sub` claim restriction to one repo + branch**: critical —
+   without it, any GitHub Actions workflow can assume the role.
+3. **IAM instance profile vs IAM user keys on EC2**: EC2 picks up
+   short-lived credentials via IMDSv2 silently when awscli runs. No
+   `aws configure`, no static keys.
+4. **`AmazonEC2ContainerRegistryPowerUser` on GHA role**: conventional
+   starting point. Polish opportunity: replace with a custom
+   least-privilege policy scoped to the chess-backend ECR repo ARN.
+5. **`AmazonEC2ContainerRegistryReadOnly` on EC2 role**: strictly
+   minimum. EC2 only pulls, never pushes.
+6. **Dedicated CI SSH key, not reuse personal**: separation of
+   concerns + rotation + audit + blast radius control.
+7. **`docker compose pull && up -d` over `docker save | ssh | docker load`**:
+   faster, registry-native, leverages the ECR repo provisioned in
+   7.5. The manual `save | load` stays in the runbook as a fallback
+   for emergency deploys without a working CI/CD.
+8. **In-place IAM instance profile attach**: Terraform attribute-level
+   diff. Verified `~` (modify) not `-/+` (replace) in the plan before
+   applying. EC2 stayed running.
+9. **Concurrency `cancel-in-progress: false`**: rapid main pushes
+   queue instead of dropping. For a sparse-push portfolio, trivial;
+   for high-traffic main branches it prevents the partial-push +
+   never-restarted-container failure mode.
+10. **Ubuntu 24.04 dropped the `awscli` apt package** (post-2024 LTS
+    decision by Canonical): mandates the official v2 installer
+    (curl + unzip + run installer). Affects both cloud-init (for
+    future instances) and the manual one-time upgrade in the runbook.
+
+**Live deployment evidence:**
+
+- `terraform apply`: 6 resources created + 1 in-place modify in <30s.
+- `aws sts get-caller-identity` from inside the EC2 returns
+  `assumed-role/chess-backend-ec2-ecr-pull/i-0af4adeab6d7afb02` —
+  proves instance profile + IMDSv2 working.
+- First workflow run failed at "Deploy to EC2 over SSH" with
+  `pull access denied for chess-backend` (see post-review amendments
+  below).
+- Second workflow run after the fix: **all 8 stages green in 4m 25s**.
+- ECR repository now has 2 images visible (commit SHA tags + a
+  rolling `latest`); lifecycle policy will keep the last 5.
+- `curl https://chess-backend.duckdns.org/api/health` returns
+  `HTTP/2 200 {"status":"UP"}`.
+- `curl https://chess-backend.duckdns.org/v3/api-docs | jq '.servers'`
+  now returns `https://chess-backend.duckdns.org` (NOT `http://`) —
+  the `forward-headers-strategy: framework` fix from 7.5 reached
+  production for the first time via this deploy.
+
+**Post-review amendments (folded into the same feature):**
+
+The reviewer's first walkthrough was clean, but a separate bug
+discovered DURING the runbook execution was folded back into 7.7's
+scope before close:
+
+1. **Ubuntu 24.04 `awscli` apt package removal**: the original
+   runbook + cloud-init template both said `apt install awscli`,
+   which fails with "Package 'awscli' has no installation candidate"
+   on the cloud AMI. Fixed by switching to the AWS CLI v2 official
+   installer in both the cloud-init template and the runbook
+   section 11.
+
+2. **Docker Compose v5.1.4 colon-in-default parser bug**: the
+   original `docker-compose.prod.yml` used
+   `image: ${APP_IMAGE:-chess-backend:latest}` to allow CI/CD to
+   override with the ECR URL+SHA while keeping the manual-deploy
+   default. Compose v5.1.4 (which ships with Docker 29.5.2 on
+   Ubuntu 24.04) silently fell back to the default `chess-backend:latest`
+   regardless of whether APP_IMAGE was set inline, exported, or
+   written to `.env`. SPRING_* variables in the same compose file
+   substituted correctly — confirmed the bug is specific to the
+   `:-default-with-colons` parser path. Fix: split into two
+   variables without colons in defaults:
+   `image: ${APP_IMAGE_REPO:-chess-backend}:${APP_IMAGE_TAG:-latest}`,
+   with the workflow `export`ing both `APP_IMAGE_REPO` and
+   `APP_IMAGE_TAG` before each `docker compose` call inside the
+   SSH session. Documented in the note's "Gotchas" section.
+
+3. **The fix doesn't sync the EC2's compose file**: `/opt/chess/docker-compose.prod.yml`
+   is not currently scp'd by the workflow — only the image is
+   updated via ECR. Surfaced as a polish opportunity (next deploy
+   workflow improvement). For 7.7's close, the user manually
+   scp'd the new compose to `/opt/chess/` after the implementer's
+   fix; the running workflow then uses it correctly.
+
+4. **Cross-feature: `feature_list.json` for `github-actions-ci`
+   (priority 12) was re-scoped** to "PR-only validation workflow" —
+   `./init.sh` on pull requests, Maven cache, status badge in
+   README. The push-to-main path is fully covered by this feature's
+   `deploy.yml`. The original 12 description spoke of "push and
+   pull request"; now it's "pull request only".
+
+**Caveat at close (user-acknowledged):**
+
+The EC2's `/opt/chess/docker-compose.prod.yml` is now manually
+synced (post the round-2 compose split). Future workflow runs will
+correctly pull-and-restart, but if `docker-compose.prod.yml` in the
+repo changes again, the user will need to scp it manually OR a
+follow-up feature should add a `scp` step to the workflow. This is
+documented in the note's "Gotchas" + flagged for a future polish.
+
+**Final test counts:** surefire **82** (unchanged), failsafe **33**
+(unchanged from 7.5 close — no new ITs in 7.7), grand total **115**.
+
+**Files touched:**
+
+- `.github/workflows/deploy.yml` (new; 8-stage deploy workflow with OIDC + ECR + SSH + smoke test)
+- `infra/main.tf` (modified: +OIDC provider, +2 IAM roles, +2 policy attachments, +instance profile, modified aws_instance.app with iam_instance_profile)
+- `infra/variables.tf` (modified: +github_repo, +github_branch)
+- `infra/outputs.tf` (modified: +github_actions_role_arn)
+- `infra/ec2-cloud-init.sh.tpl` (modified: removed apt awscli, added unzip + AWS CLI v2 official installer)
+- `infra/terraform.tfvars.example` (modified: documented the two new optional variables)
+- `docker-compose.prod.yml` (modified: split image var into APP_IMAGE_REPO + APP_IMAGE_TAG to dodge compose v5.1.4 colon-in-default bug)
+- `docs/deploy-runbook.md` (modified: +sections 11/12/13 for one-time EC2 awscli install + CI SSH key + GH secrets + trigger/monitor a deploy; +CI/CD architecture diagram)
+- `docs/architecture.md` (modified: +"Deploy automation" subsection at lines 112-136)
+- `README.md` (modified: extended "Deployment" section with the CI/CD paragraph + link to deploy.yml)
+- `notes/07.7-backend-cicd-pipeline.md` (new; ~474-line feature note covering OIDC, IMDSv2, sub claim restriction, IAM trade-offs, compose v5.1.4 gotcha, Ubuntu 24.04 awscli gotcha, dedicated CI key separation rationale, polish opportunities)
+- `feature_list.json` (modified: deploy-backend.yml→deploy.yml in acceptance, re-scoped github-actions-ci priority 12 to PR-only validation, backend-cicd-pipeline.status → done)
+
+**Feature note:** `notes/07.7-backend-cicd-pipeline.md`.

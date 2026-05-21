@@ -162,10 +162,10 @@
     "id": "backend-cicd-pipeline",
     "title": "GitHub Actions CI/CD pipeline with OIDC and ECR",
     "description": "Automate the deploy. GitHub Actions workflow runs ./init.sh, builds the Docker image, pushes to ECR using OIDC-federated authentication (no long-lived AWS access keys), SSHes into the EC2 instance, and triggers a docker pull + container restart. Includes a post-deploy smoke test against the production /api/health endpoint. Idempotent: pushing the same commit twice is safe.",
-    "status": "in_progress",
+    "status": "done",
     "priority": 7.7,
     "acceptance": [
-      ".github/workflows/deploy-backend.yml triggers on push to main.",
+      ".github/workflows/deploy.yml triggers on push to main.",
       "Job runs ./init.sh; build fails if init.sh red.",
       "AWS OIDC trust configured: IAM identity provider for token.actions.githubusercontent.com, IAM role with trust policy for the repo, scoped permissions (ECR push + minimal else).",
       "GitHub Actions uses aws-actions/configure-aws-credentials with role-to-assume; no AWS_ACCESS_KEY_ID secret stored.",
@@ -231,15 +231,18 @@
   },
   {
     "id": "github-actions-ci",
-    "title": "CI pipeline on GitHub Actions",
-    "description": "GitHub Actions workflow that runs ./init.sh on every push and pull request. Caches Maven dependencies.",
+    "title": "CI pipeline on GitHub Actions (PR validation)",
+    "description": "GitHub Actions workflow that runs ./init.sh on every pull request (not on push to main — feature 7.7's deploy.yml already validates that path). Catches regressions before they hit main. Caches Maven dependencies. Adds a status badge to README.",
     "status": "pending",
     "priority": 12,
     "acceptance": [
-      ".github/workflows/ci.yml exists and runs ./init.sh.",
-      "Build passes on main.",
-      "Status badge added to README.",
-      "./init.sh passes."
+      ".github/workflows/ci.yml exists and runs ./init.sh on pull_request events targeting main.",
+      "Maven cache configured (actions/setup-java@v4 with cache: maven).",
+      "Workflow uses concurrency group keyed by PR number with cancel-in-progress: true (a new push to the PR cancels the in-flight check).",
+      "Workflow runs on ubuntu-latest, Java 21 Temurin (mirroring deploy.yml).",
+      "PR is blocked from merge if the workflow fails (user adds branch protection via GitHub UI; out of code scope but documented).",
+      "Status badge added to README near the top.",
+      "./init.sh passes locally and remotely."
     ]
   },
   {
