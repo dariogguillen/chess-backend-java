@@ -72,14 +72,15 @@ service-level types live alongside the service that consumes them and
 are mapped to and from domain types at the service boundary.
 
 `service/` also holds the **storage seams** for active state: small
-interfaces like `RoomStore` and `GameStore`, with `cache/InMemoryRoomStore` /
-`cache/InMemoryGameStore` as the only registered implementations today. The
-seam is the swap point for feature 7 (Redis-backed active state) — the
-in-memory beans are replaced by `RedisRoomStore` / `RedisGameStore`
-without touching `RoomService` or any consumer above the service layer.
-Putting the interfaces in `service/` and their implementations in `cache/`
-keeps the port next to its sole consumer while the adapters live alongside
-the future Redis-backed siblings.
+interfaces like `RoomStore` and `GameStore`. Feature 8 wired the
+Redis-backed implementations — `cache/RedisRoomStore` and
+`cache/RedisGameStore` — as the registered beans, replacing the day-one
+`InMemory*` adapters without any change to `RoomService` or consumers
+above the service layer. Putting the interfaces in `service/` and their
+implementations in `cache/` keeps the port next to its sole consumer
+while the adapters live alongside other Redis-backed code. The TTL,
+key schema, and atomicity model for the Redis swap are documented in
+the "Active state in Redis" subsection under "State strategy" below.
 
 ### Deployment artifact
 
@@ -458,6 +459,44 @@ Two stores with clear responsibilities:
 A game lives in Redis while it is active. When it completes (checkmate,
 draw, resignation, abandonment), it is written to Postgres and removed
 from Redis.
+
+### Active state in Redis
+
+Feature 8 swaps the day-one in-memory stores
+(`InMemoryRoomStore` / `InMemoryGameStore`) for Redis-backed
+implementations (`RedisRoomStore` / `RedisGameStore`) behind the
+unchanged `RoomStore` / `GameStore` seam. The service, controller, and
+WebSocket layers are not aware of the swap.
+
+- **Key schema.** Flat namespaces: `room:{id}` and `game:{id}`. Values
+  are JSON serialized by per-type
+  `Jackson2JsonRedisSerializer<T>` so `redis-cli GET room:ABC123`
+  returns inspectable JSON without `@class` type metadata.
+- **TTL.** Every `save` calls `opsForValue().set(key, value, ttl)` with
+  `ttl` taken from `chess.redis.active-state-ttl` (default `24h`, bound
+  through `@ConfigurationProperties` as a `Duration`). Reads do not
+  refresh; only mutations do. An abandoned room or game disappears
+  after the configured lease elapses with no extra background job.
+- **Atomicity.** The `compute(id, fn)` contract is preserved via a
+  process-local `StripedKeyLock` (`ConcurrentHashMap<String,
+  ReentrantLock>`): two callers on the same key serialize on the same
+  lock, different keys proceed in parallel. This is sufficient because
+  the production deployment is single-instance (see
+  "Deployment artifact" above). Moving to multi-instance would replace
+  this lock with a Redis-side mechanism (`WATCH/MULTI/EXEC`, Redlock,
+  or a Lua script) behind the same `RoomStore` / `GameStore` interface
+  — no consumer change required.
+- **Cross-store invariant.** "A game exists iff its room is `ACTIVE`"
+  still lives where it did before, inside `RoomService.joinRoom`: the
+  `gameStore.save(game)` runs inside the `roomStore.compute(roomId,
+  ...)` block, so the two writes happen sequentially while the
+  room-level lock is held. A JVM crash between the two writes is the
+  same worst case as before (a room marked `ACTIVE` with no game) and
+  will be formalised by feature 10 (`disconnect-handling`).
+- **Out of scope.** The viewer-count tracker (feature 6.5,
+  `ViewerCountTracker`) stays in-memory: it is bound to STOMP sessions
+  on this server, which already cannot survive a restart. Moving it to
+  Redis would be misleading.
 
 ## Communication patterns
 

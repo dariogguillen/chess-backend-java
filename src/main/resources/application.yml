@@ -10,6 +10,13 @@ spring:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
       port: ${SPRING_DATA_REDIS_PORT:6379}
 
+chess:
+  redis:
+    # TTL for active-state keys (room:{id}, game:{id}) in Redis. Every successful save
+    # refreshes the TTL; reads do not. A game with no activity for this long self-cleans.
+    # Accepts any Spring-relaxed Duration form: 24h, PT24H, 86400s, 1d.
+    active-state-ttl: ${CHESS_REDIS_ACTIVE_STATE_TTL:24h}
+
 server:
   # Honor X-Forwarded-* headers (Proto, Host, For) when the app sits behind a
   # reverse proxy. Caddy in production sends X-Forwarded-Proto: https by default;

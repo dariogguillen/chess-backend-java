@@ -1468,3 +1468,49 @@ documented in the note's "Gotchas" + flagged for a future polish.
 - `feature_list.json` (modified: deploy-backend.yml→deploy.yml in acceptance, re-scoped github-actions-ci priority 12 to PR-only validation, backend-cicd-pipeline.status → done)
 
 **Feature note:** `notes/07.7-backend-cicd-pipeline.md`.
+
+---
+
+## 2026-05-21 — redis-active-state
+
+Migrated the active state (Rooms and Games) from in-memory `ConcurrentHashMap`s to Redis with a 24h TTL, refreshed on every write. Pure storage swap behind the existing `RoomStore` / `GameStore` interfaces — no service, controller, or websocket file touched, no API contract change, no frontend coordination needed. The strongest regression signal was that every existing IT (`RoomControllerIT`, `GameControllerIT`, `GameWebSocketIT`, `ViewerCountIT`, `OpenApiIT`, `OpenApiForwardedHeadersIT`, `HealthControllerIT`) passed unchanged against the new Redis-backed stores.
+
+**Approach decisions** (with rejected alternatives documented in the feature note):
+
+1. **Two typed `RedisTemplate<String, T>` beans** (one for `Room`, one for `Game`) over a single `GenericJackson2JsonRedisSerializer`. Rationale: the domain has no polymorphism to preserve; per-type `Jackson2JsonRedisSerializer<T>` keeps `redis-cli GET room:abc` output free of `@class` metadata and the round-trip is type-safe at compile time.
+2. **Spring Boot's autoconfigured `ObjectMapper` injected into `Jackson2JsonRedisSerializer`** rather than the single-arg constructor that builds an internal mapper. The single-arg variant would silently omit the `jackson-datatype-jdk8` module and serialize `Optional<Piece>` (on `Move.promotion`) as `{present, value}`, breaking the `Game` round-trip. Asserted by `RedisGameStoreIT.save_thenFindById_returnsEqualGame_includingMoveHistory`.
+3. **Local per-key `ReentrantLock`s via `StripedKeyLock`** to preserve the `ConcurrentHashMap.compute(k, f)` semantics. Rejected: `WATCH/MULTI/EXEC` (Redis-idiomatic CAS, but adds a retry loop for zero benefit on a single-instance deploy) and Lua scripts (logic would leave Java's type system). The single-instance assumption and the upgrade path are explicit in `docs/architecture.md` and the feature note.
+4. **TTL via `@ConfigurationProperties("chess.redis")` with a `Duration activeStateTtl`**, default `24h`, env override `CHESS_REDIS_ACTIVE_STATE_TTL`. Applied inside `save`; `compute` re-writes via `save` so refresh-on-activity is free. Reads never refresh.
+5. **`ViewerCountTracker` (feature 6.5) stays in-memory** — explicitly out of scope. STOMP sessions are server-local; migrating viewer state to Redis would be misleading. Documented in the note and `architecture.md`.
+6. **`RedisTemplate` directly, not `@RedisHash + CrudRepository`** — records don't fit the `@RedisHash` mutable-class model. The explicit template is more didactic and preserves the records-only convention.
+
+**Reviewer rounds:** 1 → REJECTED on a single fully-qualified `new java.util.ArrayList<>(...)` in `RedisGameStoreIT.java:167` (missing import). 2 → APPROVED.
+
+**Test totals:** 86 unit + 48 IT = 134 tests, all green, no skips. New tests: `StripedKeyLockTest` (4), `RedisRoomStoreIT` (6), `RedisGameStoreIT` (5), `RedisTtlIT` (4) = 19 new test cases.
+
+**Files touched:**
+
+Created:
+- `src/main/java/io/github/dariogguillen/chess/cache/RedisRoomStore.java`
+- `src/main/java/io/github/dariogguillen/chess/cache/RedisGameStore.java`
+- `src/main/java/io/github/dariogguillen/chess/cache/StripedKeyLock.java`
+- `src/main/java/io/github/dariogguillen/chess/config/RedisConfig.java`
+- `src/main/java/io/github/dariogguillen/chess/config/RedisActiveStateProperties.java`
+- `src/test/java/io/github/dariogguillen/chess/cache/StripedKeyLockTest.java`
+- `src/test/java/io/github/dariogguillen/chess/cache/RedisRoomStoreIT.java`
+- `src/test/java/io/github/dariogguillen/chess/cache/RedisGameStoreIT.java`
+- `src/test/java/io/github/dariogguillen/chess/cache/RedisTtlIT.java`
+- `notes/08-redis-active-state.md`
+
+Modified:
+- `src/main/resources/application.yml` (added `chess.redis.active-state-ttl: ${CHESS_REDIS_ACTIVE_STATE_TTL:24h}`)
+- `docs/architecture.md` (new "Active state in Redis" subsection under "State strategy")
+- `feature_list.json` (`redis-active-state.status` → `done`)
+
+Deleted:
+- `src/main/java/io/github/dariogguillen/chess/cache/InMemoryRoomStore.java`
+- `src/main/java/io/github/dariogguillen/chess/cache/InMemoryGameStore.java`
+
+**Deployment note:** the change is live in code and in the test suite, but not yet in production on EC2. Production deploys via `.github/workflows/deploy.yml` on push to `main`. The compose stack on EC2 already runs `redis:7-alpine` alongside the app (since feature 7.5), so no infra changes are needed — the next deploy will simply start using the new Redis-backed stores.
+
+**Feature note:** `notes/08-redis-active-state.md`.

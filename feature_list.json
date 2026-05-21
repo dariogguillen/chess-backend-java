@@ -181,7 +181,7 @@
     "id": "redis-active-state",
     "title": "Active game state in Redis",
     "description": "Move the in-memory state of active games and rooms to Redis. Active rooms get a TTL (e.g., 24h) so abandoned rooms self-clean. Spring Data Redis with a synchronous template.",
-    "status": "pending",
+    "status": "done",
     "priority": 8,
     "acceptance": [
       "Rooms and active games are stored in Redis, keyed by room/game ID.",
