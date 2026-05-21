@@ -9,3 +9,13 @@ spring:
     redis:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
       port: ${SPRING_DATA_REDIS_PORT:6379}
+
+server:
+  # Honor X-Forwarded-* headers (Proto, Host, For) when the app sits behind a
+  # reverse proxy. Caddy in production sends X-Forwarded-Proto: https by default;
+  # without this setting, Springdoc reports servers[0].url as http://... (the
+  # inner request scheme) and the browser blocks Swagger UI "Try it out" as
+  # mixed content. The `framework` strategy lets Spring's ForwardedHeaderFilter
+  # rewrite the request URL. In local dev (no X-Forwarded-Proto header),
+  # behavior is unchanged — Spring falls back to the actual request scheme.
+  forward-headers-strategy: framework

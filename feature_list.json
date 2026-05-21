@@ -141,11 +141,11 @@
   {
     "id": "backend-aws-infra",
     "title": "Provision AWS infrastructure for the backend",
-    "description": "Provision the AWS Free Tier infrastructure manually first, scripts after: EC2 t3.micro (Ubuntu 22.04), RDS Postgres db.t3.micro, Security Groups, Elastic IP. Set up Caddy as reverse proxy with auto-TLS via Let's Encrypt, pointing at a Duck DNS subdomain. Deploy the Docker image manually (pull from local for now; ECR auth comes in feature 7.7). Set up AWS Budget alarm at $1/month. Document everything in a runbook so the steps can be re-executed (and so feature 7.7's automation has clear targets).",
-    "status": "pending",
+    "description": "Provision the AWS Free Tier infrastructure manually first, scripts after: EC2 t3.micro (Ubuntu 24.04), RDS Postgres db.t3.micro, Security Groups, Elastic IP. Set up Caddy as reverse proxy with auto-TLS via Let's Encrypt, pointing at a Duck DNS subdomain. Deploy the Docker image manually (pull from local for now; ECR auth comes in feature 7.7). Set up AWS Budget alarm at $1/month. Document everything in a runbook so the steps can be re-executed (and so feature 7.7's automation has clear targets). Includes Spring Boot's `server.forward-headers-strategy` so Springdoc reports the public HTTPS URL when running behind Caddy.",
+    "status": "done",
     "priority": 7.5,
     "acceptance": [
-      "EC2 t3.micro running Ubuntu 22.04 in us-east-1, with Docker installed and a non-root user for app operations.",
+      "EC2 t3.micro running Ubuntu 24.04 in us-east-2, with Docker installed and a non-root user for app operations.",
       "RDS Postgres db.t3.micro in the same region, security group allowing only the EC2 instance's IP.",
       "Elastic IP attached to the EC2 instance.",
       "Duck DNS subdomain (e.g. chess-backend.duckdns.org) pointing at the Elastic IP.",
@@ -154,7 +154,8 @@
       "Backend container running, healthcheck green, /api/health reachable over HTTPS at the public subdomain.",
       "AWS Budget alarm at $1/month with email notification.",
       "ECR repository created (lifecycle policy: keep last 5 images). No push automation yet (that's 7.7).",
-      "Runbook in docs/ (or notes/) capturing every manual step taken, with the exact AWS console paths or CLI invocations, so the steps can be replayed or migrated."
+      "Runbook in docs/ (or notes/) capturing every manual step taken, with the exact AWS console paths or CLI invocations, so the steps can be replayed or migrated.",
+      "`/v3/api-docs` reports the public HTTPS URL as `servers[0].url` when the app receives `X-Forwarded-Proto: https` (Caddy default), so Swagger UI's `Try it out` works without mixed-content errors. Regression-covered by an IT."
     ]
   },
   {

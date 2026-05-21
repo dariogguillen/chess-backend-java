@@ -96,6 +96,19 @@ without rebuilding. `init.sh` deliberately stays scoped to "compile +
 lint + test" and does **not** build the image; feature 7.7's CI workflow
 will add a Docker smoke test in GitHub Actions.
 
+The production environment provisioned by feature 7.5 is AWS Free Tier
+in `us-east-2`: an EC2 t3.micro (Ubuntu 24.04 LTS) sits behind a
+native-systemd Caddy that terminates TLS via Let's Encrypt for the
+Duck DNS hostname `chess-backend.duckdns.org` and reverse-proxies to
+the Spring Boot container on `localhost:8080`. Postgres lives in an
+RDS db.t3.micro instance reachable only from the EC2 Security Group;
+Redis is self-hosted in a Docker container on the same EC2 (ElastiCache
+is not in the Free Tier). The production compose file
+`docker-compose.prod.yml` at the repo root encodes this shape: no
+Postgres service, Redis 7-alpine, the app image bound to `127.0.0.1:8080`
+so Caddy is the sole inbound path. All Terraform sources live in
+`infra/`; the manual deploy procedure is in `docs/deploy-runbook.md`.
+
 ### API contract
 
 The REST surface is documented via an OpenAPI 3 spec generated at

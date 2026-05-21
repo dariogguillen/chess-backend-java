@@ -31,3 +31,9 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Terraform (defensive — infra/.gitignore covers these too) ###
+infra/terraform.tfvars
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*

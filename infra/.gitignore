@@ -1,0 +1,16 @@
+# Local Terraform state — must never be committed.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Provider plugins, modules cache, lockfile is OK to commit but the
+# directory below it is not.
+.terraform/
+.terraform.tfstate.lock.info
+
+# Real values (secrets, IPs, emails) — only the example template is committed.
+terraform.tfvars
+*.auto.tfvars
+
+# Plan output files.
+*.tfplan

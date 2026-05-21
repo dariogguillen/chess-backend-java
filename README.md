@@ -159,6 +159,16 @@ wscat -c ws://localhost:8080/ws
 # ^@
 ```
 
+## Deployment
+
+The backend is deployed to AWS Free Tier (EC2 + RDS + ECR) with Caddy
+terminating HTTPS via Let's Encrypt at <https://chess-backend.duckdns.org>.
+Infrastructure lives in `infra/` (Terraform). The full step-by-step
+deploy procedure — `terraform apply`, Duck DNS, image transfer, smoke
+test, troubleshooting — is in [`docs/deploy-runbook.md`](docs/deploy-runbook.md).
+The deploy is manual for now; feature 7.7 will automate it via GitHub
+Actions + OIDC + ECR.
+
 ## Repository structure
 
 ```

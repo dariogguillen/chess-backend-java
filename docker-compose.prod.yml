@@ -1,0 +1,41 @@
+# Production stack for chess-backend on AWS EC2.
+#
+# Differences from docker-compose.yml (local dev):
+#   - No Postgres container: AWS RDS provides it. The app's
+#     SPRING_DATASOURCE_URL points at the RDS endpoint (set via .env).
+#   - Redis is still self-hosted (ElastiCache is not in the AWS Free Tier).
+#     Volatile state is acceptable here: Redis only holds active room and
+#     active game state; durable history goes to Postgres.
+#   - The app port is bound to `127.0.0.1:8080:8080`, i.e. loopback only.
+#     Caddy (running natively on the EC2 host) reverse-proxies HTTPS to
+#     this port; the public internet cannot reach 8080 directly.
+#   - All datasource credentials are read from `/opt/chess/.env` on the
+#     EC2 (mode 600, owned by the `deploy` user). Never committed.
+#
+# Deployed manually in feature 7.5 via `scp` of the image tarball;
+# replaced by an ECR `image:` reference in feature 7.7's CI/CD.
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  app:
+    image: chess-backend:latest
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+    ports:
+      - "127.0.0.1:8080:8080"

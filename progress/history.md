@@ -1113,3 +1113,161 @@ internal infrastructure.
 - `feature_list.json` (modified: `backend-containerize.status` → `done`)
 
 **Feature note:** `notes/07-backend-containerize.md`.
+
+## 2026-05-20 — backend-aws-infra
+
+**Status:** done
+
+**Summary:** Provisioned the AWS Free Tier production stack
+declaratively with Terraform: EC2 t3.micro running Ubuntu 24.04 in
+us-east-2, RDS Postgres 16 db.t3.micro single-AZ, Elastic IP, ECR
+repository (empty — feature 7.7 will populate), AWS Budget alarm at
+$1/month with email subscriber. The EC2 instance is configured by
+cloud-init at first boot: installs Docker via Docker's official apt
+repo, installs Caddy via Cloudsmith repo, creates a `deploy` user in
+the `docker` group (no sudo), writes the Caddyfile from a Terraform
+`templatefile()`, enables `docker` + `caddy` systemd services. Caddy
+terminates TLS for `chess-backend.duckdns.org` via Let's Encrypt
+(HTTP-01 challenge — requires port 80 open) and reverse-proxies to
+the backend container on `localhost:8080`. A new
+`docker-compose.prod.yml` (sibling to the local-dev compose from
+feature 7) declares only Redis 7-alpine self-hosted + the app
+container; Postgres comes from RDS via env vars. The app binds
+`127.0.0.1:8080:8080` — loopback only, so Caddy is the only way in
+from the internet. The user runs the deploy hands-on by following
+`docs/deploy-runbook.md` (10 steps from `terraform apply` to
+`curl https://chess-backend.duckdns.org/api/health → 200`); feature
+7.7 automates this via GitHub Actions OIDC + ECR push +
+SSH-triggered restart.
+
+**Decisions captured in the note:**
+
+1. **Terraform over manual console**: declarative IaC + reproducibility
+   beats imperative scripts; `destroy + apply` regenerates the whole
+   stack at any time, useful for re-platforming when AWS credits run
+   out.
+2. **Caddy over Nginx**: 3-line Caddyfile + automatic Let's Encrypt
+   renewal vs Nginx + Certbot + ~30-line config + cron renewal.
+   Modern alternative with growing adoption.
+3. **Default VPC**: skips one layer of Terraform complexity. Creating a
+   custom VPC is a learning exercise on its own; not needed for a
+   single-instance backend.
+4. **RDS for Postgres, self-hosted Redis in Docker**: ElastiCache isn't
+   in AWS free tier ($13/mo minimum). Self-hosting Redis on the EC2
+   saves ~$15/mo and is fine for our scale (Redis state is ephemeral
+   here — no persistence concern).
+5. **Manual first deploy, then automate**: understanding what feature
+   7.7's CI/CD will automate is much easier after doing it by hand
+   once. The runbook is the spec for the automation.
+6. **Single-AZ RDS**: Multi-AZ doubles the cost and isn't in free tier.
+   Single-AZ is appropriate for portfolio scope.
+7. **`127.0.0.1:8080:8080` binding**: container's port 8080 is reachable
+   only from the EC2 host itself (where Caddy lives). Internet can't
+   bypass Caddy → HTTPS is enforced.
+8. **AMI filter `architecture=x86_64`** (caught by the implementer
+   beyond the plan): without this, the AMI lookup can resolve to an
+   arm64 image, which fails to launch on `t3.micro`.
+9. **`lifecycle { ignore_changes = [user_data] }` on EC2** (also caught
+   beyond the plan): cloud-init runs once on first boot; future edits
+   to the cloud-init template should NOT force-replace the running
+   instance.
+10. **RDS `max_allocated_storage = allocated`** (= 20 GB): disables
+    storage autoscaling so the database stays pinned to the free-tier
+    ceiling.
+11. **Default tags via provider block** (`Project`, `ManagedBy`,
+    `Owner`): cost allocation + cleanup hygiene.
+12. **`.terraform.lock.hcl` committed**: Terraform recommends committing
+    the lockfile for reproducible provider versions across machines
+    and CI.
+
+**Post-review amendments (folded into the same feature):**
+
+The first reviewer pass returned REJECTED with one in-scope blocker
+and one out-of-scope observation. The user chose to fold both into
+feature 7.5 rather than spinning a separate follow-up:
+
+1. **Runbook reproducibility**: the runbook used `bzip2`/`bunzip2` for
+   the `docker save | ssh` transfer, but Ubuntu 24.04 cloud AMI does
+   not ship `bzip2` preinstalled. Switched to `gzip`/`gunzip` (both
+   ends) and added a one-sentence rationale in the runbook so a
+   future reader (or future-you) understands the choice.
+2. **Springdoc HTTP-vs-HTTPS**: behind Caddy, Springdoc was reporting
+   `servers[0].url = "http://..."` because it inspects the inner
+   `localhost:8080` request. Swagger UI loaded over HTTPS would then
+   block `Try it out` requests as mixed content. Fix: added
+   `server.forward-headers-strategy: framework` to `application.yml`
+   so Spring honors Caddy's `X-Forwarded-Proto: https` /
+   `X-Forwarded-Host` headers. Local-dev unaffected (no proxy = no
+   header = standard request URL). Covered by a new IT
+   `OpenApiForwardedHeadersIT` with two assertions: positive (with
+   `X-Forwarded-Proto: https` → URL starts with `https://`) and drift
+   canary (without the header → URL starts with `http://`, proving
+   the strategy is actually consulting the header).
+
+**Live deployment evidence (captured at close):**
+
+- `terraform apply` succeeded in ~7 min, RDS provisioning ~6:28 of
+  that.
+- EC2 EIP: `18.189.228.186`, attached to the instance, never
+  detached (free while associated).
+- Duck DNS subdomain `chess-backend.duckdns.org` points at the EIP;
+  DNS propagation < 1 min.
+- Caddy obtained Let's Encrypt cert via HTTP-01 within seconds; cert
+  visible in `journalctl -u caddy`. Internet scanners (leakix.net,
+  etc.) found the domain within minutes via Certificate Transparency
+  logs — noisy but expected for any public HTTPS endpoint.
+- `cloud-init status --wait` → `done` after ~3 min from boot.
+- Docker 29.5.2 and Caddy 2.11.3 installed by cloud-init.
+- Container deploy via `docker save | gzip | ssh | gunzip | sudo
+  docker load` (image ~365 MB content, ~90 MB on the wire), then
+  `scp` of `.env` and `docker-compose.prod.yml` to `/opt/chess/`,
+  then `docker compose -f docker-compose.prod.yml up -d` as the
+  `deploy` user.
+- Both containers `(healthy)`; Spring Boot 3.5.14 started in 13.7s;
+  Hikari connected to RDS Postgres 16.13; Flyway clean ("Schema
+  `public` is up to date. No migration necessary"); Hibernate ORM
+  6.6.49 up; SimpleBrokerMessageHandler started (WebSocket/STOMP
+  from feature 6); Tomcat on 8080.
+- `curl -sS -i https://chess-backend.duckdns.org/api/health`
+  returns `HTTP/2 200` with JSON
+  `{"status":"UP","version":"0.0.1-SNAPSHOT","timestamp":"..."}`.
+  Caddy advertises HTTP/3 via `alt-svc: h3=":443"`.
+- Swagger UI renders at
+  `https://chess-backend.duckdns.org/swagger-ui/index.html` showing
+  the OpenAPI 3.1 spec from feature 4.5 + endpoints from features 5
+  and 6.
+
+**Caveat at close (user-acknowledged):**
+
+The live deployment is still running the OLD image (without the
+`forward-headers-strategy` fix). The user opted to wait for feature
+7.7's CI/CD to push the new image rather than redeploying by hand.
+The IT covers the regression so the next deploy (manual or
+automated) will produce a Swagger UI that works `Try it out` end to
+end. `/api/health` and core endpoints are unaffected.
+
+**Final test counts:** surefire **82** (unchanged), failsafe **33**
+(+2 from `OpenApiForwardedHeadersIT`), grand total **115**.
+
+**Files touched:**
+
+- `infra/main.tf` (new; 11 resources + 3 data sources, lifecycle ignore on user_data, lookup-by-filters for AMI)
+- `infra/variables.tf` (new; aws_region default us-east-2, db_password sensitive, ssh + deploy keys, allowed_ssh_cidr, duckdns_subdomain default "chess-backend")
+- `infra/outputs.tf` (new; ec2_elastic_ip, rds_address, rds_endpoint, ecr_repo_url, ssh_command, deploy_ssh_command, duckdns_fqdn)
+- `infra/versions.tf` (new; Terraform >= 1.6, AWS provider `~> 5.70`)
+- `infra/terraform.tfvars.example` (new; skeleton with all required variables, defaults that point at the user's existing setup)
+- `infra/.gitignore` (new; *.tfstate*, .terraform/, terraform.tfvars)
+- `infra/.terraform.lock.hcl` (new; committed per Terraform convention for reproducible provider versions)
+- `infra/Caddyfile.tpl` (new; 3-line reverse_proxy + encode gzip + JSON file log)
+- `infra/ec2-cloud-init.sh.tpl` (new; apt, Docker official repo, Caddy Cloudsmith repo, deploy user setup, Caddyfile from template, systemd enable)
+- `docker-compose.prod.yml` (new; production compose — no Postgres, Redis self-hosted, 127.0.0.1:8080 loopback binding, env vars from /opt/chess/.env)
+- `docs/deploy-runbook.md` (new; prerequisites + 10-step procedure + troubleshooting; uses `gzip`/`gunzip` post-amendment)
+- `notes/07.5-backend-aws-infra.md` (new; ~19 KB feature note with all the DevOps concepts + post-review amendments section)
+- `src/main/resources/application.yml` (modified: added `server.forward-headers-strategy: framework` block with inline rationale; post-amendment)
+- `src/test/java/io/github/dariogguillen/chess/config/OpenApiForwardedHeadersIT.java` (new; 2 IT tests, positive + drift canary; post-amendment)
+- `README.md` (modified: added `## Deployment` section pointing at the runbook + live URL)
+- `docs/architecture.md` (modified: extended "Deployment artifact" subsection with the AWS production environment paragraph)
+- `.gitignore` (modified: defensive entries for `infra/terraform.tfvars`, `infra/.terraform/`, `infra/*.tfstate*`)
+- `feature_list.json` (modified: us-east-1 → us-east-2, Ubuntu 22.04 → Ubuntu 24.04, added acceptance bullet for the `forward-headers-strategy` regression IT, `backend-aws-infra.status` → `done`)
+
+**Feature note:** `notes/07.5-backend-aws-infra.md`.

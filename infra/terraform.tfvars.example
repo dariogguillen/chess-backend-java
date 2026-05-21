@@ -1,0 +1,28 @@
+# Copy this file to `terraform.tfvars` and fill in the values for your AWS
+# account. `terraform.tfvars` is gitignored — never commit real values.
+#
+# Generate the db_password with: openssl rand -base64 24
+
+aws_region = "us-east-2"
+
+# Database master password. Generate locally with `openssl rand -base64 24`.
+db_password = "REPLACE_ME_WITH_OUTPUT_OF_OPENSSL_RAND"
+
+# Email subscribed to the AWS Budget alarm. AWS will send a confirmation
+# email; you must accept it before notifications are delivered.
+alarm_email = "you@example.com"
+
+# Local path to the SSH public key for the EC2 `ubuntu` admin user.
+ssh_public_key_path = "~/.ssh/id_ed25519.pub"
+
+# Local path to the SSH public key for the EC2 `deploy` user (CI/CD in 7.7).
+# For 7.5, the same path as `ssh_public_key_path` is fine.
+deploy_ssh_public_key_path = "~/.ssh/id_ed25519.pub"
+
+# Restrict SSH to your IP if you have a static one (`1.2.3.4/32`).
+# `0.0.0.0/0` is acceptable because SSH key auth is mandatory.
+allowed_ssh_cidr = "0.0.0.0/0"
+
+# Duck DNS subdomain (just the prefix, not the full hostname). Must be
+# reserved in the Duck DNS web UI before `terraform apply`.
+duckdns_subdomain = "chess-backend"
