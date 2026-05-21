@@ -109,6 +109,32 @@ Postgres service, Redis 7-alpine, the app image bound to `127.0.0.1:8080`
 so Caddy is the sole inbound path. All Terraform sources live in
 `infra/`; the manual deploy procedure is in `docs/deploy-runbook.md`.
 
+### Deploy automation
+
+Pushes to `main` trigger `.github/workflows/deploy.yml`, which is the
+sole automated path to production. The workflow authenticates to AWS
+via **OIDC** — a `token.actions.githubusercontent.com` federated
+identity provider plus an `aws_iam_role.github_actions` role scoped to
+`repo:dariogguillen/chess-backend-java:ref:refs/heads/main` — so there
+are no static AWS access keys anywhere in the repo, in GitHub secrets,
+or on developer machines. The job runs `./init.sh` (the same verifier
+used locally), builds the production Docker image, tags it with both
+the commit SHA and `latest`, and pushes both tags to the ECR
+`chess-backend` repository.
+
+After the push, the workflow SSHes into the EC2 host as the dedicated
+`deploy` user (a CI-only SSH key, separate from the operator key used
+for the runbook) and runs `docker compose pull && docker compose up
+-d` against `docker-compose.prod.yml`. The EC2 pulls the new image
+from ECR using an IAM **instance profile** with
+`AmazonEC2ContainerRegistryReadOnly` — the host never sees long-lived
+registry credentials either. A smoke test hitting
+`https://chess-backend.duckdns.org/api/health` gates the workflow's
+success: a non-200 response fails the run so the deploy is visibly
+broken rather than silently rolled forward. Step-by-step operator
+recovery still lives in `docs/deploy-runbook.md`; this section only
+records the structural shape.
+
 ### API contract
 
 The REST surface is documented via an OpenAPI 3 spec generated at

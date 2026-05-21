@@ -26,3 +26,12 @@ allowed_ssh_cidr = "0.0.0.0/0"
 # Duck DNS subdomain (just the prefix, not the full hostname). Must be
 # reserved in the Duck DNS web UI before `terraform apply`.
 duckdns_subdomain = "chess-backend"
+
+# --- CI/CD (feature 7.7) ----------------------------------------------------
+#
+# The GHA OIDC trust policy pins the deploy role to one repository and one
+# branch. Both have safe defaults; uncomment + override only if you forked
+# the repo or want to deploy from a non-main branch.
+#
+# github_repo   = "dariogguillen/chess-backend-java"
+# github_branch = "main"

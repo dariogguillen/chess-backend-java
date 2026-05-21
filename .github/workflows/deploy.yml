@@ -1,0 +1,117 @@
+# Production deploy workflow for chess-backend.
+#
+# Triggers on every push to `main` (and manually via the Actions tab).
+# Stages:
+#   1. Checkout + setup Java + run ./init.sh (build + tests).
+#   2. Configure AWS credentials via OIDC (no static keys).
+#   3. Login to ECR, build + tag + push the Docker image (commit SHA + latest).
+#   4. SSH to EC2 as `deploy`, pull the new image, restart the compose stack.
+#   5. Smoke test the public HTTPS endpoint until it returns "status":"UP".
+#
+# Required secrets (configured via `gh secret set` or the GitHub web UI):
+#   - AWS_DEPLOY_ROLE_ARN: the IAM role ARN with ECR push permissions.
+#     Output by Terraform after feature 7.7's apply (`github_actions_role_arn`).
+#   - DEPLOY_SSH_KEY: the private SSH key for the `deploy` user on the EC2.
+
+name: Deploy to production
+
+"on":
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Queue deploys instead of cancelling. Two rapid pushes both deploy in order
+# rather than partially pushing an image and never restarting the container.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+# OIDC: this single line is what lets configure-aws-credentials fetch a JWT
+# from GitHub and exchange it for short-lived STS credentials. Without
+# `id-token: write`, the auth step fails with a cryptic 400.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: us-east-2
+      EC2_HOST: chess-backend.duckdns.org
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Run init.sh (compile + unit + integration tests)
+        run: ./init.sh
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          ECR_REPOSITORY: chess-backend
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ECR_REPO="${ECR_REGISTRY}/${ECR_REPOSITORY}"
+          docker build -t chess-backend:local .
+          docker tag chess-backend:local "${ECR_REPO}:${IMAGE_TAG}"
+          docker tag chess-backend:local "${ECR_REPO}:latest"
+          docker push "${ECR_REPO}:${IMAGE_TAG}"
+          docker push "${ECR_REPO}:latest"
+          echo "ECR_REPO=${ECR_REPO}" >> "$GITHUB_ENV"
+
+      - name: Deploy to EC2 over SSH
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+          APP_IMAGE="${ECR_REPO}:${IMAGE_TAG}"
+
+          ssh -i ~/.ssh/deploy_key "deploy@${EC2_HOST}" \
+            "aws ecr get-login-password --region ${AWS_REGION} \
+              | docker login --username AWS --password-stdin ${ECR_REPO} \
+             && cd /opt/chess \
+             && APP_IMAGE=${APP_IMAGE} docker compose -f docker-compose.prod.yml pull \
+             && APP_IMAGE=${APP_IMAGE} docker compose -f docker-compose.prod.yml up -d"
+
+      - name: Smoke test /api/health
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 12); do
+            if curl -fsS "https://${EC2_HOST}/api/health" | grep -q '"status":"UP"'; then
+              echo "Health check passed (attempt ${i})."
+              exit 0
+            fi
+            echo "Health check attempt ${i} failed; retrying in 5s..."
+            sleep 5
+          done
+          echo "Health check failed after 60s."
+          curl -sS "https://${EC2_HOST}/api/health" || true
+          exit 1

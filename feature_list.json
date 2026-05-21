@@ -162,7 +162,7 @@
     "id": "backend-cicd-pipeline",
     "title": "GitHub Actions CI/CD pipeline with OIDC and ECR",
     "description": "Automate the deploy. GitHub Actions workflow runs ./init.sh, builds the Docker image, pushes to ECR using OIDC-federated authentication (no long-lived AWS access keys), SSHes into the EC2 instance, and triggers a docker pull + container restart. Includes a post-deploy smoke test against the production /api/health endpoint. Idempotent: pushing the same commit twice is safe.",
-    "status": "pending",
+    "status": "in_progress",
     "priority": 7.7,
     "acceptance": [
       ".github/workflows/deploy-backend.yml triggers on push to main.",

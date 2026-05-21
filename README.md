@@ -166,8 +166,14 @@ terminating HTTPS via Let's Encrypt at <https://chess-backend.duckdns.org>.
 Infrastructure lives in `infra/` (Terraform). The full step-by-step
 deploy procedure — `terraform apply`, Duck DNS, image transfer, smoke
 test, troubleshooting — is in [`docs/deploy-runbook.md`](docs/deploy-runbook.md).
-The deploy is manual for now; feature 7.7 will automate it via GitHub
-Actions + OIDC + ECR.
+
+Pushes to `main` deploy automatically via
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml): the workflow
+authenticates to AWS via OIDC (no static keys), builds and pushes the Docker
+image to ECR, SSHes into the EC2 to pull and restart the container, and
+smoke-tests `/api/health` before reporting green. The manual procedure in the
+runbook remains the fallback and the single source of truth for what each
+automated stage is doing.
 
 ## Repository structure
 

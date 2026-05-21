@@ -27,7 +27,19 @@ apt-get install -y \
     gnupg \
     debian-keyring \
     debian-archive-keyring \
-    apt-transport-https
+    apt-transport-https \
+    unzip
+
+# --- Step 1b: AWS CLI v2 (official installer) -------------------------------
+# Ubuntu 24.04 LTS dropped the `awscli` apt package: AWS no longer ships
+# CLI v1 via apt, and v2 is distributed exclusively through the official
+# installer zip. `unzip` (installed above) is not preinstalled on the
+# Ubuntu cloud AMI and is required to extract the bundle. The binary
+# lands at /usr/local/bin/aws.
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+unzip -q /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install
+rm -rf /tmp/awscliv2.zip /tmp/aws
 
 # --- Step 2a: Docker (official apt repo) ------------------------------------
 install -m 0755 -d /etc/apt/keyrings

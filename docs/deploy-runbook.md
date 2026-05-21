@@ -1,11 +1,63 @@
 # Deployment runbook
 
 This runbook is the canonical procedure for deploying `chess-backend-java`
-to AWS Free Tier. It covers the first-time manual deploy that feature 7.5
-delivers; feature 7.7 will automate steps 3 through 9 via GitHub Actions
-+ OIDC + ECR.
+to AWS Free Tier. The first-time manual procedure (sections 1–10) was
+delivered by feature 7.5; feature 7.7 layers automated deploys on top
+(sections 11–13).
 
 The live URL is `https://chess-backend.duckdns.org`.
+
+---
+
+## Architecture: CI/CD flow (feature 7.7)
+
+```
+push to main / workflow_dispatch
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ GitHub Actions runner (ubuntu-latest)                           │
+│   actions/checkout@v4                                           │
+│   actions/setup-java@v4   (temurin 21, cache: maven)            │
+│   ./init.sh               (compile + unit + IT)                 │
+│                                                                 │
+│   aws-actions/configure-aws-credentials@v4 ── OIDC JWT ──┐      │
+│                                                          │      │
+│   aws-actions/amazon-ecr-login@v2                        │      │
+│                                                          ▼      │
+│   docker build → tag (<sha>, latest) → docker push  ─►  AWS STS │
+│                                                                 │
+│   ssh deploy@chess-backend.duckdns.org                          │
+│     aws ecr get-login-password | docker login                   │
+│     APP_IMAGE=…:<sha> docker compose -f docker-compose.prod.yml │
+│                       pull && up -d                             │
+│                                                                 │
+│   curl https://chess-backend.duckdns.org/api/health  ──► "UP"   │
+└─────────────────────────────────────────────────────────────────┘
+        │                                  ▲
+        │ push image                       │ pull image
+        ▼                                  │
+┌──────────────────┐               ┌────────────────────┐
+│ ECR (chess-      │               │ EC2 (deploy user,  │
+│ backend repo)    │ ─────────────►│ docker compose,    │
+│                  │               │ awscli + IMDSv2)   │
+└──────────────────┘               └────────────────────┘
+                                            │
+                                            ▼
+                                   ┌────────────────────┐
+                                   │ Caddy → :443 TLS   │
+                                   │ → app :8080        │
+                                   └────────────────────┘
+```
+
+Two IAM identities make the flow keyless:
+
+- `chess-backend-github-actions` — assumable only from
+  `repo:dariogguillen/chess-backend-java:ref:refs/heads/main`. Pushes
+  images to ECR.
+- `chess-backend-ec2-ecr-pull` — attached to the EC2 via an instance
+  profile. Read-only on ECR. EC2 reads credentials from IMDSv2; no
+  `aws configure` ever runs on the host.
 
 ---
 
@@ -258,6 +310,188 @@ The Swagger UI should render with every documented endpoint visible
 (health, rooms, games).
 
 If both succeed, the deploy is complete.
+
+---
+
+## 11. One-time upgrade for the existing EC2 (feature 7.7)
+
+Feature 7.7's CI workflow has the EC2 invoke `aws ecr get-login-password`
+to log into ECR. That requires the AWS CLI on the host. Feature 7.7
+updates `infra/ec2-cloud-init.sh.tpl` to install the AWS CLI on first
+boot, but **cloud-init only runs once**: instances created before 7.7
+(i.e. the running production EC2) do not pick up the change. The
+Terraform resource also has `lifecycle { ignore_changes = [user_data] }`,
+so a template edit will not re-render — and re-running cloud-init would
+still be the wrong tool because subsequent steps (Docker install, the
+`deploy` user, the Caddyfile) are already in place.
+
+The fix is a one-time manual install on the existing instance. Ubuntu
+24.04 LTS removed the `awscli` package from its default apt repositories
+(AWS no longer ships CLI v1 via apt, and v2 is distributed only via the
+official installer), so the canonical path on this AMI is the v2 zip:
+
+```bash
+ssh -i ~/.ssh/id_ed25519 ubuntu@<ec2_elastic_ip> '
+  sudo apt-get update && \
+  sudo apt-get install -y unzip && \
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip && \
+  unzip -q /tmp/awscliv2.zip -d /tmp && \
+  sudo /tmp/aws/install && \
+  rm -rf /tmp/awscliv2.zip /tmp/aws
+'
+```
+
+Verify:
+
+```bash
+ssh -i ~/.ssh/id_ed25519 ubuntu@<ec2_elastic_ip> 'which aws && aws --version'
+```
+
+Expect a path of `/usr/local/bin/aws` and a version line like
+`aws-cli/2.x.x Python/...`. Future EC2 instances created by
+`terraform destroy + apply` will have AWS CLI v2 preinstalled by
+cloud-init and skip this step.
+
+---
+
+## 12. Add the CI SSH key to the `deploy` user (feature 7.7)
+
+The CI workflow SSHes to the EC2 as `deploy`. Reusing your personal SSH
+key for that would conflate "your developer access" with "automated CI
+access" — separate keys mean you can rotate one without breaking the
+other and audit logs cleanly tell the two apart.
+
+Generate a dedicated ed25519 keypair locally (no passphrase: CI cannot
+type one):
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/chess_ci -N "" -C "github-actions-chess-backend"
+```
+
+Append the public half to the `deploy` user's `authorized_keys` on the
+EC2 (read it back to confirm both entries are present):
+
+```bash
+ssh deploy@<ec2_elastic_ip> 'cat >> ~/.ssh/authorized_keys' < ~/.ssh/chess_ci.pub
+ssh deploy@<ec2_elastic_ip> 'wc -l ~/.ssh/authorized_keys && cat ~/.ssh/authorized_keys'
+```
+
+Smoke-test the new key end-to-end:
+
+```bash
+ssh -i ~/.ssh/chess_ci deploy@<ec2_elastic_ip> 'whoami && docker --version'
+```
+
+Expect `deploy` plus a Docker version line.
+
+### Register the GitHub Actions secrets
+
+Two secrets are required:
+
+1. `AWS_DEPLOY_ROLE_ARN` — output by Terraform after feature 7.7's
+   apply (`terraform output -raw github_actions_role_arn`).
+2. `DEPLOY_SSH_KEY` — the **private** half of the keypair you just
+   generated (`~/.ssh/chess_ci`).
+
+Two paths to set them. **`gh` CLI** is the fastest:
+
+```bash
+# One-time: authenticate against GitHub.
+gh auth login
+
+# From the repo root:
+terraform -chdir=infra output -raw github_actions_role_arn \
+  | gh secret set AWS_DEPLOY_ROLE_ARN
+gh secret set DEPLOY_SSH_KEY < ~/.ssh/chess_ci
+
+# Verify both are registered (values are write-only; gh only lists names).
+gh secret list
+```
+
+**GitHub web UI** (equivalent, if you have not configured `gh`):
+
+1. Open the repository on github.com.
+2. Settings → Secrets and variables → Actions → "New repository secret".
+3. Add `AWS_DEPLOY_ROLE_ARN` — paste the ARN exactly as printed by
+   `terraform output`.
+4. Add `DEPLOY_SSH_KEY` — paste the **entire** content of
+   `~/.ssh/chess_ci`, including the `-----BEGIN OPENSSH PRIVATE KEY-----`
+   and `-----END OPENSSH PRIVATE KEY-----` banner lines and the trailing
+   newline. Missing the trailing newline is a common cause of opaque
+   "invalid format" failures at runtime.
+
+---
+
+## 13. Trigger and monitor a deploy (feature 7.7)
+
+With sections 11 and 12 complete, the workflow is ready to run. The
+cleanest trigger is a trivial commit on `main`:
+
+```bash
+echo "" >> README.md   # one-line whitespace touch
+git add README.md
+git commit -m "chore: trigger CI deploy"
+git push origin main
+```
+
+(Alternatively: open the Actions tab on github.com and run
+**Deploy to production** via the "Run workflow" button — the
+`workflow_dispatch` trigger.)
+
+Open <https://github.com/dariogguillen/chess-backend-java/actions> and
+watch the run. The expected order of green check marks:
+
+- **✓ Checkout** — `actions/checkout@v4`.
+- **✓ Set up Java 21** — `actions/setup-java@v4`, Maven cache restored
+  from previous runs (cold first time, ~30s; warm subsequently, ~5s).
+- **✓ Run init.sh** — full compile + unit + integration tests, with
+  Testcontainers spinning up Postgres + Redis on the runner (~2–3 min).
+- **✓ Configure AWS credentials (OIDC)** — the runner exchanges a
+  GitHub-signed JWT for short-lived STS credentials. The step logs
+  show "Configured AWS credentials" with no key material printed.
+- **✓ Login to Amazon ECR** — `aws-actions/amazon-ecr-login@v2`
+  populates the registry URL into `steps.ecr-login.outputs.registry`.
+- **✓ Build, tag, and push image to ECR** — `docker build` reuses
+  cached layers from the previous push (`docker push` only sends new
+  layers). The ECR console at
+  <https://us-east-2.console.aws.amazon.com/ecr/repositories> should
+  show two tags after this step: `latest` and the new commit SHA.
+- **✓ Deploy to EC2 over SSH** — the workflow SSHes in, logs into
+  ECR from the host, `docker compose pull` retrieves the new image,
+  `docker compose up -d` recreates the `app` container. Redis stays
+  untouched because its image hash did not change.
+- **✓ Smoke test /api/health** — up to 12 retries at 5 s intervals;
+  succeeds as soon as `{"status":"UP"}` appears in the response body.
+
+After the smoke-test step turns green, confirm in a browser that the
+production OpenAPI spec reports the public HTTPS server:
+
+```bash
+curl -sS https://chess-backend.duckdns.org/v3/api-docs | jq '.servers'
+```
+
+> Note: the very first deploy via this workflow is what ships the
+> `server.forward-headers-strategy: framework` fix from feature 7.5 to
+> production. Before this deploy, `servers[0].url` reads `http://...`
+> (the bug); after this deploy, it reads `https://chess-backend.duckdns.org`.
+> Subsequent deploys leave the field unchanged.
+
+If the run fails, the step log identifies which stage:
+
+- `./init.sh` failure → look at the Surefire/Failsafe report
+  archived as a build artifact; the run is treated like any
+  failing local `./init.sh`.
+- AWS auth failure (`Could not assume role`) → the OIDC trust
+  policy condition is misconfigured (wrong repo, wrong branch),
+  or the workflow lacks `permissions: id-token: write`, or the
+  `AWS_DEPLOY_ROLE_ARN` secret value is stale.
+- ECR push failure → check the ECR repo policy and the GHA role's
+  `AmazonEC2ContainerRegistryPowerUser` attachment.
+- SSH failure (`Permission denied`) → the `DEPLOY_SSH_KEY` secret
+  is missing a trailing newline, or the public key was never
+  appended to `deploy@<eip>:.ssh/authorized_keys`.
+- Smoke test timeout → SSH into the EC2 and read the app logs:
+  `sudo -u deploy docker compose -f /opt/chess/docker-compose.prod.yml logs --tail=100 app`.
 
 ---
 

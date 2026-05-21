@@ -32,3 +32,8 @@ output "duckdns_fqdn" {
   description = "Fully-qualified Duck DNS hostname the production stack serves under HTTPS."
   value       = "${var.duckdns_subdomain}.duckdns.org"
 }
+
+output "github_actions_role_arn" {
+  description = "ARN of the IAM role assumed by GitHub Actions via OIDC. Set this as the AWS_DEPLOY_ROLE_ARN secret in the repository (feature 7.7)."
+  value       = aws_iam_role.github_actions.arn
+}

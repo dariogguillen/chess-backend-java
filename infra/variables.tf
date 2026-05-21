@@ -78,3 +78,15 @@ variable "monthly_budget_usd" {
   type        = number
   default     = 1
 }
+
+variable "github_repo" {
+  description = "GitHub repository in `owner/name` form. Used in the OIDC trust policy condition that scopes the GHA role to this one repo. Changing this REPLACES the trust policy."
+  type        = string
+  default     = "dariogguillen/chess-backend-java"
+}
+
+variable "github_branch" {
+  description = "Branch within `github_repo` allowed to assume the GHA role via OIDC. Only workflows triggered on this ref can deploy. Defaults to `main`."
+  type        = string
+  default     = "main"
+}
