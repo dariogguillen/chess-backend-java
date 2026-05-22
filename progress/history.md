@@ -1822,3 +1822,84 @@ Deleted: none.
 **Deployment note**: production EC2 picks up the new event types automatically on the next deploy. The retrofit is wire-backward-compatible — the existing frontend keeps working with shape-based discrimination until it migrates to `switch (event.type)`. No infra change required.
 
 **Feature note**: `notes/11.5-disconnect-notifications.md`.
+
+---
+
+## 2026-05-22 — cors-x-player-id
+
+A bug fix inserted between features 11.5 and 12 (priority 11.7) after the frontend reported during local E2E testing that any cross-origin `POST /api/games/{id}/moves` would be blocked by the browser preflight. The cause was a silent cross-feature gap: feature 5 (`game-rest-api`) introduced the `@RequestHeader("X-Player-Id")` requirement on the moves endpoint, and feature 10 (`rest-cors`) declared the CORS `allowedHeaders` allow-list without including it. The two features shipped in different sessions and the cross-link was missed; local IT didn't catch it because the existing `CorsConfigIT` preflight tests only asked for `Content-Type` — a tautology against the existing allow-list, not a contract check against the actual server-side header requirements.
+
+**The fix** is one line in `CorsConfig.allowedHeaders` (`"Content-Type", "Accept", "X-Player-Id"`) plus a regression test in `CorsConfigIT` (`preflight_playerIdHeader_returnsCorsHeaders`) that OPTIONS against `/api/games/{gameId}/moves` with `Access-Control-Request-Headers: Content-Type, X-Player-Id` and asserts the `Access-Control-Allow-Headers` response contains `X-Player-Id`. The class-level JavaDoc on `CorsConfig` was rewritten to mention the new entry, link it to `POST /api/games/{id}/moves`, and preserve the `Authorization` deliberate-omission rationale from feature 10. `docs/architecture.md` follows.
+
+**Out of scope**: the deliberate omission of `Authorization` stays — no auth feature ships yet; allow-listing it preemptively remains the same anti-pattern feature 10 rejected.
+
+**Reviewer outcome**: APPROVED in round 1, no rejections. Two out-of-scope observations: (a) the `feature_list.json` acceptance criterion for this feature attributed the X-Player-Id introduction to "feature 9 / 9.5" when the correct attribution is feature 5; polished before close to read "feature 5 game-rest-api without updating the CORS allow-list added later in feature 10". (b) the user's local working tree had an unrelated `docker-compose.yml` modification (the `app:` service block commented out, likely debug while running the backend via `./mvnw spring-boot:run`); flagged to the user so it doesn't ride along into the commit; not part of this feature.
+
+**Files touched**:
+
+Created:
+- `notes/11.7-cors-x-player-id.md` — feature note documenting the cross-feature coordination gap, the codec/derivation Scala parallel, and the simple-vs-preflighted header browser rules.
+
+Modified:
+- `src/main/java/io/github/dariogguillen/chess/config/CorsConfig.java` — `allowedHeaders` gains `X-Player-Id`; JavaDoc updated; constructor injection and the rest of the policy unchanged.
+- `src/test/java/io/github/dariogguillen/chess/config/CorsConfigIT.java` — new `preflight_playerIdHeader_returnsCorsHeaders` IT placed alongside the other `preflight_*` tests; added `java.util.UUID` import; existing 4 tests byte-identical.
+- `docs/architecture.md` — CORS section's allowed-headers paragraph lists all three with rationale.
+
+Deleted: none.
+
+**Final test totals**: 97 unit + 84 IT = **181 tests**, all green, zero skips, zero failures. `./init.sh` exits 0.
+
+**Cross-repo note**: this closes item #1 of the frontend's post-feature-11.5 cross-repo flags. Item #2 (`RoomService.findById` 404 on ACTIVE rooms) and item #3 (`RoomJoinedEvent` broadcast not reaching subscribers) remain open and are tracked as future work pending the user's TRACE-log diagnosis of #3 and a re-read of the frontend's current.md for #2.
+
+**Feature note**: `notes/11.7-cors-x-player-id.md`.
+
+---
+
+## 2026-05-22 — broadcast-observability
+
+A small operational-logging feature inserted at priority 11.8 (between cors-x-player-id and docker-compose) after the bug #3 investigation in feature 11.7 made the observability gap impossible to ignore. The diagnosis of the frontend's reported "RoomJoinedEvent not reaching subscribers" required enabling TRACE on three Spring packages (`org.springframework.web.socket`, `.messaging`, `.messaging.simp.broker`) to confirm a single line — `Broadcasting to 1 sessions.` — from `SimpleBrokerMessageHandler`. That confirmation would have been visible from production-level logs if every `messagingTemplate.convertAndSend(...)` site emitted an INFO after a successful return. Before this feature only the failure path logged (WARN inside the catch); the success path was silent.
+
+**The fix** is six INFO log lines, one after each `convertAndSend` call, across five files:
+
+| Site | File | Identifiers in log |
+| --- | --- | --- |
+| `broadcastRoomJoinedEvent` | `service/RoomService.java` | destination, gameId, joinerId |
+| `broadcastMoveEvent` | `service/GameService.java` | destination, movedBy, status |
+| `abandon` (broadcast tail) | `service/GameAbandonService.java` | destination, abandonedBy, winnerId |
+| `broadcastDisconnected` | `websocket/PlayerSessionTracker.java` | destination, playerId, side, gracePeriodEndsAt |
+| `broadcastReconnected` | `websocket/PlayerSessionTracker.java` | destination, playerId, side |
+| `broadcast` | `websocket/ViewerCountTracker.java` | destination, count |
+
+Every line goes INSIDE the existing `try` block, immediately after `convertAndSend`, with the existing WARN-on-`RuntimeException` catch untouched. The two states (success / failure) are now both visible at INFO/WARN; previously only failure was.
+
+**Five decisions documented in the note**, each with the alternative + reasoning:
+
+1. **INFO level, not DEBUG.** The bug investigation just proved these logs have operational value at production-grade visibility. DEBUG would gate them behind a developer flag and recreate the original gap.
+2. **After `convertAndSend`, not before.** The WARN on failure already covers "did the method enter and throw?" The "after" line specifically confirms `convertAndSend` returned without throwing — which is the exact information that was missing during the bug #3 diagnosis.
+3. **No shared helper, inline at each site.** Six sites with per-event identifiers (UUIDs, short codes, enum names, Instants) each emit a slightly different shape. A shared `broadcastWithLog(destination, payload, identifiers)` would either lose the typed identifiers or take a `Map<String, Object>` which is a worse trade. Six lines of explicit code beat one over-eager abstraction.
+4. **Identifiers in the log, payload omitted.** Keys are safe and useful for cross-referencing. Full payloads can be large (e.g. a `MoveEvent` with the new FEN) and would inflate INFO logs unnecessarily. Anyone wanting the payload still has TRACE.
+5. **No new tests.** Operational logs are not behavioural contract. Asserting log content in a test would tie behavioural code to its observability shape, which couples two concerns that should evolve independently. The verification of correctness is manual + observed in the existing IT logs (where the new INFO lines now appear immediately after each mutation log).
+
+**The case study** — feature 11.7's bug #3 investigation — is documented in the feature note as the load-bearing motivation. The lesson learned: a production-grade backend should never make an operator enable TRACE on framework packages to confirm "did the side effect happen". The next operator (or the user, diagnosing a similar issue in a future session) can now answer that question from INFO alone.
+
+**Reviewer outcome**: APPROVED in round 1, no rejections, no out-of-scope observations beyond the operational note that the user has feature 11.7 and 11.8 staged together in the working tree and should split them into two commits (one per logical unit) when committing.
+
+**Files touched**:
+
+Created:
+- `notes/11.8-broadcast-observability.md` — feature note with the case study, five decisions, Scala/Typelevel parallels (`flatTap` on success branch, "no shared helper" rationale), and gotchas covering MoveEvent log volume, UUID non-sensitivity, and the WARN-doesn't-double-log invariant.
+
+Modified:
+- `src/main/java/io/github/dariogguillen/chess/service/RoomService.java` — INFO log after `convertAndSend` in `broadcastRoomJoinedEvent`; class-JavaDoc cross-reference.
+- `src/main/java/io/github/dariogguillen/chess/service/GameService.java` — INFO log in `broadcastMoveEvent`; class-JavaDoc cross-reference.
+- `src/main/java/io/github/dariogguillen/chess/service/GameAbandonService.java` — INFO log in the `abandon` broadcast tail; class-JavaDoc cross-reference (spotless reflowed it).
+- `src/main/java/io/github/dariogguillen/chess/websocket/PlayerSessionTracker.java` — INFO logs in both `broadcastDisconnected` and `broadcastReconnected`; class-JavaDoc cross-reference covering both.
+- `src/main/java/io/github/dariogguillen/chess/websocket/ViewerCountTracker.java` — INFO log in `broadcast`; class-JavaDoc cross-reference.
+
+Deleted: none.
+
+**Final test totals**: 97 unit + 84 IT = **181 tests** (unchanged from before this feature — operational logs do not affect behavioural tests). `./init.sh` exits 0. `git diff --stat src/test/` was empty for this feature — the strongest possible regression signal for a no-behaviour-change feature.
+
+**Deployment note**: the new INFO lines start appearing on the next deploy automatically. No env var, no infra change, no behavioural change. The next operator (or the user) can confirm any of the six broadcasts simply by tailing the production logs at INFO level.
+
+**Feature note**: `notes/11.8-broadcast-observability.md`.

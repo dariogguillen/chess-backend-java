@@ -23,9 +23,12 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  *   <li>{@code allowCredentials: false} — the API is stateless JSON; identity travels in request
  *       headers and bodies, never in cookies. Flipping this on would be a deliberate policy change
  *       tied to the future auth feature, not a side effect of this one.
- *   <li>Allowed headers limited to {@code Content-Type, Accept} — there is no {@code Authorization}
- *       usage anywhere in the codebase yet; allow-listing it preemptively would be dead config and
- *       misleading.
+ *   <li>Allowed headers: {@code Content-Type, Accept, X-Player-Id}. The first two cover JSON
+ *       request/response; {@code X-Player-Id} is required by {@code POST /api/games/{id}/moves} to
+ *       identify the mover, so allow-listing it is what lets cross-origin frontends send the move
+ *       past the browser preflight. {@code Authorization} stays deliberately omitted — there is no
+ *       auth usage anywhere in the codebase yet; allow-listing it preemptively would be dead config
+ *       and misleading.
  *   <li>{@code maxAge: 3600} — one-hour browser-side preflight cache, a standard conservative
  *       value.
  * </ul>
@@ -46,7 +49,7 @@ public class CorsConfig implements WebMvcConfigurer {
         .addMapping("/api/**")
         .allowedOriginPatterns(props.allowedOriginPatterns().toArray(String[]::new))
         .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-        .allowedHeaders("Content-Type", "Accept")
+        .allowedHeaders("Content-Type", "Accept", "X-Player-Id")
         .allowCredentials(false)
         .maxAge(3600);
   }

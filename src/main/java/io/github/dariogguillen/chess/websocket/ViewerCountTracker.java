@@ -57,6 +57,9 @@ import org.springframework.web.socket.messaging.SessionUnsubscribeEvent;
  * RuntimeException} from {@link SimpMessagingTemplate#convertAndSend} is caught and logged at
  * {@code WARN}; not rethrown. Each event handler also wraps its body in a top-level catch so an
  * unhandled exception in one listener cannot affect downstream listeners on the same event.
+ *
+ * <p>Each successful {@link ViewerCountEvent} broadcast emits a single INFO log line carrying the
+ * destination and the current {@code count}; the failure path stays on WARN.
  */
 @Component
 public class ViewerCountTracker {
@@ -228,6 +231,10 @@ public class ViewerCountTracker {
     try {
       messagingTemplate.convertAndSend(
           "/topic/games/" + gameId + "/viewers", new ViewerCountEvent(gameId, count));
+      log.info(
+          "Broadcasted ViewerCountEvent to {}: count={}",
+          "/topic/games/" + gameId + "/viewers",
+          count);
     } catch (RuntimeException ex) {
       log.warn("Failed to broadcast ViewerCountEvent for game {}: {}", gameId, ex.getMessage());
     }

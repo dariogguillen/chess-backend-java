@@ -285,6 +285,36 @@
     ]
   },
   {
+    "id": "cors-x-player-id",
+    "title": "Allow X-Player-Id header in REST CORS",
+    "description": "Bug cazado durante testing E2E con el frontend: feature 10's CorsConfig allowedHeaders is currently 'Content-Type, Accept', but GameController.applyMove (POST /api/games/{id}/moves) requires the X-Player-Id native header (line 128: @RequestHeader(\"X-Player-Id\") UUID playerId). The browser blocks the preflight when the frontend sends this header from a cross-origin context. Only affects production direct CORS (dev with Vite proxy bypasses CORS). Trivial fix: add X-Player-Id to allowedHeaders + a CorsConfigIT test asserting the header survives the preflight Access-Control-Allow-Headers list.",
+    "status": "done",
+    "priority": 11.7,
+    "acceptance": [
+      "CorsConfig.addCorsMappings allowedHeaders includes 'X-Player-Id' alongside 'Content-Type' and 'Accept'.",
+      "JavaDoc on CorsConfig updated: the dead-config rationale on the Authorization header stays; the X-Player-Id rationale links to POST /api/games/{id}/moves.",
+      "New IT in CorsConfigIT: OPTIONS /api/games/{id}/moves with Access-Control-Request-Headers: X-Player-Id and allowed Origin returns 200 with X-Player-Id in Access-Control-Allow-Headers.",
+      "Existing CorsConfigIT tests stay green (the existing preflight tests asked for Content-Type only; they keep working).",
+      "Feature note notes/11.7-cors-x-player-id.md documents the bug discovery (cross-repo E2E test, X-Player-Id introduced in feature 5 game-rest-api without updating the CORS allow-list added later in feature 10).",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "broadcast-observability",
+    "title": "INFO logs on successful STOMP broadcasts",
+    "description": "The diagnosis of feature 11.7's reported broadcast bug (RoomJoinedEvent not reaching subscribers) required enabling TRACE-level logging on org.springframework.web.socket + .messaging + .messaging.simp.broker — that diagnosis would have been trivially confirmable from the production-level logs if every messagingTemplate.convertAndSend(...) site logged its successful broadcast. Today only failures log (WARN); successes are silent. This feature adds a single INFO line after each of the six broadcast points (RoomService.broadcastRoomJoinedEvent, GameService.broadcastMoveEvent, GameAbandonService.abandon, PlayerSessionTracker.broadcastDisconnected, PlayerSessionTracker.broadcastReconnected, ViewerCountTracker.broadcast) so a future operator (or the user diagnosing a similar issue) can confirm 'broadcast happened, broker took it' from INFO logs alone. Operational logging, not a behavioural change. The lesson — observability gap surfaced by a real cross-repo bug investigation — is documented in the feature note as a case study.",
+    "status": "done",
+    "priority": 11.8,
+    "acceptance": [
+      "Each of the six broadcast sites emits an INFO log AFTER the messagingTemplate.convertAndSend call returns successfully. The log carries the destination and the key identifier of the payload (roomId / gameId / playerId as applicable) but NOT the full payload.",
+      "Existing WARN-on-RuntimeException log lines stay; they cover the failure path.",
+      "Class-level JavaDoc updates on the six modified main classes briefly mention the new INFO log line (one-sentence cross-reference, not a rewrite).",
+      "No new tests — operational logs are not behavioural. All 181 existing tests stay green WITHOUT MODIFICATION on disk; the regression signal is that nothing else changed.",
+      "Feature note notes/11.8-broadcast-observability.md documents the bug-driven motivation (the feature 11.7 / bug #3 investigation), the INFO-vs-DEBUG and after-vs-before choices, why we did NOT extract a shared helper, and why no tests are added.",
+      "./init.sh passes."
+    ]
+  },
+  {
     "id": "docker-compose",
     "title": "Docker Compose for local development",
     "description": "Docker Compose file that spins up the app, Postgres, and Redis. Document the workflow in README.",

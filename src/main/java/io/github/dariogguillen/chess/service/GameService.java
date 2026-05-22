@@ -28,6 +28,10 @@ import org.springframework.stereotype.Service;
  * requests on the same {@code gameId}. The second of two racing callers either succeeds with the
  * next side's move (because the first one moved already and the turn has flipped) or receives a
  * {@link NotYourTurnException}; it never observes a half-state.
+ *
+ * <p>Each successful {@link MoveEvent} broadcast emits a single INFO log line carrying the
+ * destination and the key payload identifiers ({@code movedBy}, {@code status}); the failure path
+ * stays on WARN.
  */
 @Service
 public class GameService {
@@ -176,6 +180,11 @@ public class GameService {
 
     try {
       messagingTemplate.convertAndSend("/topic/games/" + updated.id(), event);
+      log.info(
+          "Broadcasted MoveEvent to {}: movedBy={}, status={}",
+          "/topic/games/" + updated.id(),
+          playerId,
+          updated.status());
     } catch (RuntimeException ex) {
       log.warn("Failed to broadcast MoveEvent for game {}: {}", updated.id(), ex.getMessage());
     }

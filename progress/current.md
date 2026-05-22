@@ -2,7 +2,7 @@
 
 **Status:** closed — no active feature.
 
-Last closed feature: `disconnect-notifications` (priority 11.5) on 2026-05-22.
+Last closed feature: `broadcast-observability` (priority 11.8) on 2026-05-22.
 See `progress/history.md` for the full entry.
 
 ---
@@ -12,50 +12,63 @@ feature with `status: "pending"` from `feature_list.json` and writes
 a plan here.
 
 Next in queue: `docker-compose` (priority 12) — likely redundant
-with feature 7 (`backend-containerize`) which already shipped the
-local docker-compose; planning should start by auditing what's
-left or whether to mark redundant.
+with feature 7 (`backend-containerize`), audit first.
 
 ---
 
-## Mid-grace UX events are live
+## Cross-repo work items — all resolved
 
-The `/topic/games/{gameId}` STOMP topic now carries four event
-types in a sealed-interface `GameStateEvent` family with an
-explicit `type` discriminator:
+All three frontend-reported flags are closed (re-verified against the
+frontend repo's `progress/current.md`, which now declares
+"Backend shipped all three fixes ... the full two-browser E2E flow
+now works against the live backend"):
 
-- `MoveEvent` (`type: "MOVE"`) — every successful move.
-- `GameAbandonedEvent` (`type: "GAME_ABANDONED"`) — emitted on
-  grace-period timeout.
-- `PlayerDisconnectedEvent` (`type: "PLAYER_DISCONNECTED"`) —
-  emitted immediately on disconnect, carries the absolute
-  `gracePeriodEndsAt: Instant` for the opponent's local countdown.
-- `PlayerReconnectedEvent` (`type: "PLAYER_RECONNECTED"`) —
-  emitted only when the reconnect actually cancels a pending
-  timer (guard against the cancel-vs-fire race).
+- ✅ #1 X-Player-Id CORS — closed via 11.7.
+- ✅ #2 `RoomService.findById` 404 on ACTIVE rooms — investigation
+  closed. The frontend's report described a service-layer filter
+  that does NOT exist in the actual code (`RoomService.findById`,
+  `RedisRoomStore.findById`, and `RoomController.getRoom` are all
+  status-agnostic passthroughs). Most likely the original 404 was
+  endpoint-missing (the frontend smoke ran before feature 9.5's
+  `GET /api/rooms/{id}` was running). The frontend additionally
+  shipped a round-2 client-side soft-fix that tolerates GET 404
+  gracefully, so even in a hypothetical recurrence the STOMP path
+  delivers the gameId.
+- ✅ #3 `RoomJoinedEvent` broadcast — confirmed transient client-
+  side via the TRACE log diagnosis. Observability layer added in
+  11.8 so future similar issues are visible at INFO.
 
-The two pre-existing events were retrofitted with the `type` field
-without breaking any call site or any wire consumer (Jackson
-ignores unknown fields by default). The codebase-wide rule —
-"polymorphic topic gets the discriminator; single-event topic
-doesn't" — is now documented at the top of the STOMP contract
-section in `architecture.md`.
+---
 
-## Frontend cross-repo work unlocked
+## Production readiness checklist
 
-The frontend repo's `Play.tsx` can now:
+Eight features ship to production on the next push to `main`:
+8, 9, 9.5, 10, 11, 11.5, 11.7, 11.8. None requires infra changes
+(all env vars have defaults that match the previous production
+configuration). The Flyway migration `V1__create_game_history.sql`
+runs automatically on app boot against RDS.
 
-1. Migrate from awkward shape-based discrimination
-   (`if ('abandonedBy' in event)`) to `switch (event.type)`.
-   Backward-compatible — ship any time.
-2. Render a reconnecting banner on `PlayerDisconnectedEvent` using
-   `gracePeriodEndsAt` for a local-clock countdown.
-3. Clear the banner on `PlayerReconnectedEvent`.
+**Before the push, verify in this order:**
 
-Contract is in `docs/architecture.md`. Frontend adopts on its own
-schedule.
+1. **Split commits** — feature 11.7 (cors-x-player-id) and 11.8
+   (broadcast-observability) are staged together in the working
+   tree. Commit them separately so each git log entry is one
+   logical feature.
+2. **Revert the local `docker-compose.yml` modification** — the
+   `app:` service block is commented out for local
+   `mvnw spring-boot:run` testing. That comment must NOT ship to
+   production. `git checkout -- docker-compose.yml` before staging.
+3. **Confirm `docker-compose.prod.yml`** has no unexpected local
+   modifications.
+
+After the push, the GitHub Actions `deploy.yml` workflow handles:
+
+- Build + run `./init.sh` + push image to ECR.
+- SSH to EC2, `docker compose pull && up -d`.
+- Smoke test `https://chess-backend.duckdns.org/api/health`.
 
 Live URLs (unchanged):
 
 - `https://chess-backend.duckdns.org/api/health`
 - `https://chess-backend.duckdns.org/swagger-ui/index.html`
+- `https://dariogguillen.github.io/chess-frontend/` (frontend on GH Pages)

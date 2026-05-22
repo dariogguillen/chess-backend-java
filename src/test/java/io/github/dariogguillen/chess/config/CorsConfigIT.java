@@ -6,6 +6,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import io.github.dariogguillen.chess.TestcontainersConfiguration;
+import java.util.UUID;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -88,6 +89,28 @@ class CorsConfigIT {
                 .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
                 .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "Content-Type"))
         .andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
+  }
+
+  @Test
+  void preflight_playerIdHeader_returnsCorsHeaders() throws Exception {
+    // Regression lock-in for feature 11.7: POST /api/games/{id}/moves requires the X-Player-Id
+    // header (GameController.java), so the browser issues a preflight asking for it. The
+    // allow-list must echo X-Player-Id back in Access-Control-Allow-Headers or the browser
+    // blocks the real request. UUID.randomUUID() is a valid path placeholder — the preflight
+    // hits the CORS filter only, never the controller.
+    mockMvc
+        .perform(
+            options("/api/games/{gameId}/moves", UUID.randomUUID())
+                .header(HttpHeaders.ORIGIN, GITHUB_PAGES_ORIGIN)
+                .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "Content-Type, X-Player-Id"))
+        .andExpect(status().isOk())
+        .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, GITHUB_PAGES_ORIGIN))
+        .andExpect(
+            header()
+                .string(
+                    HttpHeaders.ACCESS_CONTROL_ALLOW_HEADERS,
+                    Matchers.containsString("X-Player-Id")));
   }
 
   @Test

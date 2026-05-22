@@ -267,11 +267,14 @@ on the alphabet for free.
   POST cover today's surface; PUT and DELETE futureproof for the
   RESTful CRUD that may land later (e.g. an explicit close-room
   endpoint).
-- **Headers:** `Content-Type`, `Accept`. No `Authorization` — the
-  codebase has no auth yet, and allow-listing it preemptively
-  would be dead config that implies functionality we have not
-  built. The future auth feature owns adding the header to the
-  list as part of its own change.
+- **Headers:** `Content-Type`, `Accept`, `X-Player-Id`. The first
+  two cover JSON request/response; `X-Player-Id` is required by
+  `POST /api/games/{id}/moves` to identify the mover, so it must be
+  on the allow-list for the browser preflight to succeed cross-
+  origin. No `Authorization` — the codebase has no auth yet, and
+  allow-listing it preemptively would be dead config that implies
+  functionality we have not built. The future auth feature owns
+  adding the header to the list as part of its own change.
 - **`allowCredentials: false`** — the API is stateless JSON;
   identity travels in request bodies and path parameters
   (`X-Player-Id`, `playerId` in payloads), never in cookies.

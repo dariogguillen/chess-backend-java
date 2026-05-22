@@ -63,6 +63,10 @@ import org.springframework.web.socket.messaging.SessionSubscribeEvent;
  * the same event. The new STOMP broadcasts also follow the {@code GameAbandonService.abandon}
  * pattern — wrapped in their own {@code try/catch + WARN log} so a broker-side failure does not
  * propagate past the event handler.
+ *
+ * <p>Each successful {@link PlayerDisconnectedEvent} and {@link PlayerReconnectedEvent} broadcast
+ * emits a single INFO log line carrying the destination and the key payload identifiers ({@code
+ * playerId}, {@code side}, and the grace deadline on disconnect); the failure path stays on WARN.
  */
 @Component
 public class PlayerSessionTracker {
@@ -225,6 +229,12 @@ public class PlayerSessionTracker {
         new PlayerDisconnectedEvent(gameId, playerId, side, disconnectedAt, gracePeriodEndsAt);
     try {
       messagingTemplate.convertAndSend("/topic/games/" + gameId, event);
+      log.info(
+          "Broadcasted PlayerDisconnectedEvent to {}: playerId={}, side={}, gracePeriodEndsAt={}",
+          "/topic/games/" + gameId,
+          playerId,
+          side,
+          gracePeriodEndsAt);
     } catch (RuntimeException ex) {
       log.warn(
           "Failed to broadcast PlayerDisconnectedEvent for game {}: {}", gameId, ex.getMessage());
@@ -240,6 +250,11 @@ public class PlayerSessionTracker {
         new PlayerReconnectedEvent(gameId, playerId, side, Instant.now(clock));
     try {
       messagingTemplate.convertAndSend("/topic/games/" + gameId, event);
+      log.info(
+          "Broadcasted PlayerReconnectedEvent to {}: playerId={}, side={}",
+          "/topic/games/" + gameId,
+          playerId,
+          side);
     } catch (RuntimeException ex) {
       log.warn(
           "Failed to broadcast PlayerReconnectedEvent for game {}: {}", gameId, ex.getMessage());

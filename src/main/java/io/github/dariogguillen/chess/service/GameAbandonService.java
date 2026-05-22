@@ -30,6 +30,10 @@ import org.springframework.stereotype.Component;
  * deliberately did <em>not</em> extract a shared helper: the two call sites have different
  * surrounding context (move applied vs status mutated) and a shared helper would obscure that.
  * Documented in {@code notes/11-disconnect-handling.md}.
+ *
+ * <p>Each successful {@link GameAbandonedEvent} broadcast emits a single INFO log line carrying the
+ * destination and the key payload identifiers ({@code abandonedBy}, {@code winnerId}); the failure
+ * path stays on WARN.
  */
 @Component
 public class GameAbandonService {
@@ -107,6 +111,11 @@ public class GameAbandonService {
         winnerId);
     try {
       messagingTemplate.convertAndSend("/topic/games/" + gameId, event);
+      log.info(
+          "Broadcasted GameAbandonedEvent to {}: abandonedBy={}, winnerId={}",
+          "/topic/games/" + gameId,
+          abandonedBy,
+          winnerId);
     } catch (RuntimeException ex) {
       log.warn("Failed to broadcast GameAbandonedEvent for game {}: {}", gameId, ex.getMessage());
     }

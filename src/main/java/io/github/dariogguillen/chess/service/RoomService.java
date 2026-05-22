@@ -31,6 +31,9 @@ import org.springframework.stereotype.Service;
  * <p>On a successful join the service also broadcasts a {@link RoomJoinedEvent} on {@code
  * /topic/rooms/{roomId}} so the creator (Player A) can learn the {@code gameId} the same instant
  * Player B does. The broadcast is best-effort — see {@link #joinRoom(String, String)}.
+ *
+ * <p>Each successful broadcast emits a single INFO log line carrying the destination and the key
+ * payload identifiers ({@code gameId}, {@code joinerId}); the failure path stays on WARN.
  */
 @Service
 public class RoomService {
@@ -211,6 +214,11 @@ public class RoomService {
     RoomJoinedEvent event = new RoomJoinedEvent(roomId, gameId, joiner);
     try {
       messagingTemplate.convertAndSend("/topic/rooms/" + roomId, event);
+      log.info(
+          "Broadcasted RoomJoinedEvent to {}: gameId={}, joinerId={}",
+          "/topic/rooms/" + roomId,
+          gameId,
+          joiner.id());
     } catch (RuntimeException ex) {
       log.warn("Failed to broadcast RoomJoinedEvent for room {}: {}", roomId, ex.getMessage());
     }
