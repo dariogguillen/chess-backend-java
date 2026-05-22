@@ -228,6 +228,74 @@ GET /api/rooms/{id}
 - **No path-level auth** — the room id is the shared secret, same
   posture as the rest of the API.
 
+## CORS
+
+Both the REST surface (`/api/**`) and the STOMP handshake (`/ws`)
+draw their allowed-origin list from a single property,
+`chess.cors.allowed-origin-patterns`, bound to a
+`@ConfigurationProperties("chess.cors")` record (`CorsProperties`).
+REST consumes it via `CorsConfig`'s `WebMvcConfigurer`; STOMP
+consumes it via `WebSocketConfig`'s `setAllowedOriginPatterns`.
+Centralising the list this way is what prevents the drift the
+previous two-hardcoded-copies shape would invite the moment a
+third origin (e.g. a Vercel preview deploy) needs to be allowed.
+
+### Allowed origin patterns
+
+The default list, embedded as the env-var default in
+`application.yml`:
+
+- `https://dariogguillen.github.io` — production frontend on GitHub
+  Pages.
+- `http://localhost:*` — development frontend on any localhost
+  port (5173 for Vite, 3000 for CRA, etc.).
+
+Override without recompiling in production by setting
+`CHESS_CORS_ALLOWED_ORIGIN_PATTERNS` on the EC2 host to a
+comma-separated list. Spring binds the env-var string to
+`List<String>` natively.
+
+We use `allowedOriginPatterns` (not `allowedOrigins`) because
+Spring 6+ disallows `*` with credentials and requires the patterns
+form whenever a wildcard like `http://localhost:*` is in play. The
+WebSocket side has the same constraint, so the two layers agree
+on the alphabet for free.
+
+### REST policy (`/api/**`)
+
+- **Methods:** `GET`, `POST`, `PUT`, `DELETE`, `OPTIONS`. GET and
+  POST cover today's surface; PUT and DELETE futureproof for the
+  RESTful CRUD that may land later (e.g. an explicit close-room
+  endpoint).
+- **Headers:** `Content-Type`, `Accept`. No `Authorization` — the
+  codebase has no auth yet, and allow-listing it preemptively
+  would be dead config that implies functionality we have not
+  built. The future auth feature owns adding the header to the
+  list as part of its own change.
+- **`allowCredentials: false`** — the API is stateless JSON;
+  identity travels in request bodies and path parameters
+  (`X-Player-Id`, `playerId` in payloads), never in cookies.
+  Setting `false` keeps the security posture honest and prevents
+  a future change from silently sharing cookies cross-origin.
+- **`maxAge: 3600`** — caches the preflight on the browser side
+  for one hour, the standard conservative value.
+
+### STOMP policy (`/ws`)
+
+The STOMP handshake reuses the same allowed-origin-patterns list
+through `CorsProperties`. STOMP frames themselves are not subject
+to CORS once the WebSocket upgrade has completed; the policy gates
+the initial HTTP handshake only.
+
+### Reverse proxy
+
+Caddy in production (`reverse_proxy localhost:8080`) does **not**
+inject CORS headers. The Spring layer is the sole emitter of
+`Access-Control-Allow-*` on every response. The reverse proxy stays
+purely a TLS terminator + path forwarder, with no policy of its
+own — single source of truth holds across operational layers, not
+just inside the application.
+
 ## STOMP API contract
 
 REST is the entry point for **mutations** (create room, join room,
@@ -261,17 +329,14 @@ its feature 5 (`stomp-live-updates`).
 
 ### Allowed origins (CORS for the WebSocket handshake)
 
-The `/ws` endpoint's allowed origin patterns:
-
-- `https://dariogguillen.github.io` (production frontend, GitHub
-  Pages).
-- `http://localhost:*` (development frontend on any localhost
-  port).
-
-We use `setAllowedOriginPatterns` (not `setAllowedOrigins`)
-because Spring disallows `setAllowedOrigins("*")` combined with
-credentials; an explicit pattern list is the canonical workaround.
-The list mirrors the existing CORS strategy on the REST side.
+The `/ws` endpoint's allowed origin patterns are sourced from the
+same `chess.cors.allowed-origin-patterns` property the REST
+{@code /api/**} filter consumes — see the "CORS" section above for
+the full list, the env-var override, and the rationale for
+`setAllowedOriginPatterns` over `setAllowedOrigins`. `WebSocketConfig`
+constructor-injects `CorsProperties` and passes
+`props.allowedOriginPatterns().toArray(...)` to the STOMP endpoint
+registration; there is no second copy of the list anywhere.
 
 ### Subscriptions
 

@@ -35,6 +35,12 @@ chess:
     # refreshes the TTL; reads do not. A game with no activity for this long self-cleans.
     # Accepts any Spring-relaxed Duration form: 24h, PT24H, 86400s, 1d.
     active-state-ttl: ${CHESS_REDIS_ACTIVE_STATE_TTL:24h}
+  cors:
+    # Single source of truth for the allowed-origin patterns of both REST (/api/**) and the
+    # STOMP /ws handshake. Spring binds the comma-separated env-var string to List<String>
+    # natively. Override in production without recompiling (e.g. to add a Vercel preview
+    # origin) by setting CHESS_CORS_ALLOWED_ORIGIN_PATTERNS on the EC2 host.
+    allowed-origin-patterns: ${CHESS_CORS_ALLOWED_ORIGIN_PATTERNS:https://dariogguillen.github.io,http://localhost:*}
 
 server:
   # Honor X-Forwarded-* headers (Proto, Host, For) when the app sits behind a

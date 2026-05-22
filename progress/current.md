@@ -2,7 +2,7 @@
 
 **Status:** closed — no active feature.
 
-Last closed feature: `room-lifecycle-events` (priority 9.5) on 2026-05-22.
+Last closed feature: `rest-cors` (priority 10) on 2026-05-22.
 See `progress/history.md` for the full entry.
 
 ---
@@ -11,37 +11,44 @@ To start the next session, the leader picks the lowest-priority
 feature with `status: "pending"` from `feature_list.json` and writes
 a plan here.
 
-Next in queue: `rest-cors` (priority 10).
+Next in queue: `disconnect-handling` (priority 11).
 
 ---
 
-## End-to-end gameplay unblocked
+## Production E2E unblocked for the frontend
 
-The room creator now has two complementary ways to learn when their
-opponent has joined:
+The browser no longer blocks cross-origin REST calls to `/api/**`.
+The deployed frontend on GitHub Pages can now talk to the backend
+on `https://chess-backend.duckdns.org` directly.
 
-- **REST poll**: `GET /api/rooms/{id}` returns the current room state
-  including `gameId` (or `null`). 404 on unknown id.
-- **STOMP push**: subscribe to `/topic/rooms/{roomId}` to receive a
-  `RoomJoinedEvent { type: "ROOM_JOINED", roomId, gameId, blackPlayer }`
-  the moment the second player joins.
+CORS lives entirely in the Spring layer (`CorsConfig`), Caddy passes
+the headers through unchanged. The allowed-origin-patterns list is
+in `chess.cors.allowed-origin-patterns` — one source of truth that
+both REST (`/api/**`) and STOMP (`/ws`) read from. The env-var
+override (`CHESS_CORS_ALLOWED_ORIGIN_PATTERNS`) lets production add
+a preview origin without recompiling.
 
-The two ship together because they cover each other: STOMP cannot
-replay missed messages, so the GET is the fallback (and the
-frontend's `creator-game-discovery` flow uses it as the primary
-poll).
+`allowCredentials: false` for now (stateless JSON identity). When
+auth lands, the posture flips as part of that feature.
 
-The `/topic/rooms/{roomId}` topic is designed to host future
-lifecycle events (`RoomClosedEvent`, `PlayerLeftEvent`, ...) without
-contract churn — discrimination via an explicit `type` JSON field,
-sealed-interface-based hierarchy for compile-time exhaustiveness.
+Frontend cross-repo punch list status:
 
-The frontend repo (`chess-game`) had its features 4 and 5 closed
-before this; its pending `creator-game-discovery` feature can now
-be planned and consumes either or both of the new mechanisms.
+- **#1 CORS** — done (this feature).
+- **#2 `GET /api/rooms/{id}`** — done (feature 9.5).
+- **#3 `/topic/rooms/{id}` STOMP** — done (feature 9.5).
+- **#4 frontend prep (Vite proxy + `creator-game-discovery`)** —
+  frontend's own scope, not blocked by backend.
+
+The whole punch list is closed on the backend side. Next backend
+features (`disconnect-handling`, etc.) are not gating frontend work.
 
 Live URLs (unchanged):
 
 - `https://chess-backend.duckdns.org/api/health`
 - `https://chess-backend.duckdns.org/swagger-ui/index.html`
-- `https://chess-backend.duckdns.org/api/rooms/{id}` (new)
+- `https://chess-backend.duckdns.org/api/rooms/{id}` (added in 9.5)
+
+CORS allowed origins on `/api/**` and `/ws`:
+
+- `https://dariogguillen.github.io`
+- `http://localhost:*`

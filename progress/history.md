@@ -1668,3 +1668,51 @@ Deleted: none.
 **Deployment note**: the change is live in code and tests but not yet in production. Production deploys via `.github/workflows/deploy.yml` on push to `main`. STOMP topic registration is automatic (the broker prefix `/topic` was already configured in feature 6); the GET endpoint is a plain REST addition; no infra change required. Once deployed, the frontend's `creator-game-discovery` feature lights up immediately.
 
 **Feature note**: `notes/09.5-room-lifecycle-events.md`.
+
+---
+
+## 2026-05-22 — rest-cors
+
+Unblocked cross-repo item #1 from the frontend's punch list: the deployed SPA on GitHub Pages was blocked by the browser on every preflight against `/api/**` because the REST surface emitted no `Access-Control-Allow-Origin` header. Only the WebSocket handshake (`/ws`) had CORS configured (via `WebSocketConfig#setAllowedOriginPatterns` hardcoded literals). This feature adds the REST half and, in the process, eliminates the drift surface the two-config approach would have introduced.
+
+**The drift fix** is the decision that elevates the feature above "add a WebMvcConfigurer": rather than copy the WS-side hardcoded origin list into the new REST config, the list is extracted to `CorsProperties` — a `@ConfigurationProperties("chess.cors")` record — and both layers read from it. `application.yml` exposes the list with an env-var override (`CHESS_CORS_ALLOWED_ORIGIN_PATTERNS`) so a Vercel preview or other ad-hoc origin can be added in production without a recompile. The default value matches the previous hardcoded WS list verbatim (`https://dariogguillen.github.io`, `http://localhost:*`).
+
+**Design decisions** (each with rejected alternative + reasoning, all documented in the feature note):
+
+1. **`WebMvcConfigurer.addCorsMappings`** — vs `@CrossOrigin` per controller (distributes policy across files, no single review point) and Caddy-layer CORS (couples policy to deploy infra, leaves local dev silent).
+2. **Single source of truth via `@ConfigurationProperties`** — vs two hardcoded copies that drift. The right moment to extract is when creating the second copy, not after they diverge.
+3. **`allowedOriginPatterns` (not `allowedOrigins`)** — Spring 6+ contract when wildcards or credentials are in play. Matches the WS side.
+4. **Methods `GET, POST, PUT, DELETE, OPTIONS`** — GET/POST cover today's surface; PUT/DELETE futureproof for CRUD; OPTIONS is the preflight method itself.
+5. **Headers `Content-Type, Accept`** — no `Authorization` because there is no auth in the codebase yet; adding it preemptively is dead config that implies a security model we don't have. When auth lands, the list expands as part of that feature.
+6. **`allowCredentials: false`** — the frontend is stateless JSON, identity is the `playerId` UUID carried in body/path. The `false` posture keeps the contract honest and forbids future accidental cookie sharing without a conscious change here.
+7. **`maxAge: 3600`** — standard preflight cache (1 hour), reduces overhead without being excessive.
+8. **`/api/**` mapping** — covers today's REST surface as one unit; no per-endpoint overrides needed.
+
+**Spring's drift-canary behavior** matched the plan prediction: a preflight from a disallowed origin (`https://evil.example`) returns 403 AND omits the `Access-Control-Allow-Origin` header. The IT asserts both: the status code AND `header().doesNotExist("Access-Control-Allow-Origin")`. This locks in that a future origin-list edit cannot accidentally widen the surface past intent.
+
+**WebSocket regression signal** worked as intended: `WebSocketConfig` was refactored to read from `CorsProperties` instead of hardcoded literals, but the three WS ITs (`GameWebSocketIT`, `ViewerCountIT`, `RoomLifecycleIT`) all stayed green WITHOUT MODIFICATION — proves the refactor preserved behavior since the patterns are identical.
+
+**Reviewer outcome**: APPROVED in round 1 with one out-of-scope observation: `docs/architecture.md:334` cross-referenced the CORS section as "below" but the section actually lands above (line 231 vs 330). Polished as a one-word fix ("below" → "above") before close.
+
+**Caddy is unchanged.** CORS is fully an application concern; Caddy passes the headers through. No deploy workflow change, no Terraform change, no infra touch.
+
+**Files touched:**
+
+Created:
+- `src/main/java/io/github/dariogguillen/chess/config/CorsProperties.java` — `@ConfigurationProperties("chess.cors")` record with non-empty invariant and defensive `List.copyOf` in the compact constructor.
+- `src/main/java/io/github/dariogguillen/chess/config/CorsConfig.java` — `@Configuration implements WebMvcConfigurer`, `@EnableConfigurationProperties(CorsProperties.class)`, `addCorsMappings("/api/**")` with the policy decisions above.
+- `src/test/java/io/github/dariogguillen/chess/config/CorsConfigIT.java` — 4 ITs: GitHub Pages preflight + headers, localhost preflight + headers, drift canary (403 + header absent), actual POST cross-origin (201 + header present).
+- `notes/10-rest-cors.md` — feature note covering the decisions, Scala/Typelevel parallels (pureconfig `ConfigSource[F].load[CorsConfig]`, http4s `CORS.policy[F]` middleware, regex/glob mode of `CORSPolicy`), gotchas (`allowedOriginPatterns` vs `allowedOrigins`, Spring's 403-and-omit behavior, two-config drift risk).
+
+Modified:
+- `src/main/java/io/github/dariogguillen/chess/config/WebSocketConfig.java` — constructor-injects `CorsProperties`; hardcoded origin pair removed; `@EnableConfigurationProperties(CorsProperties.class)` added; JavaDoc points at `CorsProperties` as source of truth.
+- `src/main/resources/application.yml` — new `chess.cors.allowed-origin-patterns` block with `CHESS_CORS_ALLOWED_ORIGIN_PATTERNS` env-var default matching the previous WS list.
+- `docs/architecture.md` — new top-level "## CORS" section between "API contract" and "STOMP API contract" covering shared property, REST policy, STOMP cross-reference, Caddy pass-through. The STOMP-side "Allowed origins" subsection is now a pointer to the new CORS section (no duplicate content). Polished post-review to fix the "below" → "above" cross-reference.
+
+Deleted: none.
+
+**Final test totals**: 92 unit + 74 IT = **166 tests**, all green, zero skips, zero failures, zero errors. `./init.sh` exits 0.
+
+**Deployment note**: production EC2 picks up the new CORS headers on the next deploy automatically. Caddy passes them through unchanged. The frontend manual smoke test (open the GH Pages SPA, create a room, join from a second browser) is the closing signal — the first cross-origin request that succeeds where it failed before validates the feature end-to-end.
+
+**Feature note**: `notes/10-rest-cors.md`.
