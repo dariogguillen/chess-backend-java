@@ -8,7 +8,9 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.locks.Lock;
 import java.util.function.BiFunction;
+import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.stereotype.Component;
 
 /**
@@ -49,6 +51,30 @@ public class RedisGameStore implements GameStore {
   @Override
   public Optional<Game> findById(UUID id) {
     return Optional.ofNullable(redisTemplate.opsForValue().get(key(id)));
+  }
+
+  /**
+   * Scans the {@code game:*} keyspace and returns the first game whose {@link Game#roomId()} equals
+   * {@code roomId}. The scan is bounded by the count of active games on this single-instance
+   * deployment; the room-to-game relationship is one-to-(at-most-)one so the loop returns on the
+   * first hit. {@code SCAN} is preferred over {@code KEYS} (non-blocking, cursor-based) per Redis'
+   * own recommendation for production-side iteration. Cost is {@code O(N)} over the {@code game:*}
+   * keyspace; N is bounded by the 24h TTL and the single-instance traffic, and the method is only
+   * invoked once per {@code GET /api/rooms/{id}} call (no hot path).
+   */
+  @Override
+  public Optional<Game> findByRoomId(String roomId) {
+    ScanOptions options = ScanOptions.scanOptions().match(KEY_PREFIX + "*").count(64).build();
+    try (Cursor<String> cursor = redisTemplate.scan(options)) {
+      while (cursor.hasNext()) {
+        String key = cursor.next();
+        Game game = redisTemplate.opsForValue().get(key);
+        if (game != null && roomId.equals(game.roomId())) {
+          return Optional.of(game);
+        }
+      }
+    }
+    return Optional.empty();
   }
 
   @Override

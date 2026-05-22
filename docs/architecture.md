@@ -182,6 +182,52 @@ Adding a new code requires updating both `GlobalExceptionHandler` and
 `OpenApiIT` drift canary asserts the enum array matches the expected
 set exactly, so forgetting one of the two halves fails the build.
 
+#### Room read endpoint
+
+`GET /api/rooms/{id}` returns the current state of a room, used by
+the frontend either as the primary discovery mechanism (Player A
+polls until `gameId` is non-null and then transitions to the game
+flow) or as a fallback for STOMP late subscribers, who cannot
+replay events on `/topic/rooms/{roomId}`. The two mechanisms ship
+together: STOMP gives sub-second push UX when the subscription
+timing works, polling is the safety net when it does not.
+
+```
+GET /api/rooms/{id}
+
+200 OK
+{
+  "roomId": "K7M3X9",
+  "players": [
+    { "id": "<uuid>", "displayName": "Alice", "role": "WHITE" },
+    { "id": "<uuid>", "displayName": "Bob",   "role": "BLACK" }
+  ],
+  "gameId": "<uuid>",
+  "status": "ACTIVE"
+}
+```
+
+- **`status`** — backend-native enum: `WAITING_FOR_PLAYER`,
+  `ACTIVE`, or `CLOSED`. No mapping to a presentation-specific
+  vocabulary; the frontend uses the literals directly.
+- **`players`** — 1 element while `WAITING_FOR_PLAYER`, 2 elements
+  while `ACTIVE`. Role is **derived at the web boundary** from the
+  player's position in the array: index 0 is `WHITE` (the
+  creator), index 1 (when present) is `BLACK` (the joiner). The
+  domain `Player` record has no `role` field — the deliberate
+  trade-off keeps the domain minimal at the cost of a
+  position-sensitive mapper.
+- **`gameId`** — `null` while `WAITING_FOR_PLAYER` (no game has
+  been created yet); non-`null` once `ACTIVE`.
+- **404 `ROOM_NOT_FOUND`** — when the id does not match any room.
+  Reuses the existing error code from the 9-code allowlist; no
+  expansion.
+- The path id is **case-insensitive**; the canonical uppercase form
+  is returned in the body (matches the `POST /api/rooms/{id}/join`
+  convention).
+- **No path-level auth** — the room id is the shared secret, same
+  posture as the rest of the API.
+
 ## STOMP API contract
 
 REST is the entry point for **mutations** (create room, join room,
@@ -236,6 +282,49 @@ this channel. There is no replay — subscribers only see events
 that occur while they are subscribed. A client that joins late
 catches up by calling `GET /api/games/{id}` once and then relying
 on STOMP for the live tail.
+
+Clients also subscribe to **`/topic/rooms/{roomId}`** for room
+lifecycle events. The topic is **polymorphic** — designed to carry
+multiple event variants over time. Today the only variant is
+`RoomJoinedEvent`; future features layer in `RoomClosedEvent`,
+`PlayerLeftEvent`, etc. without changing the topic shape. Every
+variant carries an explicit `type` discriminator field in the JSON
+payload so subscribers can branch without polymorphic Jackson
+machinery:
+
+```json
+{
+  "type": "ROOM_JOINED",
+  "roomId": "K7M3X9",
+  "gameId": "0d52a8a0-aaaa-bbbb-cccc-ddddeeee0000",
+  "blackPlayer": {
+    "id": "8b3c1f04-1234-5678-9abc-def012345678",
+    "displayName": "Bob"
+  }
+}
+```
+
+The Java model is a `sealed interface RoomEvent permits ...` with
+the discriminator set explicitly in each variant's canonical
+constructor (no `@JsonTypeInfo`). The **design rule** going forward:
+*polymorphic topics get the discriminator; single-event topics
+(today: `MoveEvent` on `/topic/games/{gameId}` and `ViewerCountEvent`
+on `/topic/games/{gameId}/viewers`) stay flat*. The discriminator is
+dead weight on a topic that can only ever carry one shape.
+
+`RoomJoinedEvent` is published from `RoomService.joinRoom` the
+instant the room transitions from `WAITING_FOR_PLAYER` to `ACTIVE`
+and both Redis writes (room + game) are durable. The broadcast is
+**fire-and-forget**, outside the atomic block, with the same
+`try/catch + WARN log` policy as `MoveEvent`. The canonical
+subscriber is Player A (the room creator), who subscribes right
+after `POST /api/rooms` returns: receiving the event is how A
+learns the `gameId` and can transition to
+`/topic/games/{gameId}`. Subscribers that arrive **after** the
+join miss the event entirely — there is no replay. The fallback in
+that case is the `GET /api/rooms/{id}` REST endpoint (documented
+in the "API contract" section above), which carries the same
+`gameId` and the rest of the room state for reconcile.
 
 ### `MoveEvent` shape
 

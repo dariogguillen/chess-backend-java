@@ -2,7 +2,7 @@
 
 **Status:** closed — no active feature.
 
-Last closed feature: `postgres-game-history` (priority 9) on 2026-05-22.
+Last closed feature: `room-lifecycle-events` (priority 9.5) on 2026-05-22.
 See `progress/history.md` for the full entry.
 
 ---
@@ -15,31 +15,33 @@ Next in queue: `rest-cors` (priority 10).
 
 ---
 
-## Game history is now persisted to Postgres
+## End-to-end gameplay unblocked
 
-Completed games (`CHECKMATE`, `STALEMATE`, `DRAW`, `ABANDONED`) are
-archived to Postgres synchronously inside `GameService.applyMove`,
-before the Redis active-state write. Postgres is the archive layer;
-Redis (feature 8) remains the source of truth for ongoing games.
+The room creator now has two complementary ways to learn when their
+opponent has joined:
 
-`GET /api/players/{id}/games` returns the player's history (newest
-first, hard cap 50). Unknown player → 200 with `[]` (guests have no
-registry).
+- **REST poll**: `GET /api/rooms/{id}` returns the current room state
+  including `gameId` (or `null`). 404 on unknown id.
+- **STOMP push**: subscribe to `/topic/rooms/{roomId}` to receive a
+  `RoomJoinedEvent { type: "ROOM_JOINED", roomId, gameId, blackPlayer }`
+  the moment the second player joins.
 
-The round-2 cleanup made the type model honest: `UUID` end-to-end
-(DB, entity, domain) for ids that are actually UUIDs; `String` for
-the short-code `Room.id` / `Game.roomId`; bounded `VARCHAR(N)` with
-`@Column(length = N)` + `ddl-auto: validate` enforcing the lengths
-at boot. JSON wire format unchanged — Jackson serialises `UUID` to
-string identically. No frontend coordination needed for this
-feature.
+The two ship together because they cover each other: STOMP cannot
+replay missed messages, so the GET is the fallback (and the
+frontend's `creator-game-discovery` flow uses it as the primary
+poll).
 
-Production EC2 already runs RDS Postgres (since feature 7.5), so
-the next push to `main` will apply `V1__create_game_history.sql`
-automatically; no infra changes required.
+The `/topic/rooms/{roomId}` topic is designed to host future
+lifecycle events (`RoomClosedEvent`, `PlayerLeftEvent`, ...) without
+contract churn — discrimination via an explicit `type` JSON field,
+sealed-interface-based hierarchy for compile-time exhaustiveness.
+
+The frontend repo (`chess-game`) had its features 4 and 5 closed
+before this; its pending `creator-game-discovery` feature can now
+be planned and consumes either or both of the new mechanisms.
 
 Live URLs (unchanged):
 
 - `https://chess-backend.duckdns.org/api/health`
 - `https://chess-backend.duckdns.org/swagger-ui/index.html`
-- `https://chess-backend.duckdns.org/api/players/{id}/games` (new)
+- `https://chess-backend.duckdns.org/api/rooms/{id}` (new)

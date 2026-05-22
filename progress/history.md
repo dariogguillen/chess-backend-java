@@ -1620,3 +1620,51 @@ Deleted: none (one obsolete test removed in round 2: `GameTest.shouldReject_when
 **Deployment note:** the change is live in code and tests but not yet in production on EC2. Production deploys via `.github/workflows/deploy.yml` on push to `main`. RDS is private to the EC2 SG; Flyway will apply `V1__create_game_history.sql` automatically on first boot of the new container. If the migration fails in prod, `ddl-auto: validate` refuses to start the app and the workflow's smoke test catches it.
 
 **Feature note:** `notes/09-postgres-game-history.md`.
+
+---
+
+## 2026-05-22 — room-lifecycle-events
+
+Inserted as a new feature at priority 9.5 between `postgres-game-history` (9) and `rest-cors` (10) after the user surfaced — through frontend integration testing — that the game cannot be played end-to-end through the public API: Player A (room creator) gets `gameId: null` back from `POST /api/rooms` and the backend never tells them when Player B joins. The frontend repo (`chess-game`) had already closed features 4 and 5 (REST room and game integration) and its `progress/current.md` listed this exact scope as cross-repo items #2 (GET /api/rooms/{id}, must-have) and #3 (STOMP topic, nice-to-have) of its post-feature-5 punch list. The feature shipped both mechanisms together because shipping only one leaves the frontend incomplete: STOMP-only requires perfect subscription timing (no replay); GET-only forces wasteful polling steady load. The combined pattern is what Lichess / chess.com use for real-time multiplayer lobbies.
+
+**Two-mechanism approach:**
+
+1. **`GET /api/rooms/{id}`** returns `RoomDetailsResponse { roomId, players[{id, displayName, role}], gameId (nullable), status }`. Status enum is the backend-native `WAITING_FOR_PLAYER` / `ACTIVE` / `CLOSED` — no mapping to UI vocabulary. Role is derived from join order at the boundary (`players[0]` = WHITE, `players[1]` = BLACK) rather than added to the domain `Player` record; the rule lives in a `RoomDetailsMapper @Component` so it is unit-testable in isolation. 404 reuses the existing `ROOM_NOT_FOUND` from feature 6.6's 9-code allowlist (no expansion). The endpoint is idempotent, unauth (room id is the shared secret), and matches the project's existing security posture.
+
+2. **`/topic/rooms/{roomId}`** is a polymorphic STOMP topic with a `type` discriminator field. Today's only variant is `RoomJoinedEvent { type: "ROOM_JOINED", roomId, gameId, blackPlayer }`. The `type` constant is set via a convenience constructor so callers cannot pass a wrong value; Jackson serializes the field as a plain JSON string — no `@JsonTypeInfo` machinery. The event hierarchy is a Java 17 `sealed interface RoomEvent permits RoomJoinedEvent`, giving compile-time exhaustiveness when future variants (`RoomClosedEvent`, `PlayerLeftEvent`) are added. The design rule introduced and documented: **polymorphic topics get the `type` discriminator; single-event-type topics (`/topic/games/{gameId}`, `/topic/games/{gameId}/viewers`) don't**. `MoveEvent` and `ViewerCountEvent` are intentionally NOT retrofitted.
+
+**The broadcast point** sits in `RoomService.joinRoom` immediately after the `roomStore.compute(...)` block returns (room + game both durable in Redis) and before the REST `return`. Wrapped in try/catch + WARN log, mirroring `GameService.broadcastMoveEvent`. The broadcast is best-effort; if it fails, Player A's GET-endpoint fallback catches it. This is also why both mechanisms had to ship together.
+
+**Storage seam extended**: `GameStore` gained `findByRoomId(String roomId) → Optional<Game>` to resolve roomId → gameId for the GET endpoint. `RedisGameStore` implements it via Redis `SCAN game:* + filter by roomId field`. This was a deliberate trade-off documented inline: alternatives were a secondary `roomId:{roomId} → gameId` index (heavier write path, stale-on-archive risk) or carrying `gameId` on the `Room` domain record (cross-aggregate ref). For a single-instance backend with 24h-TTL-bounded keyspace and a once-per-GET call path (no hot loop), SCAN is the right complexity-vs-benefit trade. The JavaDoc was polished post-review to state the cost explicitly: O(N) over the `game:*` keyspace, bounded by the TTL and single-instance traffic. A secondary index is the documented future optimisation when concurrent active game cardinality grows beyond the t3.micro baseline.
+
+**Reviewer outcome**: APPROVED in round 1 with three out-of-scope observations (none blocking): (a) the SCAN JavaDoc lacked the explicit big-O notation — polished as a one-line addition after the user picked the "polish, then close" path; (b) a secondary index is a polish opportunity for when concurrent games scale; (c) `RoomLifecycleIT` uses a 1s `Thread.sleep` after subscribe as the subscribe-ack delay, matching the existing pattern in `GameWebSocketIT`. The user chose to keep the sleep (changing one IT but not the other would create inconsistency).
+
+**Cross-repo follow-up**: the frontend repo can now plan its `creator-game-discovery` feature (priority 5.5 per its own current.md). Polling `GET /api/rooms/{id}` every 2-3s while `room.gameId === null` is the documented baseline; subscribing to `/topic/rooms/{roomId}` and reacting to `RoomJoinedEvent` is the optional real-time upgrade. The contract is in `docs/architecture.md`; the frontend can align without inspecting backend source.
+
+**Files touched:**
+
+Created:
+- `src/main/java/io/github/dariogguillen/chess/web/room/RoomDetailsResponse.java` — response DTO record.
+- `src/main/java/io/github/dariogguillen/chess/web/room/PlayerInRoom.java` — nested record with id/displayName/role.
+- `src/main/java/io/github/dariogguillen/chess/web/room/RoomDetailsMapper.java` — `@Component` deriving roles from list index.
+- `src/main/java/io/github/dariogguillen/chess/websocket/RoomEvent.java` — sealed interface; `type()` + `roomId()`.
+- `src/main/java/io/github/dariogguillen/chess/websocket/RoomJoinedEvent.java` — record with `type = "ROOM_JOINED"` constant via convenience constructor.
+- `src/test/java/io/github/dariogguillen/chess/web/room/RoomDetailsMapperTest.java` — 2 unit tests (WHITE-only and WHITE+BLACK derivation).
+- `src/test/java/io/github/dariogguillen/chess/web/room/RoomDetailsControllerIT.java` — 3 ITs (waiting / active / 404).
+- `src/test/java/io/github/dariogguillen/chess/websocket/RoomLifecycleIT.java` — 4 STOMP ITs (happy path, late subscriber, idempotency on 409 ROOM_FULL, wire-format discriminator via `byte[]` payload).
+- `notes/09.5-room-lifecycle-events.md` — feature note (8 decisions documented with alternatives, 5 Scala/Typelevel parallels, gotchas, file map).
+
+Modified:
+- `src/main/java/io/github/dariogguillen/chess/web/room/RoomController.java` — adds `GET /api/rooms/{id}` with `@Tag` / `@Operation` / `@ApiResponse 200/404`.
+- `src/main/java/io/github/dariogguillen/chess/service/RoomService.java` — constructor-injects `SimpMessagingTemplate`; exposes `findById` and `findGameIdByRoomId`; broadcasts `RoomJoinedEvent` from `joinRoom` outside the atomic block.
+- `src/main/java/io/github/dariogguillen/chess/service/GameStore.java` — new `findByRoomId(String)` seam.
+- `src/main/java/io/github/dariogguillen/chess/cache/RedisGameStore.java` — implements `findByRoomId` via `SCAN game:*` + filter; JavaDoc polished post-review to state O(N) cost explicitly.
+- `docs/architecture.md` — REST contract section gains "Room read endpoint" subsection; STOMP contract section gains `/topic/rooms/{roomId}` with the discriminator pattern, the "polymorphic topic gets the discriminator" design rule, the JSON example, and the no-replay caveat.
+
+Deleted: none.
+
+**Final test totals**: 92 unit + 70 IT = **162 tests**, all green, zero skips, zero failures, zero errors. `./init.sh` exits 0.
+
+**Deployment note**: the change is live in code and tests but not yet in production. Production deploys via `.github/workflows/deploy.yml` on push to `main`. STOMP topic registration is automatic (the broker prefix `/topic` was already configured in feature 6); the GET endpoint is a plain REST addition; no infra change required. Once deployed, the frontend's `creator-game-discovery` feature lights up immediately.
+
+**Feature note**: `notes/09.5-room-lifecycle-events.md`.

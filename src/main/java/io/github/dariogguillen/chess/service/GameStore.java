@@ -27,6 +27,19 @@ public interface GameStore {
   Optional<Game> findById(UUID id);
 
   /**
+   * Looks up the active game associated with the given room id, if any. Used by the room-details
+   * read path: the {@link io.github.dariogguillen.chess.domain.Room} record does not remember the
+   * id of the game it spawned, so the only way to resolve "this active room's game" is to query the
+   * game store by {@code roomId}. Returns {@link Optional#empty()} when the room has no matching
+   * active game (i.e. the room is still {@code WAITING_FOR_PLAYER} or its game has been archived
+   * and removed).
+   *
+   * @param roomId the room id to resolve a game for; the 6-char short code.
+   * @return the active game whose {@link Game#roomId()} equals {@code roomId}, if any.
+   */
+  Optional<Game> findByRoomId(String roomId);
+
+  /**
    * Persists the given game, overwriting any prior value at the same id.
    *
    * @param game the game to save.

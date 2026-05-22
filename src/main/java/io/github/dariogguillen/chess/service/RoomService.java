@@ -7,11 +7,14 @@ import io.github.dariogguillen.chess.domain.Room;
 import io.github.dariogguillen.chess.domain.RoomStatus;
 import io.github.dariogguillen.chess.exception.RoomFullException;
 import io.github.dariogguillen.chess.exception.RoomNotFoundException;
+import io.github.dariogguillen.chess.websocket.RoomJoinedEvent;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
 /**
@@ -24,6 +27,10 @@ import org.springframework.stereotype.Service;
  * preserved by performing the room mutation and the game write inside the same {@link
  * RoomStore#compute} block, which is atomic per room id. See {@link #joinRoom(String, String)} for
  * the detail.
+ *
+ * <p>On a successful join the service also broadcasts a {@link RoomJoinedEvent} on {@code
+ * /topic/rooms/{roomId}} so the creator (Player A) can learn the {@code gameId} the same instant
+ * Player B does. The broadcast is best-effort — see {@link #joinRoom(String, String)}.
  */
 @Service
 public class RoomService {
@@ -37,16 +44,19 @@ public class RoomService {
   private final GameStore gameStore;
   private final RoomCodeGenerator codeGenerator;
   private final ChessRules chessRules;
+  private final SimpMessagingTemplate messagingTemplate;
 
   public RoomService(
       RoomStore roomStore,
       GameStore gameStore,
       RoomCodeGenerator codeGenerator,
-      ChessRules chessRules) {
+      ChessRules chessRules,
+      SimpMessagingTemplate messagingTemplate) {
     this.roomStore = roomStore;
     this.gameStore = gameStore;
     this.codeGenerator = codeGenerator;
     this.chessRules = chessRules;
+    this.messagingTemplate = messagingTemplate;
   }
 
   /**
@@ -94,6 +104,32 @@ public class RoomService {
   }
 
   /**
+   * Looks up the current state of a room by id.
+   *
+   * @param roomId the room id.
+   * @return the room, if present.
+   */
+  public Optional<Room> findById(String roomId) {
+    return roomStore.findById(roomId);
+  }
+
+  /**
+   * Resolves the active {@link Game}'s id for a room that is {@link RoomStatus#ACTIVE}.
+   *
+   * <p>The {@link Room} record does not remember the id of the game it spawned (no cross-aggregate
+   * reference), so the lookup goes through {@link GameStore#findByRoomId(String)} — a scan-and-
+   * filter on the {@code game:*} keyspace. Returns {@link Optional#empty()} when the room is still
+   * {@link RoomStatus#WAITING_FOR_PLAYER}, when its game has already been archived to Postgres (and
+   * removed from Redis), or when the room itself does not exist.
+   *
+   * @param roomId the room id.
+   * @return the in-progress game's id, or empty.
+   */
+  public Optional<UUID> findGameIdByRoomId(String roomId) {
+    return gameStore.findByRoomId(roomId).map(Game::id);
+  }
+
+  /**
    * Joins {@code roomId} as the second player and creates the {@link Game} for that room in the
    * same atomic step. The caller becomes Black; the creator (already on the room) becomes White.
    *
@@ -103,6 +139,13 @@ public class RoomService {
    * created {@link Game} via {@link GameStore#save(Game)} — all before returning the new room value
    * to the store. A concurrent joiner that loses the race observes the room as full and receives a
    * {@link RoomFullException}, never a half-state.
+   *
+   * <p><strong>Side effect on success:</strong> after the atomic block returns, the service
+   * broadcasts a {@link RoomJoinedEvent} to {@code /topic/rooms/{roomId}} via {@link
+   * SimpMessagingTemplate}. The broadcast happens <em>outside</em> the atomic block (the room and
+   * game writes are already durable) and is wrapped in a {@code try/catch} that logs at {@code
+   * WARN} without rethrowing — mirroring the {@code GameService.broadcastMoveEvent} pattern. If the
+   * broadcast fails, the creator's fallback is {@code GET /api/rooms/{id}} via REST.
    *
    * @param roomId the id of the room to join.
    * @param displayName the human-readable name of the joiner.
@@ -147,12 +190,30 @@ public class RoomService {
               return nextRoom;
             });
 
+    Game createdGame = createdGameHolder[0];
     log.info(
         "Room joined: roomId={}, joinerId={}, gameId={}",
         updated.id(),
         joiner.id(),
-        createdGameHolder[0].id());
-    return new JoinedRoom(updated, joiner, createdGameHolder[0]);
+        createdGame.id());
+    broadcastRoomJoinedEvent(updated.id(), createdGame.id(), joiner);
+    return new JoinedRoom(updated, joiner, createdGame);
+  }
+
+  /**
+   * Best-effort broadcast of a {@link RoomJoinedEvent} on {@code /topic/rooms/{roomId}}. Runs
+   * outside the atomic block so a broker-side failure cannot look like a failed mutation; the
+   * mutation has already been persisted. Any {@link RuntimeException} thrown by the broker is
+   * logged at {@code WARN} and not rethrown — the {@code GET /api/rooms/{id}} fallback covers
+   * subscribers that miss the event.
+   */
+  private void broadcastRoomJoinedEvent(String roomId, UUID gameId, Player joiner) {
+    RoomJoinedEvent event = new RoomJoinedEvent(roomId, gameId, joiner);
+    try {
+      messagingTemplate.convertAndSend("/topic/rooms/" + roomId, event);
+    } catch (RuntimeException ex) {
+      log.warn("Failed to broadcast RoomJoinedEvent for room {}: {}", roomId, ex.getMessage());
+    }
   }
 
   /**

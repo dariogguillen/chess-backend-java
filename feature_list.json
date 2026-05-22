@@ -205,6 +205,31 @@
     ]
   },
   {
+    "id": "room-lifecycle-events",
+    "title": "Room state read + real-time lifecycle events",
+    "description": "Fix a critical functional gap: the room creator (Player A) currently has no way to learn when Player B joins and the game starts. The REST POST /api/rooms returns gameId: null (intentionally, the game does not exist yet); POST /api/rooms/{id}/join returns gameId only to Player B; Player A never receives it and cannot subscribe to /topic/games/{gameId}. The game cannot be played end-to-end through the public API today. Frontend repo's progress/current.md confirms this is the blocker for the creator-game-discovery flow. Fix in two complementary parts: (1) NEW REST endpoint GET /api/rooms/{id} returning room state including gameId (or null). Required by the frontend even with STOMP in place, because STOMP late-subscribers cannot replay (fallback path, and the primary mechanism if frontend chooses polling). (2) NEW STOMP topic /topic/rooms/{roomId} carrying lifecycle events with a 'type' discriminator field. Today: RoomJoinedEvent. Future: RoomClosedEvent, PlayerLeftEvent (out of scope here but topic shape supports them). Player A subscribes immediately after createRoom, receives RoomJoinedEvent on B's join, transitions to /topic/games/{gameId}. Cross-repo coordination with chess-frontend repo's pending creator-game-discovery feature.",
+    "status": "done",
+    "priority": 9.5,
+    "acceptance": [
+      "NEW REST endpoint GET /api/rooms/{id} returning 200 with a RoomDetailsResponse { roomId (String, 6-char short code), players (array of { id: UUID, displayName: String, role: 'WHITE' | 'BLACK' }), gameId (UUID, nullable), status (one of 'WAITING_FOR_PLAYER' | 'ACTIVE' | 'CLOSED' — backend native names) }, or 404 ROOM_NOT_FOUND if the room does not exist.",
+      "Role is derived from join order: players[0] is WHITE (the creator), players[1] (when present) is BLACK (the joiner). The Room domain record is unchanged — role inference lives in the controller/mapper layer.",
+      "Endpoint is idempotent, no body, no path-level auth; matches the existing security posture (room id is the shared secret).",
+      "Springdoc: @Tag, @Operation, @ApiResponse 200 (with RoomDetailsResponse schema), @ApiResponse 404 (with ErrorResponse schema). RoomDetailsResponse fields carry @Schema where non-obvious.",
+      "NEW STOMP topic /topic/rooms/{roomId} (no WebSocketConfig change — /topic is already registered).",
+      "A sealed interface RoomEvent permits RoomJoinedEvent with String type() and String roomId() exposes a forward-compat discriminator.",
+      "RoomJoinedEvent record carries type ('ROOM_JOINED' constant), roomId (String, 6-char short code), gameId (UUID), and blackPlayer (Player record with id UUID + displayName).",
+      "RoomService.joinRoom broadcasts RoomJoinedEvent on /topic/rooms/{roomId} via SimpMessagingTemplate after the game is created and both stores (Redis room + Redis game) are persisted, in a try/catch + WARN log mirroring GameService.broadcastMoveEvent.",
+      "GET endpoint IT: 200 with the expected payload across both phases (WAITING_FOR_PLAYER with gameId=null and one WHITE player; ACTIVE with gameId set and both players with WHITE/BLACK roles); 404 for unknown room id.",
+      "STOMP IT: client subscribed BEFORE a second client joins receives RoomJoinedEvent with type='ROOM_JOINED', matching roomId/gameId/blackPlayer.",
+      "STOMP IT: client subscribing AFTER join does NOT receive the event (locks in no-replay semantics).",
+      "STOMP IT: duplicate join to a full room (409 ROOM_FULL) does NOT broadcast a second event.",
+      "STOMP IT: wire-format roundtrip — the JSON payload contains a 'type' field with value 'ROOM_JOINED' (locks in the discriminator).",
+      "docs/architecture.md: STOMP contract section updated with the new topic and discriminator pattern; API contract section updated with GET /api/rooms/{id} shape.",
+      "Feature note notes/09.5-room-lifecycle-events.md follows the template; Scala/Typelevel parallels include Topic[F, Event] (fs2) and sealed ADT + circe withDiscriminator analogies; documents why we did NOT retrofit MoveEvent / ViewerCountEvent with a type field (single-event-type topics).",
+      "./init.sh passes."
+    ]
+  },
+  {
     "id": "rest-cors",
     "title": "CORS configuration for REST endpoints",
     "description": "Add a CORS configuration so the deployed frontend on GitHub Pages can call /api/** in the browser. Backend currently has CORS only for the WebSocket handshake (WebSocketConfig#setAllowedOriginPatterns). The REST surface is silent, which means the browser blocks the preflight OPTIONS /api/rooms for any cross-origin request. Unblocks chess-frontend feature 4 (rest-room-integration), whose plan in chess-frontend/progress/current.md explicitly waits for this. The allowed origins mirror the WebSocket list (https://dariogguillen.github.io for prod GitHub Pages, http://localhost:* for dev). Implementation via a WebMvcConfigurer (NOT @CrossOrigin per controller — single source of truth for origin policy). Includes ITs asserting the preflight succeeds for an allowed origin and is rejected for a disallowed one (drift canary).",
