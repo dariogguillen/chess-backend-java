@@ -71,4 +71,21 @@ public record Game(
     }
     moves = List.copyOf(moves);
   }
+
+  /**
+   * Returns a copy of this game with {@code status} replaced. All other fields are reused
+   * by-reference; the move list is re-validated and defensively copied by the compact constructor.
+   *
+   * <p>Used by {@code GameAbandonService.abandon} to flip a non-terminal game to {@link
+   * GameStatus#ABANDONED} inside the {@code GameStore.compute} block without verbose field-by-field
+   * reconstruction. Other call sites still build a new {@link Game} explicitly because they mutate
+   * more than just the status (e.g. {@code GameService.applyMove} also rewrites {@code fen} and
+   * appends to {@code moves}).
+   *
+   * @param status the new status; non-null.
+   * @return a new {@link Game} with the same id / players / FEN / moves and the given status.
+   */
+  public Game withStatus(GameStatus status) {
+    return new Game(id, roomId, white, black, startingFen, fen, status, moves);
+  }
 }

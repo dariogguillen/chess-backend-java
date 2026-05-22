@@ -249,14 +249,38 @@
   },
   {
     "id": "disconnect-handling",
-    "title": "Disconnect and reconnect",
-    "description": "Track player connection state. On disconnect, start a grace period (e.g., 60s). If the player reconnects within the grace period, restore them to the game. If not, mark the game as abandoned.",
-    "status": "pending",
+    "title": "Disconnect and reconnect (core)",
+    "description": "Core lifecycle: track player STOMP session state, start a 60s grace period on disconnect, clear the timer and restore the game on reconnect, or mark the game ABANDONED + archive it to Postgres on timeout. The opponent receives a minimal terminal STOMP broadcast so they know the outcome. Mid-grace UX countdown (per-second updates for the opponent's UI) is deliberately split into feature 11.5 (disconnect-notifications) to keep this feature focused on the lifecycle correctness rather than the live UX polish.",
+    "status": "done",
     "priority": 11,
     "acceptance": [
-      "Reconnection within grace period restores game state for the player.",
-      "Timeouts mark the game as abandoned with the opponent as winner.",
-      "Integration tests cover both paths.",
+      "STOMP player identification: the existing 'playerId' header pattern (ViewerCountTracker) is reused to associate a STOMP session with a player UUID.",
+      "Track only the 2 players of a game; spectators are explicitly out of scope for this lifecycle (they remain handled by ViewerCountTracker).",
+      "On SessionDisconnectEvent for a player whose game is still non-terminal, start a per-player grace-period timer of 60s (configurable via @ConfigurationProperties).",
+      "If the same playerId resubscribes to the same game within 60s, the timer is cancelled and the game continues unchanged.",
+      "If the timer fires, the game is mutated in Redis to status=ABANDONED via gameStore.compute, the GameHistoryService.archive path is invoked (the archive trigger today lives in GameService.applyMove; this feature adds a second invocation site or refactors to a shared helper), and a terminal STOMP event is broadcast to /topic/games/{gameId} so the opponent learns the outcome.",
+      "Idempotency: if a disconnect handler fires for a game already in a terminal status (e.g., the game ended by checkmate while the player happened to disconnect), the timer is a no-op — no second archive, no second broadcast.",
+      "Server restart edge case is acknowledged in the note as a documented limitation (in-flight timers are lost; the game stays in ONGOING until something else terminates it). Out of scope for this feature.",
+      "Both-players-disconnect edge case: the first player whose timer fires causes the abandonment; the second timer fires on an already-terminal game and is a no-op (covered by the idempotency rule above).",
+      "Integration tests cover: (a) connect → disconnect → wait 60s → assert ABANDONED + archived to Postgres + terminal STOMP event delivered; (b) connect → disconnect → reconnect within grace → assert game still ONGOING and no archive; (c) disconnect-on-already-terminal-game → assert no-op.",
+      "Scheduling infrastructure added: @EnableScheduling on ChessApplication (or a new @Configuration) + a TaskScheduler bean. Document why the precise per-disconnect scheduling approach was chosen over polling @Scheduled, in the feature note.",
+      "Clock-controlled tests: the new components inject the existing Clock bean; tests can use a fixed/mock Clock to assert grace-period timing without sleeping for 60s.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "disconnect-notifications",
+    "title": "Live disconnect/reconnect notifications (polish)",
+    "description": "UX polish on top of feature 11 (disconnect-handling core). When a player disconnects, the opponent should see in their UI 'Bob is reconnecting, 45s remaining' with a per-second countdown, and an explicit notification when the player reconnects. This feature adds the mid-grace STOMP broadcasts (PlayerDisconnectedEvent with seconds-remaining, PlayerReconnectedEvent). Will likely retrofit the existing single-event-type /topic/games/{gameId} (MoveEvent only today) to a sealed-interface GameStateEvent family with type discriminator, mirroring the pattern feature 9.5 introduced on /topic/rooms/{roomId}. Cross-repo coordination: the frontend will need to consume the new events.",
+    "status": "pending",
+    "priority": 11.5,
+    "acceptance": [
+      "Sealed interface GameStateEvent permits the existing terminal events + new PlayerDisconnectedEvent + PlayerReconnectedEvent.",
+      "On disconnect: broadcast PlayerDisconnectedEvent { type, gameId, playerId, secondsRemaining } to /topic/games/{gameId}. Either a single event with the full grace period (frontend counts down locally) or per-second tick events (server is the source of truth). Decision documented in the plan.",
+      "On reconnect within grace: broadcast PlayerReconnectedEvent { type, gameId, playerId } so the opponent's UI clears the countdown banner.",
+      "Existing MoveEvent retrofitted into the sealed interface with a type field (the polymorphic-topic-gets-discriminator rule from feature 9.5). Frontend coordination required.",
+      "Integration tests cover the new broadcasts.",
+      "Feature note documents the decision (per-second tick vs single event with countdown on client) with the trade-off.",
       "./init.sh passes."
     ]
   },

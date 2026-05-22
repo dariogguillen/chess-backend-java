@@ -1716,3 +1716,53 @@ Deleted: none.
 **Deployment note**: production EC2 picks up the new CORS headers on the next deploy automatically. Caddy passes them through unchanged. The frontend manual smoke test (open the GH Pages SPA, create a room, join from a second browser) is the closing signal — the first cross-origin request that succeeds where it failed before validates the feature end-to-end.
 
 **Feature note**: `notes/10-rest-cors.md`.
+
+---
+
+## 2026-05-22 — disconnect-handling
+
+Core lifecycle for player disconnect/reconnect. The feature was deliberately split into 11 (core: detect → grace → reconnect OR abandon + archive + terminal broadcast) and 11.5 (disconnect-notifications: mid-grace countdown UX + sealed-interface refactor of `/topic/games/{gameId}`). The acceptance criterion as written in `feature_list.json` is fully covered by 11; 11.5 is portfolio UX polish that introduces new STOMP events for the opponent's reconnecting-countdown banner. The user chose the split before planning began.
+
+**Approach.** Four new components compose the lifecycle:
+
+1. **`PlayerSessionTracker`** — mirrors `ViewerCountTracker`'s structure. Listens `SessionSubscribeEvent` / `SessionDisconnectEvent`. Reuses the existing `playerId` STOMP native-header convention (with the same tolerant `parseUuidOrNull` parser). On SUBSCRIBE to `/topic/games/{gameId}`, if the `playerId` matches `game.white().id()` or `game.black().id()` the session is recorded as a player session AND any pending grace-period timer for that `(playerId, gameId)` is cancelled (this is the reconnect path). On DISCONNECT, if the game is still non-terminal, a grace timer is started. Spectators are untouched — they keep being handled by `ViewerCountTracker` independently, and a single session can be both a player and a spectator session without conflict.
+2. **`GracePeriodManager`** — programmatic per-(player, game) one-shot timers via `TaskScheduler.schedule(task, Instant)`. Internal `Map<GracePeriodKey, ScheduledFuture<?>>`. Public API: `startGracePeriod`, `cancelGracePeriod`, `isActive`. The grace period duration comes from a new `@ConfigurationProperties("chess.disconnect")` with a `Duration gracePeriod` default of 60s, env-var override `CHESS_DISCONNECT_GRACE_PERIOD`. **A race condition was found and closed during implementation**: cancel-then-fire-or-fire-then-cancel interleavings could remove the key under either thread, with the late side assuming a no-op while the other was about to invoke abandon. The fix is a per-key `ReentrantLock` (a fresh `StripedKeyLock` instance — the manager's key domain is independent of the store's) acquired in `start`, `cancel`, AND the scheduled task body's `fire` method. The three operations are now mutually exclusive. Documented in the manager's class JavaDoc and in the feature note's "Gotchas" section.
+3. **`GameAbandonService`** — `abandon(gameId, abandonedBy)`. Wraps a `gameStore.compute(...)` that flips the game's status to `ABANDONED` only on the non-terminal branch (idempotent: already-terminal games short-circuit). The transition signal is an `AtomicBoolean transitioned` set inside the lambda; the triple guard `updated == null || !transitioned.get()` distinguishes unknown-game / already-terminal / fresh-flip. The archive call (`gameHistoryService.archive(updated)`) runs **outside** the Redis `compute` lock — the original plan suggested inside (mirroring `GameService.applyMove`), but ABANDONED is irrevocable, no follow-up move can race against the commit, and a JDBC round-trip inside the Redis per-key lock buys nothing. The asymmetry vs the move-terminal path is documented in the service's JavaDoc. The terminal broadcast is wrapped in try/catch + WARN log mirroring `GameService.broadcastMoveEvent`. Winner derivation: the opposite of `abandonedBy`, carried in the event payload so the frontend doesn't have to compute it.
+4. **`GameAbandonedEvent`** — a plain record broadcast on the existing `/topic/games/{gameId}` topic. **NO `type` discriminator field**, **NOT** a sealed-interface variant. The plan deliberately deferred the sealed-interface refactor of `MoveEvent` + `GameAbandonedEvent` + the upcoming `PlayerDisconnectedEvent`/`PlayerReconnectedEvent` to feature 11.5, where all three new variants land coherently. Adding the discriminator on `GameAbandonedEvent` alone would create asymmetry with `MoveEvent` and drift risk; retrofitting `MoveEvent` here would pre-empt 11.5's scope.
+
+**Scheduling infrastructure introduced.** `@EnableScheduling` lives on a new `config/SchedulingConfig` (NOT on `ChessApplication` — keeps the application class minimal and matches the `CorsConfig`/`RedisConfig` shape). A `ThreadPoolTaskScheduler` bean is registered with pool size 2, daemon threads, and a `chess-scheduler-` prefix. The `@Scheduled` annotation is NOT used; the manager schedules tasks programmatically via the bean.
+
+**Two archive call sites — deliberate, no shared helper.** The existing `GameService.applyMove` call site (feature 9) for terminal-by-move and the new `GameAbandonService.abandon` site for terminal-by-timeout duplicate exactly one line (`gameHistoryService.archive(updated)`). Extracting a `GameTerminationHelper` was considered and rejected as premature abstraction: the two contexts are different (move applied vs status mutated by timeout) and the shared helper would obscure that. Documented in the note.
+
+**Server-restart limitation acknowledged.** If the backend restarts while grace-period timers are pending, the in-memory `Map<GracePeriodKey, ScheduledFuture<?>>` is lost. Affected games stay in `ONGOING` until the next event terminates them. Mitigation (persisting timer state to Redis with TTL + a restart-time recovery sweep) is heavyweight for the single-instance deploy and a polish opportunity for a future feature, NOT this one.
+
+**Cross-repo coordination.** `/topic/games/{gameId}` now carries two event types (`MoveEvent` + `GameAbandonedEvent`) distinguished by **shape** (presence of `abandonedBy` vs `from`/`to`). The frontend's `Play.tsx` needs to handle the new event and transition to "game over" with the opposite-of-abandonedBy as winner. The contract is in `docs/architecture.md`. 11.5 will retrofit a `type` field and the distinction becomes `switch (event.type)`. The frontend adopts on its own schedule.
+
+**Reviewer outcome**: APPROVED in round 1, no rejections. Two out-of-scope observations: (a) `@SpyBean` is deprecated in favour of `@MockitoSpyBean` (Spring Boot 3.4+), and (b) `DisconnectHandlingIT.SUBSCRIBE_REGISTRATION_DELAY_MS = 1_000L` is a literal `Thread.sleep` matching the existing baseline in `GameWebSocketIT` and `RoomLifecycleIT`. The user chose to polish (a) before close — the implementer migrated `GameAbandonServiceIT` to `@MockitoSpyBean`, updated the import, fixed the corresponding `{@link …}` JavaDoc reference, and updated the note's "Key decisions" and "Gotchas" sections to reflect the migration. A grep across the whole test suite confirmed there were no other `@SpyBean` usages — the fix was fully contained. Observation (b) is left as a future test-infrastructure polish (changing the sleep in one IT without the other two would create inconsistency).
+
+**Files touched.**
+
+Created:
+- `src/main/java/io/github/dariogguillen/chess/config/DisconnectProperties.java` — `@ConfigurationProperties("chess.disconnect")` record with positive-Duration invariant.
+- `src/main/java/io/github/dariogguillen/chess/config/SchedulingConfig.java` — `@EnableScheduling`, `ThreadPoolTaskScheduler` bean, `@EnableConfigurationProperties(DisconnectProperties.class)`.
+- `src/main/java/io/github/dariogguillen/chess/service/GracePeriodManager.java` — start/cancel/isActive timers, per-key `StripedKeyLock`, race-condition lock on start/cancel/fire.
+- `src/main/java/io/github/dariogguillen/chess/service/GameAbandonService.java` — idempotent abandon via `compute` + archive (outside the block) + broadcast.
+- `src/main/java/io/github/dariogguillen/chess/websocket/PlayerSessionTracker.java` — `@EventListener` on SessionSubscribeEvent / SessionDisconnectEvent, mirrors ViewerCountTracker.
+- `src/main/java/io/github/dariogguillen/chess/websocket/GameAbandonedEvent.java` — plain record, no `type` field (deferred to 11.5).
+- `src/test/java/io/github/dariogguillen/chess/service/GracePeriodManagerTest.java` — 5 unit tests (start-isActive, cancel-prevents-fire, double-start-replaces, fires-and-clears, cancel-on-unknown).
+- `src/test/java/io/github/dariogguillen/chess/service/GameAbandonServiceIT.java` — 3 ITs (non-terminal happy, already-terminal no-op, unknown no-op) using `@MockitoSpyBean SimpMessagingTemplate`.
+- `src/test/java/io/github/dariogguillen/chess/websocket/DisconnectHandlingIT.java` — 3 end-to-end STOMP ITs with `@TestPropertySource("chess.disconnect.grace-period=300ms")`.
+- `notes/11-disconnect-handling.md` — feature note (template sections + 6 decisions documented with alternatives + 4 Scala/Typelevel parallels + race-condition Gotcha).
+
+Modified:
+- `src/main/java/io/github/dariogguillen/chess/domain/Game.java` — added `Game withStatus(GameStatus newStatus)` helper (single new method, no field shifts).
+- `src/main/resources/application.yml` — `chess.disconnect.grace-period: ${CHESS_DISCONNECT_GRACE_PERIOD:60s}` under the existing `chess:` namespace.
+- `docs/architecture.md` — new "Disconnect handling" subsection covering the four components, the two archive call sites with the no-shared-helper rationale, the server-restart limitation, and the GameAbandonedEvent shape with the deferred-discriminator → feature 11.5 rationale.
+
+Deleted: none.
+
+**Final test totals**: 97 unit + 80 IT = **177 tests**, all green, zero skips, zero failures, zero errors. `./init.sh` exits 0.
+
+**Deployment note**: the change is live in code and tests but not yet in production. The next push to `main` triggers `.github/workflows/deploy.yml`, which rebuilds the image, pushes to ECR, and restarts the EC2 container. No infra change required — `@EnableScheduling` and the `TaskScheduler` bean are app-internal; the new env var `CHESS_DISCONNECT_GRACE_PERIOD` has a 60s default so prod works without setting it.
+
+**Feature note**: `notes/11-disconnect-handling.md`.

@@ -788,15 +788,115 @@ and keeps actions auditable.
 
 ## Reconnection
 
-Players have a connection state stored in Redis: `CONNECTED`,
-`DISCONNECTED`, `RECONNECTING`. When a STOMP session disconnects, the
-player enters a grace period (target: 60 seconds). If they reconnect
-within the grace period, they resume the game. If not, the game is
-marked `ABANDONED` with the opponent as the winner.
+Feature 11 (`disconnect-handling`) implements the lifecycle correctness
+layer described here. The mid-grace UX polish (per-second countdown
+broadcasts so the opponent's UI can show "Bob is reconnecting, 45s
+remaining") is split into feature 11.5 (`disconnect-notifications`).
+
+When a STOMP session disconnects, the player enters a grace period
+(60 seconds by default, configurable via
+`chess.disconnect.grace-period`). If they resubscribe to the same
+`/topic/games/{gameId}` with the same `playerId` native header within
+the window, the timer is cancelled and the game continues unchanged.
+If the timer fires, the game is marked `ABANDONED` with the opponent
+as the winner.
 
 Reconnection works because state is on the server, not in the browser.
-A client that reloads the page can re-fetch the game state and
-re-subscribe to the STOMP topic.
+A client that reloads the page can re-fetch the game state via
+`GET /api/games/{id}` and re-subscribe to the STOMP topic.
+
+### Disconnect handling
+
+The mechanism is built on four pieces wired in series:
+
+- **`PlayerSessionTracker`** (`websocket/`). A second
+  `@EventListener` consumer of Spring's STOMP session events, parallel
+  to `ViewerCountTracker` but tracking the two players of a game
+  rather than spectators. It reuses the same `playerId` native-header
+  convention (documented in "STOMP API contract → `playerId` header
+  convention"): on a `SessionSubscribeEvent` for
+  `/topic/games/{gameId}` whose `playerId` matches white or black of
+  the game, the tracker records the `(sessionId → (playerId, gameId))`
+  association and asks `GracePeriodManager.cancelGracePeriod` to drop
+  any pending timer for the pair (the reconnect path). On a
+  `SessionDisconnectEvent` the association is removed and, if the
+  game is still non-terminal, `GracePeriodManager.startGracePeriod`
+  is invoked. The two trackers are orthogonal: a session is in one
+  map or the other, never both.
+- **`GracePeriodManager`** (`service/`). The single owner of the
+  in-memory `Map<(playerId, gameId), ScheduledFuture<?>>` of pending
+  abandon timers. Uses a programmatic `TaskScheduler.schedule(task,
+  Instant)` (configured in `SchedulingConfig`) — not `@Scheduled` —
+  because the timers are one-shot, addressable, and cancellable on
+  reconnect, none of which the declarative annotation supports. A
+  fresh `StripedKeyLock` instance (the same primitive
+  `RedisGameStore` uses for per-key atomicity, repurposed for a new
+  domain) serializes `start` / `cancel` / `fire` on the same key, so
+  a reconnect that arrives during a fire cannot race the abandon
+  path's `active.remove` with its own cancel.
+- **`GameAbandonService`** (`service/`). The terminal-by-timeout
+  counterpart of `GameService.applyMove`'s terminal-by-move path.
+  Flips the game to `ABANDONED` inside a `gameStore.compute` block
+  (atomic per `gameId`), then archives via
+  `GameHistoryService.archive` and broadcasts a `GameAbandonedEvent`
+  on `/topic/games/{gameId}`. Idempotent: a no-op when the game is
+  already terminal or does not exist.
+- **`SchedulingConfig`** (`config/`). Brings up
+  `@EnableScheduling` and registers a `ThreadPoolTaskScheduler` bean
+  (pool size 2, daemon threads, `chess-scheduler-` thread name
+  prefix). Also exposes `DisconnectProperties` via
+  `@EnableConfigurationProperties`, mirroring the `CorsConfig` /
+  `CorsProperties` and `RedisConfig` / `RedisActiveStateProperties`
+  patterns from features 10 and 8.
+
+**Archive trigger lives in two places.**
+`GameService.applyMove` calls `GameHistoryService.archive(...)`
+inside its `gameStore.compute` lambda when a move flips the game
+into a terminal status; `GameAbandonService.abandon` calls it
+after its own `gameStore.compute` block when the abandon timer
+fires. We deliberately did **not** extract a shared helper:
+the two call sites have different surrounding context (move
+applied vs status mutated), and a shared helper would obscure
+that. Both sites remain explicit and short.
+
+**Server restart limitation.** The pending-timers map is
+process-local. A JVM restart with grace timers in flight loses
+them; affected games stay in their current non-terminal status
+until something else terminates them (a move, or a fresh
+disconnect that schedules a new timer). Persisting timers to
+Redis with a restart-time recovery sweep would be heavyweight
+for the single-instance deploy and is left for a future feature.
+
+**`GameAbandonedEvent` on `/topic/games/{gameId}`.** The same
+topic now carries two event variants (`MoveEvent` and
+`GameAbandonedEvent`) without a `type` discriminator field —
+subscribers distinguish them by shape (`MoveEvent` has
+`from`/`to`/`moveNumber`; `GameAbandonedEvent` has
+`abandonedBy`/`winnerId`). Feature 11.5
+(`disconnect-notifications`) is the right moment to retrofit the
+topic into a sealed-interface family with an explicit `type`
+field (alongside the new `PlayerDisconnectedEvent` /
+`PlayerReconnectedEvent` it adds). Doing it now would either
+drift (a discriminator on `GameAbandonedEvent` alone, asymmetric
+with `MoveEvent`) or pre-empt 11.5's scope. The shape:
+
+```json
+{
+  "gameId": "0d52a8a0-bea0-4b21-bbe3-3df7f8e83bfb",
+  "abandonedBy": "8f14e45f-ceea-467a-9575-d4b9b3e8b3a3",
+  "winnerId": "550e8400-e29b-41d4-a716-446655440000",
+  "finalFen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+  "abandonedAt": "2026-05-22T10:23:11.123Z"
+}
+```
+
+**Trust model and out-of-scope items** mirror the broader
+no-auth posture documented in the STOMP contract section above:
+the `playerId` header is taken at face value; spectator
+disconnects are handled separately by `ViewerCountTracker` and
+do not enter the abandon path; rate-limiting reconnect attempts
+is not added since the security posture has no anti-abuse layer
+yet.
 
 ## Error handling
 
