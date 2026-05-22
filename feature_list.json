@@ -271,8 +271,8 @@
   {
     "id": "disconnect-notifications",
     "title": "Live disconnect/reconnect notifications (polish)",
-    "description": "UX polish on top of feature 11 (disconnect-handling core). When a player disconnects, the opponent should see in their UI 'Bob is reconnecting, 45s remaining' with a per-second countdown, and an explicit notification when the player reconnects. This feature adds the mid-grace STOMP broadcasts (PlayerDisconnectedEvent with seconds-remaining, PlayerReconnectedEvent). Will likely retrofit the existing single-event-type /topic/games/{gameId} (MoveEvent only today) to a sealed-interface GameStateEvent family with type discriminator, mirroring the pattern feature 9.5 introduced on /topic/rooms/{roomId}. Cross-repo coordination: the frontend will need to consume the new events.",
-    "status": "pending",
+    "description": "UX polish on top of feature 11 (disconnect-handling core). When a player disconnects, the opponent should see in their UI 'Bob is reconnecting, 45s remaining' with a countdown, and an explicit notification when the player reconnects. This feature adds the mid-grace STOMP broadcasts (PlayerDisconnectedEvent + PlayerReconnectedEvent) and retrofits the /topic/games/{gameId} topic to a sealed-interface GameStateEvent family with a type discriminator field, mirroring the pattern feature 9.5 introduced on /topic/rooms/{roomId}. Cross-repo coordination: the frontend will need to switch from shape-based discrimination to type-based.",
+    "status": "done",
     "priority": 11.5,
     "acceptance": [
       "Sealed interface GameStateEvent permits the existing terminal events + new PlayerDisconnectedEvent + PlayerReconnectedEvent.",

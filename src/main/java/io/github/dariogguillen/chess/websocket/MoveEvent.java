@@ -13,6 +13,12 @@ import java.util.UUID;
  * the wire matches order of move application thanks to the per-game serialization done by {@code
  * GameStore.compute}.
  *
+ * <p>{@code MoveEvent} is one of the four variants of the {@link GameStateEvent} sealed family that
+ * share {@code /topic/games/{gameId}}; subscribers discriminate by the leading {@code type} field
+ * (constant {@code "MOVE"} here). The field is set automatically by the convenience constructor so
+ * existing call sites do not need to know about the discriminator — they keep calling {@code new
+ * MoveEvent(gameId, movedBy, side, ...)} unchanged.
+ *
  * <p>The {@code movedBy} and {@code side} fields together let a client decide whether to react to
  * the event — for example, the player that submitted the move via REST already has the new state
  * from the REST response and uses {@code movedBy} as a filter to avoid re-processing its own move.
@@ -23,6 +29,7 @@ import java.util.UUID;
  * QUEEN}). {@code playedAt} is sourced from the injected {@code Clock}, mirroring the timestamp
  * pattern in {@link ErrorResponse}.
  *
+ * @param type the discriminator constant {@code "MOVE"}; set by the convenience constructor.
  * @param gameId the id of the game this move was applied to.
  * @param movedBy the id of the player that submitted the move (mirrors {@code X-Player-Id} on the
  *     REST side); lets receivers filter their own moves out client-side.
@@ -41,6 +48,7 @@ import java.util.UUID;
  *     Clock}, in UTC.
  */
 public record MoveEvent(
+    String type,
     UUID gameId,
     UUID movedBy,
     Side side,
@@ -51,4 +59,30 @@ public record MoveEvent(
     GameStatus status,
     Side turn,
     int moveNumber,
-    Instant playedAt) {}
+    Instant playedAt)
+    implements GameStateEvent {
+
+  /** Stable discriminator value emitted in JSON as {@code "type":"MOVE"}. */
+  public static final String TYPE = "MOVE";
+
+  /**
+   * Convenience constructor used by every current call site (today: {@code
+   * GameService.broadcastMoveEvent}). The {@link #type} field is always {@link #TYPE}; making it
+   * explicit in the record (rather than computing it via {@code @JsonTypeInfo}) keeps the
+   * discriminator visible at the source.
+   */
+  public MoveEvent(
+      UUID gameId,
+      UUID movedBy,
+      Side side,
+      String from,
+      String to,
+      String promotion,
+      String fen,
+      GameStatus status,
+      Side turn,
+      int moveNumber,
+      Instant playedAt) {
+    this(TYPE, gameId, movedBy, side, from, to, promotion, fen, status, turn, moveNumber, playedAt);
+  }
+}

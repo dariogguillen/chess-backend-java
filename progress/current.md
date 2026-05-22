@@ -2,7 +2,7 @@
 
 **Status:** closed — no active feature.
 
-Last closed feature: `disconnect-handling` (priority 11) on 2026-05-22.
+Last closed feature: `disconnect-notifications` (priority 11.5) on 2026-05-22.
 See `progress/history.md` for the full entry.
 
 ---
@@ -11,43 +11,49 @@ To start the next session, the leader picks the lowest-priority
 feature with `status: "pending"` from `feature_list.json` and writes
 a plan here.
 
-Next in queue: `disconnect-notifications` (priority 11.5).
+Next in queue: `docker-compose` (priority 12) — likely redundant
+with feature 7 (`backend-containerize`) which already shipped the
+local docker-compose; planning should start by auditing what's
+left or whether to mark redundant.
 
 ---
 
-## Disconnect lifecycle is in place
+## Mid-grace UX events are live
 
-The backend now correctly handles mid-game disconnections:
+The `/topic/games/{gameId}` STOMP topic now carries four event
+types in a sealed-interface `GameStateEvent` family with an
+explicit `type` discriminator:
 
-- **Detect**: `PlayerSessionTracker` listens STOMP `SessionDisconnectEvent`
-  and identifies the player via the existing `playerId` header.
-- **Grace**: a 60s timer (configurable via `chess.disconnect.grace-period`)
-  is started per `(playerId, gameId)`.
-- **Reconnect**: if the same `playerId` resubscribes to
-  `/topic/games/{gameId}` within the window, the timer is cancelled
-  and the game continues unchanged.
-- **Abandon**: if the timer fires, the game is mutated to
-  `ABANDONED` in Redis, archived to Postgres (via the existing
-  `GameHistoryService.archive` path now invoked from a second call
-  site), and a terminal `GameAbandonedEvent` is broadcast on
-  `/topic/games/{gameId}` so the opponent learns the outcome and
-  the identity of the winner.
+- `MoveEvent` (`type: "MOVE"`) — every successful move.
+- `GameAbandonedEvent` (`type: "GAME_ABANDONED"`) — emitted on
+  grace-period timeout.
+- `PlayerDisconnectedEvent` (`type: "PLAYER_DISCONNECTED"`) —
+  emitted immediately on disconnect, carries the absolute
+  `gracePeriodEndsAt: Instant` for the opponent's local countdown.
+- `PlayerReconnectedEvent` (`type: "PLAYER_RECONNECTED"`) —
+  emitted only when the reconnect actually cancels a pending
+  timer (guard against the cancel-vs-fire race).
 
-The race condition between `cancel` and the scheduler's `fire` was
-found and closed with per-key `ReentrantLock` serialisation on
-start/cancel/fire — the three operations are mutually exclusive.
+The two pre-existing events were retrofitted with the `type` field
+without breaking any call site or any wire consumer (Jackson
+ignores unknown fields by default). The codebase-wide rule —
+"polymorphic topic gets the discriminator; single-event topic
+doesn't" — is now documented at the top of the STOMP contract
+section in `architecture.md`.
 
-Server-restart limitation: in-flight grace-period timers are lost
-on restart. Documented in `architecture.md` and the note; a
-polish opportunity for a future feature.
+## Frontend cross-repo work unlocked
 
-**Cross-repo coordination remaining**: the frontend's `Play.tsx`
-needs to handle the new `GameAbandonedEvent` on
-`/topic/games/{gameId}`, distinguishing it from `MoveEvent` by
-shape (presence of `abandonedBy`). Feature 11.5 will retrofit a
-`type` discriminator and the distinction becomes
-`switch (event.type)`. Backend ships the contract today; frontend
-adopts on its own schedule.
+The frontend repo's `Play.tsx` can now:
+
+1. Migrate from awkward shape-based discrimination
+   (`if ('abandonedBy' in event)`) to `switch (event.type)`.
+   Backward-compatible — ship any time.
+2. Render a reconnecting banner on `PlayerDisconnectedEvent` using
+   `gracePeriodEndsAt` for a local-clock countdown.
+3. Clear the banner on `PlayerReconnectedEvent`.
+
+Contract is in `docs/architecture.md`. Frontend adopts on its own
+schedule.
 
 Live URLs (unchanged):
 

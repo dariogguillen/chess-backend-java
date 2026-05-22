@@ -1766,3 +1766,59 @@ Deleted: none.
 **Deployment note**: the change is live in code and tests but not yet in production. The next push to `main` triggers `.github/workflows/deploy.yml`, which rebuilds the image, pushes to ECR, and restarts the EC2 container. No infra change required — `@EnableScheduling` and the `TaskScheduler` bean are app-internal; the new env var `CHESS_DISCONNECT_GRACE_PERIOD` has a 60s default so prod works without setting it.
 
 **Feature note**: `notes/11-disconnect-handling.md`.
+
+---
+
+## 2026-05-22 — disconnect-notifications
+
+The planned follow-up to feature 11. Feature 11 shipped the disconnect lifecycle (detect → grace → reconnect or abandon + archive + terminal broadcast) but deliberately deferred two pieces: the mid-grace UX events for the opponent's reconnecting-banner countdown, and the sealed-interface retrofit of `/topic/games/{gameId}` (which carried two event types after feature 11 — `MoveEvent` and `GameAbandonedEvent` — distinguishable only by shape). This feature closes both pieces together, mirroring feature 9.5's `RoomEvent` family pattern on the games topic.
+
+**Sealed-interface family**. `sealed interface GameStateEvent permits MoveEvent, GameAbandonedEvent, PlayerDisconnectedEvent, PlayerReconnectedEvent` with abstract `String type()` and `UUID gameId()`. Java 17 sealed semantics give compile-time exhaustiveness when future variants land. The `type` field is a regular String component on each record set via a convenience constructor that defaults the constant (`"MOVE"`, `"GAME_ABANDONED"`, `"PLAYER_DISCONNECTED"`, `"PLAYER_RECONNECTED"`); no `@JsonTypeInfo`. Same call as feature 9.5: keeping the discriminator visible at the source beats hiding it behind Jackson annotations.
+
+**Backward-compatible retrofit**. `MoveEvent` and `GameAbandonedEvent` gain a leading `String type` field but their existing convenience constructors are preserved without changes — every current call site (`GameService.broadcastMoveEvent`, `GameAbandonService.abandon`, every test that constructs an event) compiles unchanged. The wire-side change is also backward-compatible: Jackson's `FAIL_ON_UNKNOWN_PROPERTIES=false` default means the frontend's existing typed deserialisation ignores the new field, and the existing `GameWebSocketIT` / `GameAbandonServiceIT` stayed UNTOUCHED on disk — the strongest possible regression signal that the retrofit didn't break the contract.
+
+**The new mid-grace events** are emitted by `PlayerSessionTracker` (constructor-injected with `SimpMessagingTemplate`, `DisconnectProperties`, `Clock` in addition to its existing deps). On disconnect, after `GracePeriodManager.startGracePeriod`, a `PlayerDisconnectedEvent` is broadcast carrying the player's UUID, their side (derived at the boundary from `game.white()` vs `game.black()`), the disconnect timestamp, and an **absolute `gracePeriodEndsAt: Instant`** — explicitly NOT a `secondsRemaining: int` delta or per-second tick events. Three approaches were considered: per-second ticks (server source of truth but 60 events per disconnect + scheduler complexity), `secondsRemaining` snapshot (simple but stale-on-the-wire — by the time the frontend receives it, the value is wrong by N ms), and the chosen `gracePeriodEndsAt` absolute deadline (1 broadcast, value never stale because it's an instant not a delta, client computes `(deadline - now()) / 1000` once per render tick using its local clock). This matches how chess.com and Lichess send timer state and matches http4s/akka-typed `Deadline` types in the Scala/Typelevel parallels documented in the note. On reconnect, the SUBSCRIBE handler calls `gracePeriodManager.cancelGracePeriod(...)`; the manager's signature changed from `void` to `boolean` returning whether a pending timer was actually found and cancelled, and the broadcast of `PlayerReconnectedEvent` is gated on `true` — the cancel-vs-fire race (reconnect arriving right as the timer fires) is now silent on the wire because the cancel sees `false` and emits nothing, while the timer-fire path proceeds to `GameAbandonService.abandon` and the `GameAbandonedEvent` becomes the source of truth.
+
+**Three deviations from the plan**, all minor and approved by the reviewer:
+
+1. `PlayerSessionTracker.onDisconnect` also skips the broadcast when the game does not exist (null lookup), not just when it is terminal. A defensive merge of two related guards.
+2. The order on disconnect is `startGracePeriod` first, then broadcast — so the timer is guaranteed to exist by the time the opponent's UI starts counting down from `gracePeriodEndsAt`.
+3. The third IT (`disconnect_onAlreadyTerminalGame_noBroadcast`) skips the Postgres-row-count assertion that the plan suggested, because `DisconnectHandlingIT` already covers the no-double-archive invariant via `historyRepository.count()`. Keeping the new IT focused on the wire surface avoids overlap.
+
+**Two existing tests in `DisconnectHandlingIT` were modified** with reviewer-approved justification: the topic's contract was legitimately expanded by this feature (broadcasts increased from 1 to 2 events on the timeout-and-abandon path and from 0 to 2 on the reconnect-within-grace path), so the tests had to drain the new events. All load-bearing invariants stayed: test 1 still asserts the `GameAbandonedEvent` shape and the no-double-archive guard; test 2 still asserts game stays `ONGOING` and no `GameAbandonedEvent` arrives. Test 3 (disconnect on already-terminal game) was byte-identical because the terminal-game guard suppresses both the new broadcast and the timer.
+
+**The "polymorphic topic gets the discriminator" rule** introduced in feature 9.5 for `/topic/rooms/{roomId}` is now applied codebase-wide. The rule was lifted to a top-level paragraph in the STOMP contract section of `docs/architecture.md` so future readers find it before each topic-specific subsection. The corollary — "single-event-type topics don't get a discriminator" — keeps `/topic/games/{gameId}/viewers` (which carries only `ViewerCountEvent`) free of the dead-weight field.
+
+**Reviewer outcome**: APPROVED in round 1, no rejections. Three out-of-scope observations: (a) cosmetic Javadoc on `PlayerDisconnectedEvent` had a `})` visual cluster (closing `@code` brace adjacent to closing paren of an aside); polished by replacing the parenthetical with em-dashes before close. (b) `RoomEvent` doesn't share a common `XxxId()`-style base method with `GameStateEvent`; intentional (rooms and games have different identifiers) but a flag if a third polymorphic topic ever emerges. (c) `DisconnectNotificationsIT` uses a 2s grace period plus a `Thread.sleep(800ms)` between events, adding ~6s of test budget; same trade-off the implementer documented as a "Gotcha" — accepted.
+
+**Cross-repo coordination after close**. The frontend repo's `Play.tsx` now has a cleaner path:
+- Migrate from shape-based discrimination on `/topic/games/{gameId}` (the awkward `if ('abandonedBy' in event)` check needed post-feature-11) to `switch (event.type)` — backward-compatible, can ship at any time.
+- Handle `PlayerDisconnectedEvent` → render the reconnecting banner; use `gracePeriodEndsAt` for a local-clock countdown (one `requestAnimationFrame` loop or `setInterval`, frontend's choice).
+- Handle `PlayerReconnectedEvent` → clear the banner.
+
+The contract is in `docs/architecture.md` for the frontend to align without inspecting backend source.
+
+**Files touched.**
+
+Created:
+- `src/main/java/io/github/dariogguillen/chess/websocket/GameStateEvent.java` — sealed interface with 4 permits; codebase-wide design rule documented in JavaDoc.
+- `src/main/java/io/github/dariogguillen/chess/websocket/PlayerDisconnectedEvent.java` — record with `type = "PLAYER_DISCONNECTED"`, carries absolute `gracePeriodEndsAt`.
+- `src/main/java/io/github/dariogguillen/chess/websocket/PlayerReconnectedEvent.java` — record with `type = "PLAYER_RECONNECTED"`.
+- `src/test/java/io/github/dariogguillen/chess/websocket/DisconnectNotificationsIT.java` — 3 STOMP ITs (disconnect → both events emitted; reconnect within grace → DISCONNECTED+RECONNECTED, no ABANDONED; disconnect on terminal game → silent).
+- `notes/11.5-disconnect-notifications.md` — feature note (6 decisions documented with alternatives + 5 Scala/Typelevel parallels + 4 gotchas + file map).
+
+Modified:
+- `src/main/java/io/github/dariogguillen/chess/websocket/MoveEvent.java` — retrofitted with leading `String type` field + `TYPE` constant + convenience constructor; implements `GameStateEvent`.
+- `src/main/java/io/github/dariogguillen/chess/websocket/GameAbandonedEvent.java` — same retrofit pattern with `"GAME_ABANDONED"` constant.
+- `src/main/java/io/github/dariogguillen/chess/websocket/PlayerSessionTracker.java` — three new constructor-injected deps; broadcasts the two new events with try/catch + WARN log mirroring `GameAbandonService.abandon`.
+- `src/main/java/io/github/dariogguillen/chess/service/GracePeriodManager.java` — `cancelGracePeriod` signature changed from `void` to `boolean`; semantic documented in JavaDoc.
+- `src/test/java/io/github/dariogguillen/chess/websocket/DisconnectHandlingIT.java` — two existing tests adjusted to drain the new broadcasts; third test byte-identical.
+- `docs/architecture.md` — "polymorphic topic gets the discriminator" rule lifted to a codebase-wide top-level paragraph; new "GameStateEvent family" subsection with example JSON for all four variants; "Disconnect handling" subsection rewritten from "feature 11.5 will broadcast" to present tense.
+
+Deleted: none.
+
+**Final test totals**: 97 unit + 83 IT = **180 tests**, all green, zero skips, zero failures, zero errors. `./init.sh` exits 0.
+
+**Deployment note**: production EC2 picks up the new event types automatically on the next deploy. The retrofit is wire-backward-compatible — the existing frontend keeps working with shape-based discrimination until it migrates to `switch (event.type)`. No infra change required.
+
+**Feature note**: `notes/11.5-disconnect-notifications.md`.

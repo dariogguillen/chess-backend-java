@@ -106,10 +106,19 @@ public class GracePeriodManager {
    * still-pending future; a cancel that loses the lock to the firing task will observe the
    * already-removed entry and do nothing.
    *
+   * <p>The boolean return distinguishes "we cancelled an in-flight timer" (the reconnect-within-
+   * grace path, which {@code PlayerSessionTracker} treats as the trigger for a {@code
+   * PlayerReconnectedEvent} broadcast) from "there was nothing to cancel" (a fresh subscribe with
+   * no prior disconnect, or a reconnect that arrived after the timer already fired — in which case
+   * the {@code GameAbandonedEvent} is the authoritative broadcast and no reconnect event should be
+   * emitted).
+   *
    * @param playerId the player whose session was just restored; non-null.
    * @param gameId the game the player was in; non-null.
+   * @return {@code true} if a pending timer was found and cancelled; {@code false} if there was no
+   *     active timer for the pair.
    */
-  public void cancelGracePeriod(UUID playerId, UUID gameId) {
+  public boolean cancelGracePeriod(UUID playerId, UUID gameId) {
     GracePeriodKey key = new GracePeriodKey(playerId, gameId);
     Lock lock = locks.get(key.toString());
     lock.lock();
@@ -118,7 +127,9 @@ public class GracePeriodManager {
       if (existing != null) {
         existing.cancel(false);
         log.info("Grace period cancelled: playerId={}, gameId={}", playerId, gameId);
+        return true;
       }
+      return false;
     } finally {
       lock.unlock();
     }

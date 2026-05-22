@@ -306,6 +306,20 @@ is the source of truth for the STOMP surface; the `chess-frontend`
 repo mirrors it in its own `docs/architecture.md` when it reaches
 its feature 5 (`stomp-live-updates`).
 
+**Codebase-wide design rule for STOMP event shape:**
+*polymorphic topics get the discriminator; single-event topics stay
+flat.* A topic that can carry more than one event variant
+(`/topic/rooms/{roomId}`, `/topic/games/{gameId}`) is modelled as a
+`sealed interface` (`RoomEvent`, `GameStateEvent`) and every variant
+carries an explicit `type: "..."` field set by a convenience
+constructor (no `@JsonTypeInfo`). A topic that can only ever carry
+one shape (today: `ViewerCountEvent` on
+`/topic/games/{gameId}/viewers`) stays flat — the discriminator would
+be dead weight. This rule was introduced by feature 9.5 on the rooms
+topic and lifted to a codebase-wide convention by feature 11.5 when
+the games topic gained `PlayerDisconnectedEvent` /
+`PlayerReconnectedEvent` and was retrofitted with the family.
+
 ### Endpoint and broker
 
 - **WebSocket endpoint:** `/ws`. Clients perform a STOMP `CONNECT`
@@ -341,21 +355,22 @@ registration; there is no second copy of the list anywhere.
 ### Subscriptions
 
 Clients subscribe to **`/topic/games/{gameId}`** — one logical
-channel per game. Every successful move applied via
-`POST /api/games/{id}/moves` produces exactly one `MoveEvent` on
-this channel. There is no replay — subscribers only see events
-that occur while they are subscribed. A client that joins late
-catches up by calling `GET /api/games/{id}` once and then relying
-on STOMP for the live tail.
+channel per game. The topic is **polymorphic**: per the codebase-wide
+rule above, every event variant on it carries an explicit `type`
+discriminator field. After feature 11.5, the variants are `MoveEvent`
+(per accepted move), `GameAbandonedEvent` (terminal-by-timeout),
+`PlayerDisconnectedEvent` (mid-grace UX, opens the "reconnecting"
+banner), and `PlayerReconnectedEvent` (closes the banner) — modelled
+together as the `GameStateEvent` sealed family. Documented in
+the "`GameStateEvent` family" subsection below.
 
 Clients also subscribe to **`/topic/rooms/{roomId}`** for room
-lifecycle events. The topic is **polymorphic** — designed to carry
-multiple event variants over time. Today the only variant is
-`RoomJoinedEvent`; future features layer in `RoomClosedEvent`,
-`PlayerLeftEvent`, etc. without changing the topic shape. Every
-variant carries an explicit `type` discriminator field in the JSON
-payload so subscribers can branch without polymorphic Jackson
-machinery:
+lifecycle events. The topic is **polymorphic** for the same reason:
+today the only variant is `RoomJoinedEvent`; future features layer
+in `RoomClosedEvent`, `PlayerLeftEvent`, etc. without changing the
+topic shape. Every variant carries an explicit `type` discriminator
+field in the JSON payload so subscribers can branch without
+polymorphic Jackson machinery:
 
 ```json
 {
@@ -371,11 +386,9 @@ machinery:
 
 The Java model is a `sealed interface RoomEvent permits ...` with
 the discriminator set explicitly in each variant's canonical
-constructor (no `@JsonTypeInfo`). The **design rule** going forward:
-*polymorphic topics get the discriminator; single-event topics
-(today: `MoveEvent` on `/topic/games/{gameId}` and `ViewerCountEvent`
-on `/topic/games/{gameId}/viewers`) stay flat*. The discriminator is
-dead weight on a topic that can only ever carry one shape.
+constructor (no `@JsonTypeInfo`). This is the same design rule
+applied to `GameStateEvent` on `/topic/games/{gameId}` and stated
+codebase-wide at the top of this section.
 
 `RoomJoinedEvent` is published from `RoomService.joinRoom` the
 instant the room transitions from `WAITING_FOR_PLAYER` to `ACTIVE`
@@ -391,13 +404,35 @@ that case is the `GET /api/rooms/{id}` REST endpoint (documented
 in the "API contract" section above), which carries the same
 `gameId` and the rest of the room state for reconcile.
 
-### `MoveEvent` shape
+### `GameStateEvent` family
 
-Broadcast payload, serialized as JSON by Spring's default Jackson
-converter:
+`/topic/games/{gameId}` is a polymorphic topic. The Java model is a
+`sealed interface GameStateEvent permits MoveEvent,
+GameAbandonedEvent, PlayerDisconnectedEvent, PlayerReconnectedEvent`
+with the discriminator set explicitly in each variant's convenience
+constructor (no `@JsonTypeInfo`). Every variant carries `type:
+"..."` and `gameId: <UUID>` as its first two fields; subscribers
+branch on `event.type` and parse the rest accordingly. Feature 11.5
+established this family by retrofitting `MoveEvent` and
+`GameAbandonedEvent` (both already on the topic from features 6 and
+11) with the discriminator field and adding the two new mid-grace
+variants.
+
+The retrofit is **backward-compatible** for the deployed frontend:
+the new `type` field is an additive change. Jackson's
+`FAIL_ON_UNKNOWN_PROPERTIES = false` default means consumers that
+do not declare a `type` field on their typed payload class ignore
+it, and shape-based discrimination (the frontend's pre-11.5
+workaround for `MoveEvent` vs `GameAbandonedEvent` on the same topic)
+keeps working until the frontend migrates to `switch (event.type)`.
+
+**`MOVE`** — published from `GameService.applyMove` after every
+accepted move. Carries the post-move state of the game plus the
+identifying tuple of which side moved where.
 
 ```json
 {
+  "type": "MOVE",
   "gameId": "550e8400-e29b-41d4-a716-446655440000",
   "movedBy": "8f14e45f-ceea-467a-9575-d4b9b3e8b3a3",
   "side": "WHITE",
@@ -412,35 +447,109 @@ converter:
 }
 ```
 
-Field documentation:
-
-- **`gameId`** — the id of the game the move was applied to;
-  matches the `{gameId}` segment in the topic.
-- **`movedBy`** — the id of the player that submitted the move
-  (the value of `X-Player-Id` on the REST request). Lets a client
-  filter out its own moves; the REST response already carried the
-  new state, so re-processing the STOMP event would be redundant.
+- **`movedBy`** — the player id from `X-Player-Id` on the REST
+  request. Lets a client filter out its own moves; the REST
+  response already carried the new state.
 - **`side`** — `WHITE` or `BLACK`, the side that played this
-  move. Redundant with `movedBy` server-side (we know which side
-  each player is) but a convenience for the client.
-- **`from`** — the origin square in lowercase algebraic
-  notation, e.g. `"e2"`. Same alphabet as the REST `MoveRequest`.
-- **`to`** — the destination square, same alphabet.
+  move. Convenience for the client.
+- **`from` / `to`** — origin / destination squares in lowercase
+  algebraic notation. Same alphabet as the REST `MoveRequest`.
 - **`promotion`** — `"KNIGHT"`, `"BISHOP"`, `"ROOK"`, `"QUEEN"`,
-  or `null` for non-promotion moves. Mirrors the REST request's
-  optional promotion field.
-- **`fen`** — the resulting position after the move was applied,
-  in Forsyth-Edwards Notation.
+  or `null` for non-promotion moves.
+- **`fen`** — the resulting position after the move, in FEN.
 - **`status`** — the resulting `GameStatus`: `ONGOING`, `CHECK`,
   `CHECKMATE`, `STALEMATE`, `DRAW`, or `ABANDONED`.
 - **`turn`** — the side whose turn it is now (the inverse of
   `side`). Convenience for the client.
 - **`moveNumber`** — the 1-based count of half-moves played in
-  the game after this move. Useful for ordering and for
-  detecting missed events (a gap in the sequence means the
-  subscriber missed something and should re-sync via REST).
-- **`playedAt`** — ISO-8601 instant in UTC, sourced from the
-  service's injected `Clock` so tests can pin it deterministically.
+  the game after this move. A gap in the sequence on the
+  subscriber side indicates a missed event and triggers a re-sync.
+- **`playedAt`** — ISO-8601 instant in UTC, from the service's
+  injected `Clock`.
+
+**`GAME_ABANDONED`** — published from `GameAbandonService.abandon`
+when the grace timer fires on a non-terminal game. Terminal
+broadcast; no follow-up on this topic.
+
+```json
+{
+  "type": "GAME_ABANDONED",
+  "gameId": "0d52a8a0-bea0-4b21-bbe3-3df7f8e83bfb",
+  "abandonedBy": "8f14e45f-ceea-467a-9575-d4b9b3e8b3a3",
+  "winnerId": "550e8400-e29b-41d4-a716-446655440000",
+  "finalFen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+  "abandonedAt": "2026-05-22T10:23:11.123Z"
+}
+```
+
+- **`abandonedBy`** — the player whose session dropped and never
+  came back; the loser.
+- **`winnerId`** — derived server-side so the frontend does not
+  need a second lookup.
+- **`finalFen`** — the position frozen on the board at the moment
+  of abandonment; the game is terminal and the FEN does not change.
+- **`abandonedAt`** — ISO-8601 instant in UTC, from the service's
+  injected `Clock`.
+
+**`PLAYER_DISCONNECTED`** — published from
+`PlayerSessionTracker.onDisconnect` when a player session drops on
+a non-terminal game (the same condition that starts the grace
+timer). Opens the mid-grace UX window — the opponent's UI renders
+"<player> is reconnecting, <countdown>".
+
+```json
+{
+  "type": "PLAYER_DISCONNECTED",
+  "gameId": "0d52a8a0-bea0-4b21-bbe3-3df7f8e83bfb",
+  "playerId": "8f14e45f-ceea-467a-9575-d4b9b3e8b3a3",
+  "side": "WHITE",
+  "disconnectedAt": "2026-05-22T10:23:11.123Z",
+  "gracePeriodEndsAt": "2026-05-22T10:24:11.123Z"
+}
+```
+
+- **`playerId`** — the player whose STOMP session dropped.
+- **`side`** — `WHITE` or `BLACK`, derived server-side so the
+  frontend can flag the right player slot.
+- **`disconnectedAt`** — ISO-8601 instant in UTC, when the
+  disconnect handler observed the session drop.
+- **`gracePeriodEndsAt`** — ISO-8601 instant in UTC, the absolute
+  deadline at which `GAME_ABANDONED` will fire if the player has
+  not reconnected. Computed as `disconnectedAt +
+  chess.disconnect.grace-period`. The frontend computes
+  `remaining = gracePeriodEndsAt - now()` locally for the countdown
+  — absolute deadlines beat `secondsRemaining` integers because the
+  value never goes stale on the wire.
+
+**`PLAYER_RECONNECTED`** — published from
+`PlayerSessionTracker.onSubscribe` when a subscribe with a
+`playerId` header that matches white or black of the game actually
+cancels a pending grace timer (i.e. the player reconnected within
+the grace window). Closes the mid-grace UX window.
+
+```json
+{
+  "type": "PLAYER_RECONNECTED",
+  "gameId": "0d52a8a0-bea0-4b21-bbe3-3df7f8e83bfb",
+  "playerId": "8f14e45f-ceea-467a-9575-d4b9b3e8b3a3",
+  "side": "WHITE",
+  "reconnectedAt": "2026-05-22T10:23:25.456Z"
+}
+```
+
+- **`playerId`** — the player whose STOMP session was restored.
+- **`side`** — `WHITE` or `BLACK`, same derivation as on
+  `PLAYER_DISCONNECTED`.
+- **`reconnectedAt`** — ISO-8601 instant in UTC, when the subscribe
+  handler observed the reconnect and cancelled the pending timer.
+
+The broadcast is guarded by the boolean return of
+`GracePeriodManager.cancelGracePeriod`: emitted only when the cancel
+actually removed a pending timer. A fresh subscribe with no prior
+disconnect, or a reconnect that arrives after the timer has already
+fired (the timer-just-fired race) both produce no broadcast — the
+`GAME_ABANDONED` event is the authoritative outcome in the latter
+case.
 
 ### No STOMP-level authentication
 
@@ -789,9 +898,11 @@ and keeps actions auditable.
 ## Reconnection
 
 Feature 11 (`disconnect-handling`) implements the lifecycle correctness
-layer described here. The mid-grace UX polish (per-second countdown
-broadcasts so the opponent's UI can show "Bob is reconnecting, 45s
-remaining") is split into feature 11.5 (`disconnect-notifications`).
+layer described here. The mid-grace UX polish (`PlayerDisconnectedEvent`
+opens the "<player> is reconnecting, <countdown>" banner;
+`PlayerReconnectedEvent` clears it; the absolute `gracePeriodEndsAt`
+deadline drives the local countdown) shipped in feature 11.5
+(`disconnect-notifications`).
 
 When a STOMP session disconnects, the player enters a grace period
 (60 seconds by default, configurable via
@@ -817,12 +928,15 @@ The mechanism is built on four pieces wired in series:
   convention"): on a `SessionSubscribeEvent` for
   `/topic/games/{gameId}` whose `playerId` matches white or black of
   the game, the tracker records the `(sessionId → (playerId, gameId))`
-  association and asks `GracePeriodManager.cancelGracePeriod` to drop
-  any pending timer for the pair (the reconnect path). On a
-  `SessionDisconnectEvent` the association is removed and, if the
-  game is still non-terminal, `GracePeriodManager.startGracePeriod`
-  is invoked. The two trackers are orthogonal: a session is in one
-  map or the other, never both.
+  association, calls `GracePeriodManager.cancelGracePeriod` to drop
+  any pending timer for the pair, and — if the cancel actually
+  removed a timer — broadcasts `PlayerReconnectedEvent` on
+  `/topic/games/{gameId}`. On a `SessionDisconnectEvent` the
+  association is removed and, if the game is still non-terminal,
+  `GracePeriodManager.startGracePeriod` is invoked and a
+  `PlayerDisconnectedEvent` is broadcast on the same topic carrying
+  the absolute `gracePeriodEndsAt` deadline. The two trackers are
+  orthogonal: a session is in one map or the other, never both.
 - **`GracePeriodManager`** (`service/`). The single owner of the
   in-memory `Map<(playerId, gameId), ScheduledFuture<?>>` of pending
   abandon timers. Uses a programmatic `TaskScheduler.schedule(task,
@@ -867,28 +981,20 @@ disconnect that schedules a new timer). Persisting timers to
 Redis with a restart-time recovery sweep would be heavyweight
 for the single-instance deploy and is left for a future feature.
 
-**`GameAbandonedEvent` on `/topic/games/{gameId}`.** The same
-topic now carries two event variants (`MoveEvent` and
-`GameAbandonedEvent`) without a `type` discriminator field —
-subscribers distinguish them by shape (`MoveEvent` has
-`from`/`to`/`moveNumber`; `GameAbandonedEvent` has
-`abandonedBy`/`winnerId`). Feature 11.5
-(`disconnect-notifications`) is the right moment to retrofit the
-topic into a sealed-interface family with an explicit `type`
-field (alongside the new `PlayerDisconnectedEvent` /
-`PlayerReconnectedEvent` it adds). Doing it now would either
-drift (a discriminator on `GameAbandonedEvent` alone, asymmetric
-with `MoveEvent`) or pre-empt 11.5's scope. The shape:
-
-```json
-{
-  "gameId": "0d52a8a0-bea0-4b21-bbe3-3df7f8e83bfb",
-  "abandonedBy": "8f14e45f-ceea-467a-9575-d4b9b3e8b3a3",
-  "winnerId": "550e8400-e29b-41d4-a716-446655440000",
-  "finalFen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
-  "abandonedAt": "2026-05-22T10:23:11.123Z"
-}
-```
+**Events on `/topic/games/{gameId}` after feature 11.5.** The topic
+now carries four discriminated variants of the `GameStateEvent`
+sealed family (`MOVE`, `GAME_ABANDONED`, `PLAYER_DISCONNECTED`,
+`PLAYER_RECONNECTED`), each with an explicit `type` field set by
+its convenience constructor. The full shapes are documented in the
+"STOMP API contract → `GameStateEvent` family" section above. The
+disconnect lifecycle now emits up to three events per session
+drop: `PLAYER_DISCONNECTED` at drop time (with the absolute
+`gracePeriodEndsAt`), then either `PLAYER_RECONNECTED` (if the
+reconnect lands within the grace window and cancels the timer) or
+`GAME_ABANDONED` (if the timer fires). Spring's `SimpleBroker`
+preserves topic order from a single publisher process, so
+subscribers see `PLAYER_DISCONNECTED` strictly before whichever
+follow-up arrives.
 
 **Trust model and out-of-scope items** mirror the broader
 no-auth posture documented in the STOMP contract section above:

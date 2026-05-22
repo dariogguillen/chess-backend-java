@@ -6,19 +6,15 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.github.dariogguillen.chess.TestcontainersConfiguration;
-import io.github.dariogguillen.chess.domain.Game;
-import io.github.dariogguillen.chess.domain.GameStatus;
-import io.github.dariogguillen.chess.persistence.GameHistoryRepository;
-import io.github.dariogguillen.chess.service.GameStore;
 import java.lang.reflect.Type;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
-import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,33 +39,37 @@ import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.messaging.WebSocketStompClient;
 
 /**
- * End-to-end STOMP integration coverage for feature 11 ({@code disconnect-handling}). The {@code
- * chess.disconnect.grace-period} is overridden to {@code 300ms} via {@link TestPropertySource} so
- * the abandon timer fires well under a second; tests then assert via {@link Awaitility} that the
- * Redis state, Postgres archive, and STOMP broadcast all reflect the abandonment.
+ * End-to-end STOMP integration coverage for feature 11.5 ({@code disconnect-notifications}). The
+ * {@code chess.disconnect.grace-period} is overridden to {@code 2s} via {@link TestPropertySource}
+ * so the disconnect-broadcast / reconnect-broadcast / grace-fires sequence stays well under the 30s
+ * test budget while still leaving enough room for a same-process reconnect to land inside the
+ * window.
  *
  * <p>Three scenarios:
  *
  * <ol>
- *   <li>Disconnect → grace timeout → game ABANDONED, archived, opponent receives {@link
- *       GameAbandonedEvent}.
- *   <li>Disconnect → reconnect within grace → game still ONGOING, no broadcast on either side.
- *   <li>Disconnect on already-terminal game → no second archive, no broadcast.
+ *   <li>Disconnect → opponent receives a {@link PlayerDisconnectedEvent} promptly, then the {@link
+ *       GameAbandonedEvent} after the grace window elapses (sanity check on event ordering on the
+ *       topic).
+ *   <li>Disconnect → reconnect within grace → opponent receives a {@link PlayerDisconnectedEvent}
+ *       and then a {@link PlayerReconnectedEvent}; no {@link GameAbandonedEvent} arrives.
+ *   <li>Disconnect on a game already in CHECKMATE → no {@link PlayerDisconnectedEvent} broadcast,
+ *       no second archive (the terminal-game guard from feature 11 still holds).
  * </ol>
  *
- * <p>Setup mirrors {@code GameWebSocketIT} (lines 78-91): {@link WebSocketStompClient} + {@link
- * MappingJackson2MessageConverter} + {@link JavaTimeModule}. The frame handlers read the raw {@code
- * byte[]} payload (rather than a typed payload class) because the topic now carries two shapes
- * ({@link MoveEvent} and {@link GameAbandonedEvent}) and the typed converter would lock the handler
- * to one of them until feature 11.5 adds the {@code type} discriminator.
+ * <p>The frame handlers read raw {@code byte[]} payload (rather than a typed payload class) because
+ * the topic carries four discriminated event variants after this feature ({@link MoveEvent}, {@link
+ * GameAbandonedEvent}, {@link PlayerDisconnectedEvent}, {@link PlayerReconnectedEvent}) and the
+ * typed converter would lock the handler to one of them. Tests parse each frame with Jackson and
+ * branch on the {@code type} discriminator field — the same shape a real frontend consumes.
  */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@TestPropertySource(properties = "chess.disconnect.grace-period=300ms")
-class DisconnectHandlingIT {
+@TestPropertySource(properties = "chess.disconnect.grace-period=2s")
+class DisconnectNotificationsIT {
 
   /** Override applied via {@link TestPropertySource}. Kept here as a constant so the */
-  private static final long GRACE_MS = 300L;
+  private static final long GRACE_MS = 2_000L;
 
   /** Generic STOMP timeout for "do receive" assertions. */
   private static final long RECEIVE_TIMEOUT_MS = 2_000L;
@@ -81,11 +81,19 @@ class DisconnectHandlingIT {
    */
   private static final long SUBSCRIBE_REGISTRATION_DELAY_MS = 1_000L;
 
+  /**
+   * Tolerance window for the {@code gracePeriodEndsAt} computation. The server's {@code
+   * Instant.now(clock) + gracePeriod} happens slightly after the client measures "now", so the
+   * actual deadline lands a bit after {@code clientNow + grace}. Half the grace is a comfortable
+   * lower bound; one and a half graces is the upper bound for slow CI.
+   */
+  private static final Duration LOWER_DEADLINE_TOLERANCE = Duration.ofMillis(GRACE_MS / 2);
+
+  private static final Duration UPPER_DEADLINE_TOLERANCE = Duration.ofMillis(GRACE_MS * 3 / 2);
+
   @LocalServerPort private int port;
 
   @Autowired private ObjectMapper objectMapper;
-  @Autowired private GameStore gameStore;
-  @Autowired private GameHistoryRepository historyRepository;
 
   private WebSocketStompClient stompClient;
   private RestTemplate restTemplate;
@@ -108,63 +116,56 @@ class DisconnectHandlingIT {
   }
 
   @Test
-  void disconnect_thenTimeout_gameAbandoned_archived_opponentReceivesEvent() throws Exception {
+  void disconnect_broadcastsPlayerDisconnectedEvent_thenGameAbandonedEvent() throws Exception {
     GameSetup setup = setupGame("Alice", "Bob");
 
-    // White's session: will subscribe with the playerId header, then disconnect to trigger the
-    // abandon timer.
+    // White subscribes as a player; the disconnect below triggers the grace timer.
     StompSession whiteSession = connect();
     subscribeAsPlayer(whiteSession, setup.gameId(), setup.whitePlayerId());
 
-    // Black's session: subscribes as a player and receives the terminal broadcast on its raw
-    // queue.
+    // Black subscribes as the observer for the broadcasts.
     StompSession blackSession = connect();
     BlockingQueue<String> blackQueue =
         subscribeAsPlayerWithRawQueue(blackSession, setup.gameId(), setup.blackPlayerId());
 
-    // White disconnects. The server's SessionDisconnectEvent triggers the grace timer; ~GRACE_MS
-    // later the timer fires and the abandon path runs.
+    Instant beforeDisconnect = Instant.now();
     whiteSession.disconnect();
 
-    // Wait until the abandon side-effects are visible. The combined budget covers:
-    //   - the grace timer
-    //   - gameStore.compute() flipping status
-    //   - the Postgres archive
-    //   - the STOMP broadcast round-trip back to black
-    Awaitility.await()
-        .atMost(Duration.ofMillis(GRACE_MS + 2_000L))
-        .pollInterval(Duration.ofMillis(50))
-        .untilAsserted(
-            () -> {
-              Game persisted = gameStore.findById(setup.gameId()).orElseThrow();
-              assertThat(persisted.status()).isEqualTo(GameStatus.ABANDONED);
-              assertThat(historyRepository.findById(setup.gameId())).isPresent();
-            });
+    // First frame: PLAYER_DISCONNECTED. Arrives well within the grace window — the broadcast is
+    // synchronous on the server side relative to the SessionDisconnectEvent.
+    JsonNode disconnectFrame = pollOrFail(blackQueue, "PLAYER_DISCONNECTED frame");
+    assertThat(disconnectFrame.get("type").asText()).isEqualTo("PLAYER_DISCONNECTED");
+    assertThat(disconnectFrame.get("gameId").asText()).isEqualTo(setup.gameId().toString());
+    assertThat(disconnectFrame.get("playerId").asText())
+        .isEqualTo(setup.whitePlayerId().toString());
+    assertThat(disconnectFrame.get("side").asText()).isEqualTo("WHITE");
+    assertThat(disconnectFrame.has("disconnectedAt")).isTrue();
+    assertThat(disconnectFrame.has("gracePeriodEndsAt")).isTrue();
 
-    // After feature 11.5, the topic emits TWO frames per disconnect-with-timeout: first the mid-
-    // grace PLAYER_DISCONNECTED (synchronous with the SessionDisconnectEvent), then the terminal
-    // GAME_ABANDONED when the timer fires. Drain the first, then assert on the second.
-    String firstRaw = blackQueue.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-    assertThat(firstRaw).isNotNull();
-    JsonNode firstTree = objectMapper.readTree(firstRaw);
-    assertThat(firstTree.get("type").asText()).isEqualTo("PLAYER_DISCONNECTED");
+    Instant gracePeriodEndsAt = Instant.parse(disconnectFrame.get("gracePeriodEndsAt").asText());
+    Instant lowerBound = beforeDisconnect.plus(LOWER_DEADLINE_TOLERANCE);
+    Instant upperBound = beforeDisconnect.plus(UPPER_DEADLINE_TOLERANCE);
+    assertThat(gracePeriodEndsAt)
+        .as(
+            "gracePeriodEndsAt should land within +%d..+%dms of disconnect",
+            LOWER_DEADLINE_TOLERANCE.toMillis(), UPPER_DEADLINE_TOLERANCE.toMillis())
+        .isAfterOrEqualTo(lowerBound)
+        .isBeforeOrEqualTo(upperBound);
 
-    String rawJson = blackQueue.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-    assertThat(rawJson).isNotNull();
-    JsonNode tree = objectMapper.readTree(rawJson);
-    assertThat(tree.get("type").asText()).isEqualTo("GAME_ABANDONED");
-    assertThat(tree.get("abandonedBy").asText()).isEqualTo(setup.whitePlayerId().toString());
-    assertThat(tree.get("winnerId").asText()).isEqualTo(setup.blackPlayerId().toString());
-    assertThat(tree.get("gameId").asText()).isEqualTo(setup.gameId().toString());
-    // Sanity-check shape: GameAbandonedEvent carries `abandonedBy`/`winnerId` and NOT
-    // `from`/`to` — the discriminator-by-shape semantics still hold even after the `type` field
-    // landed; the frontend can branch either way.
-    assertThat(tree.get("from")).isNull();
-    assertThat(tree.get("to")).isNull();
+    // Second frame, after the grace timer fires: GAME_ABANDONED. The PlayerDisconnectedEvent
+    // arrives before the GameAbandonedEvent because the broker preserves order from a single
+    // publisher process (Spring SimpleBroker, single instance).
+    JsonNode abandonedFrame =
+        pollOrFail(blackQueue, "GAME_ABANDONED frame", GRACE_MS + RECEIVE_TIMEOUT_MS);
+    assertThat(abandonedFrame.get("type").asText()).isEqualTo("GAME_ABANDONED");
+    assertThat(abandonedFrame.get("gameId").asText()).isEqualTo(setup.gameId().toString());
+    assertThat(abandonedFrame.get("abandonedBy").asText())
+        .isEqualTo(setup.whitePlayerId().toString());
+    assertThat(abandonedFrame.get("winnerId").asText()).isEqualTo(setup.blackPlayerId().toString());
   }
 
   @Test
-  void disconnect_thenReconnectWithinGrace_gameStillActive_noBroadcast() throws Exception {
+  void reconnectWithinGrace_broadcastsPlayerReconnectedEvent_noAbandon() throws Exception {
     GameSetup setup = setupGame("Alice", "Bob");
 
     StompSession whiteSession = connect();
@@ -176,31 +177,32 @@ class DisconnectHandlingIT {
 
     whiteSession.disconnect();
 
-    // Reconnect well within the grace window. The new SUBSCRIBE with the same playerId cancels
-    // the pending timer.
+    // First frame: PLAYER_DISCONNECTED.
+    JsonNode disconnectFrame = pollOrFail(blackQueue, "PLAYER_DISCONNECTED frame");
+    assertThat(disconnectFrame.get("type").asText()).isEqualTo("PLAYER_DISCONNECTED");
+    assertThat(disconnectFrame.get("side").asText()).isEqualTo("WHITE");
+
+    // White reconnects well within the grace window with the same playerId header — the
+    // SUBSCRIBE-side handler cancels the pending timer and broadcasts PLAYER_RECONNECTED.
     StompSession whiteReconnect = connect();
     subscribeAsPlayer(whiteReconnect, setup.gameId(), setup.whitePlayerId());
 
-    // Wait past the original grace deadline and assert the game is still ONGOING.
-    Thread.sleep(GRACE_MS + 800L);
+    JsonNode reconnectFrame = pollOrFail(blackQueue, "PLAYER_RECONNECTED frame");
+    assertThat(reconnectFrame.get("type").asText()).isEqualTo("PLAYER_RECONNECTED");
+    assertThat(reconnectFrame.get("gameId").asText()).isEqualTo(setup.gameId().toString());
+    assertThat(reconnectFrame.get("playerId").asText()).isEqualTo(setup.whitePlayerId().toString());
+    assertThat(reconnectFrame.get("side").asText()).isEqualTo("WHITE");
+    assertThat(reconnectFrame.has("reconnectedAt")).isTrue();
 
-    Game persisted = gameStore.findById(setup.gameId()).orElseThrow();
-    assertThat(persisted.status()).isEqualTo(GameStatus.ONGOING);
-    assertThat(historyRepository.findById(setup.gameId())).isEmpty();
-    // After feature 11.5, the topic emits PLAYER_DISCONNECTED on the drop and PLAYER_RECONNECTED
-    // on the within-grace resubscribe. Drain both, then assert nothing further lands (specifically
-    // no GAME_ABANDONED — the timer was cancelled).
-    JsonNode first =
-        objectMapper.readTree(blackQueue.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
-    assertThat(first.get("type").asText()).isEqualTo("PLAYER_DISCONNECTED");
-    JsonNode second =
-        objectMapper.readTree(blackQueue.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
-    assertThat(second.get("type").asText()).isEqualTo("PLAYER_RECONNECTED");
-    assertThat(blackQueue.poll(100, TimeUnit.MILLISECONDS)).isNull();
+    // Wait past the original grace deadline; no GAME_ABANDONED should land because the timer was
+    // cancelled.
+    Thread.sleep(GRACE_MS + 800L);
+    String stray = blackQueue.poll(100, TimeUnit.MILLISECONDS);
+    assertThat(stray).as("no further frame after PLAYER_RECONNECTED").isNull();
   }
 
   @Test
-  void disconnect_onAlreadyTerminalGame_noOp() throws Exception {
+  void disconnect_onAlreadyTerminalGame_noPlayerDisconnectedBroadcast() throws Exception {
     GameSetup setup = setupGame("Alice", "Bob");
 
     StompSession whiteSession = connect();
@@ -210,34 +212,40 @@ class DisconnectHandlingIT {
         subscribeAsPlayerWithRawQueue(blackSession, setup.gameId(), setup.blackPlayerId());
 
     // Fool's Mate: 1. f2-f3 e7-e5 2. g2-g4 d8-h4# — the shortest checkmate. Mirrors the sequence
-    // in GameControllerIT.
+    // in DisconnectHandlingIT.
     applyMove(setup.gameId(), setup.whitePlayerId(), "f2", "f3");
     applyMove(setup.gameId(), setup.blackPlayerId(), "e7", "e5");
     applyMove(setup.gameId(), setup.whitePlayerId(), "g2", "g4");
     applyMove(setup.gameId(), setup.blackPlayerId(), "d8", "h4");
 
-    // The CHECKMATE archive from GameService.applyMove has already happened. Drain the four
-    // MoveEvent broadcasts black just received so the next assertion polls a clean queue.
+    // Drain the four MoveEvent broadcasts. Each carries `type=MOVE` after the retrofit.
     for (int i = 0; i < 4; i++) {
-      assertThat(blackQueue.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS))
-          .as("expected MoveEvent #%d", i)
-          .isNotNull();
+      String raw = blackQueue.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+      assertThat(raw).as("expected MOVE frame #%d", i).isNotNull();
+      JsonNode tree = objectMapper.readTree(raw);
+      assertThat(tree.get("type").asText()).isEqualTo("MOVE");
     }
 
-    long archiveCountBeforeDisconnect = historyRepository.count();
-
+    // Disconnect white on the already-CHECKMATE game. The terminal-game guard in
+    // PlayerSessionTracker.onDisconnect must skip BOTH the grace timer AND the
+    // PlayerDisconnectedEvent broadcast.
     whiteSession.disconnect();
 
     Thread.sleep(GRACE_MS + 800L);
 
-    // Status is still CHECKMATE — no second mutation.
-    Game persisted = gameStore.findById(setup.gameId()).orElseThrow();
-    assertThat(persisted.status()).isEqualTo(GameStatus.CHECKMATE);
-    // No second archive — count is unchanged.
-    assertThat(historyRepository.count()).isEqualTo(archiveCountBeforeDisconnect);
-    // No GameAbandonedEvent broadcast on the topic.
     String stray = blackQueue.poll(100, TimeUnit.MILLISECONDS);
-    assertThat(stray).isNull();
+    assertThat(stray).as("no PLAYER_DISCONNECTED or GAME_ABANDONED on a terminal game").isNull();
+  }
+
+  private JsonNode pollOrFail(BlockingQueue<String> queue, String description) throws Exception {
+    return pollOrFail(queue, description, RECEIVE_TIMEOUT_MS);
+  }
+
+  private JsonNode pollOrFail(BlockingQueue<String> queue, String description, long timeoutMs)
+      throws Exception {
+    String raw = queue.poll(timeoutMs, TimeUnit.MILLISECONDS);
+    assertThat(raw).as("expected %s within %dms", description, timeoutMs).isNotNull();
+    return objectMapper.readTree(raw);
   }
 
   private StompSession connect() throws Exception {
@@ -248,8 +256,8 @@ class DisconnectHandlingIT {
 
   /**
    * Subscribes to {@code /topic/games/{gameId}} with the player's id sent as a native STOMP header,
-   * but discards inbound payloads. Used by the "white" session when the test only cares about the
-   * side effect of the subscribe (and the eventual disconnect).
+   * discarding inbound payloads. Used by the "white" session when the test only cares about the
+   * side effect of the subscribe (and the eventual disconnect / reconnect).
    */
   private void subscribeAsPlayer(StompSession session, UUID gameId, UUID playerId)
       throws InterruptedException {
@@ -275,8 +283,8 @@ class DisconnectHandlingIT {
   /**
    * Subscribes to {@code /topic/games/{gameId}} with the player's id sent as a native STOMP header
    * and queues every incoming payload as UTF-8 JSON. The raw-byte path keeps the test agnostic to
-   * the two event shapes ({@link MoveEvent} and {@link GameAbandonedEvent}) that share the topic
-   * until feature 11.5 adds the discriminator.
+   * the four event shapes ({@link MoveEvent}, {@link GameAbandonedEvent}, {@link
+   * PlayerDisconnectedEvent}, {@link PlayerReconnectedEvent}) that share the topic.
    */
   private BlockingQueue<String> subscribeAsPlayerWithRawQueue(
       StompSession session, UUID gameId, UUID playerId) throws InterruptedException {
