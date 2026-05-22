@@ -498,6 +498,122 @@ WebSocket layers are not aware of the swap.
   on this server, which already cannot survive a restart. Moving it to
   Redis would be misleading.
 
+### Game history in Postgres
+
+Feature 9 layers a durable archive on top of the Redis active store.
+Redis still owns ongoing games (the 24h-TTL `game:{id}` keys
+described above); Postgres owns the read-only history of games that
+already finished.
+
+- **Write trigger.** `GameService.applyMove` calls
+  `GameHistoryService.archive(updated)` from inside the
+  `GameStore.compute` lambda whenever `updated.status().isTerminal()`
+  flips true (`CHECKMATE`, `STALEMATE`, `DRAW`, `ABANDONED`). The
+  archive runs **before** the lambda returns, so if Postgres throws
+  the Redis-side write is skipped: the move request fails with 500
+  and Redis still holds the previous (non-terminal) state. The
+  inverse ordering — Redis advances, archive silently fails — would
+  produce a ghost terminal game observable in no history query;
+  failing loud is the safer default for a portfolio backend.
+- **Schema.** Two tables, both managed by Flyway under
+  `src/main/resources/db/migration/`:
+    - `games` — one row per archived game with denormalised player
+      info (`white_player_id`, `white_display_name`,
+      `black_player_id`, `black_display_name`), `starting_fen`,
+      `final_fen`, `status` (`VARCHAR(20)`, JPA-enforced enum), and
+      `ended_at` (`TIMESTAMPTZ`). `id`, `white_player_id`, and
+      `black_player_id` are native Postgres `uuid`; `room_id` is
+      `VARCHAR(6)` (the 6-char short code is not a UUID).
+    - `moves` — N rows per game, PK `(game_id, move_idx)`, FK
+      cascade-deletes from `games`, `from_square` / `to_square` as
+      `VARCHAR(2)` / nullable `promotion` as `VARCHAR(10)` (the
+      piece's enum `name()` or NULL).
+  Two indexes on `games (white_player_id, ended_at DESC)` and
+  `(black_player_id, ended_at DESC)` make the history query a
+  single indexed scan.
+- **UUID end-to-end.** Every column that is conceptually a UUID is a
+  native Postgres `uuid` on the DB side, a `java.util.UUID` on the
+  JPA entity, and a `java.util.UUID` on the domain record. Spring
+  binds path variables and headers to `UUID` directly via its
+  default `String→UUID` converter, and Jackson serialises `UUID` to
+  a plain JSON string — so the wire format is identical to the
+  previous TEXT-backed version, no frontend coordination required.
+  No `@JdbcTypeCode(SqlTypes.UUID)` trick is needed; Hibernate has
+  the built-in `UUID ↔ uuid` binding. A malformed UUID in a path
+  surfaces as `MethodArgumentTypeMismatchException` → `400
+  MALFORMED_REQUEST` via the global handler.
+- **Bounded `VARCHAR(N)` with `ddl-auto: validate`.** Every text
+  column has an explicit length on both sides (`@Column(length =
+  N)` and `VARCHAR(N)`), and `validate` checks the length code on
+  startup — a drift between the entity's bound and the column's
+  bound fails boot loudly. `CHAR(2)` was the first choice for
+  squares; rejected because Hibernate maps Java `String` to
+  `Types.VARCHAR` and Postgres reports `CHAR(N)` as `Types.CHAR`,
+  which the `validate` codes-match check refuses. `VARCHAR(2)` has
+  the identical storage footprint for short fixed-width content.
+- **No `players` table — snapshot semantics.** Guests have no other
+  attached data, so normalising the player id would buy no benefit
+  and would force a join on every history query. Beyond that, the
+  display name at archive time is the audit-correct value (same
+  shape as Lichess game records, GitHub commit author names, Steam
+  friend graph history): a future rename must not retroactively
+  rewrite past games. Denormalising both fields onto `games` is
+  the right call for both reasons. When auth lands,
+  `V2__create_players.sql` extracts distinct UUIDs into a new table
+  with `kind='HISTORICAL_GUEST'` and adds the FK.
+- **No Postgres ENUM type for `status` / `promotion`.** `VARCHAR`
+  with JPA's `@Enumerated(STRING)` enforces the alphabet on the
+  only writer of the DB. A Postgres ENUM would require a one-way
+  `ALTER TYPE ... ADD VALUE` on every additional `GameStatus`
+  constant and per-column annotations on the entity to bridge the
+  Hibernate-to-ENUM mapping. The canonical Spring/JPA pattern is
+  `VARCHAR + @Enumerated(STRING)`, used by Lichess, GitHub, and the
+  official Spring Data JPA examples.
+- **No `CHECK` constraint on `status`.** Same reasoning: JPA already
+  enforces the alphabet on the write path. A DB check would have
+  to be DROP + ADD on every future `GameStatus` addition; trusting
+  the entity is the simpler trade-off.
+- **Move notation: LAN, not SAN.** A `Move` is `(from, to,
+  Optional<Piece> promotion)`. The from/to pair is unambiguous;
+  promotion is the only intra-move ambiguity (a pawn can promote
+  to one of four pieces), correctly modelled as `Optional<Piece>`.
+  Check, checkmate, and stalemate are post-move *game state*, not
+  properties of a move — encoding them inside `Move` would
+  denormalise the game state. SAN is a presentation concern,
+  derivable from LAN + board on demand.
+- **JPA entity vs domain record.** The domain `Game` is an
+  immutable record. JPA needs a mutable class with a no-arg
+  constructor and writable fields, so the persistence layer
+  defines a parallel `GameEntity` / `MoveEntity` shape with
+  package-private setters and a `GameEntityMapper` (`@Component`)
+  as the only ingress/egress. Outside the `persistence` package no
+  code holds a writable reference to the entity.
+- **`ddl-auto: validate` + Flyway.** Flyway is the source of truth
+  for the schema; Hibernate's `ddl-auto: validate` verifies the
+  JPA model against the actual database at boot. If an entity gains
+  a column the migration forgets, the app refuses to start. The
+  seductive `update` default is the silent-drift footgun we
+  deliberately avoid.
+- **`spring.jpa.open-in-view: false`.** The Spring Boot default
+  keeps the JPA session open for the entire HTTP request, which
+  masks lazy-loading bugs in the view layer. Off here means every
+  access to a lazy association outside a `@Transactional` service
+  method fails loudly. The history endpoint sidesteps this entirely
+  by using a JPQL constructor projection
+  (`ArchivedGamePlayerView`) that pre-computes `SIZE(g.moves)` in
+  the same SQL round-trip — no lazy navigation outside the
+  service's transaction.
+- **History endpoint.** `GET /api/players/{id}/games` returns a
+  newest-first list of `PlayerGameSummary` records, hard-capped at
+  50 entries. No pagination param exposed (portfolio scope). An
+  unknown player id returns `200` with `[]` — guests have no
+  registry, and an empty list is the honest answer (no `404`).
+- **Out of scope.** A game-detail endpoint (replay viewer with all
+  moves) is a follow-up feature; the `moves` table already carries
+  the data, the endpoint will project a different shape.
+  Pagination, player accounts, and an explicit
+  delete-from-Redis-on-archive step are similarly deferred.
+
 ## Communication patterns
 
 **REST for actions.** Anything that changes state goes through a REST

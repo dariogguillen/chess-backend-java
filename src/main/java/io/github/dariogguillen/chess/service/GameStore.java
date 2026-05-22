@@ -2,6 +2,7 @@ package io.github.dariogguillen.chess.service;
 
 import io.github.dariogguillen.chess.domain.Game;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.function.BiFunction;
 
 /**
@@ -10,7 +11,7 @@ import java.util.function.BiFunction;
  * room-level atomic block). The feature 7 swap to Redis replaces the in-memory implementation
  * without touching the consumers.
  *
- * <p>The {@link #compute(String, BiFunction)} seam mirrors {@code ConcurrentHashMap#compute} and
+ * <p>The {@link #compute(UUID, BiFunction)} seam mirrors {@code ConcurrentHashMap#compute} and
  * gives the move-application path a per-gameId atomic read-check-write block. Implementations are
  * responsible for that atomicity; the in-memory implementation inherits it from {@code
  * ConcurrentHashMap}, the future Redis implementation will use a watch/multi/exec or a Lua script.
@@ -23,7 +24,7 @@ public interface GameStore {
    * @param id the game id.
    * @return the game, if present.
    */
-  Optional<Game> findById(String id);
+  Optional<Game> findById(UUID id);
 
   /**
    * Persists the given game, overwriting any prior value at the same id.
@@ -42,5 +43,5 @@ public interface GameStore {
    * @param remappingFunction the function producing the new value, or {@code null} to remove.
    * @return the new value associated with {@code id}, or {@code null} if removed.
    */
-  Game compute(String id, BiFunction<String, Game, Game> remappingFunction);
+  Game compute(UUID id, BiFunction<UUID, Game, Game> remappingFunction);
 }

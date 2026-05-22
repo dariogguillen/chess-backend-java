@@ -1,5 +1,7 @@
 package io.github.dariogguillen.chess.exception;
 
+import java.util.UUID;
+
 /**
  * Thrown when a caller attempts a move in a game where it is the other side's turn. Mapped to HTTP
  * 422 by {@link GlobalExceptionHandler} with error code {@code NOT_YOUR_TURN}.
@@ -17,7 +19,7 @@ public class NotYourTurnException extends UnprocessableException {
    * @param gameId the game in which the move was attempted; non-null.
    * @param expectedPlayerId the id of the player whose turn it actually is; non-null.
    */
-  public NotYourTurnException(String gameId, String expectedPlayerId) {
+  public NotYourTurnException(UUID gameId, UUID expectedPlayerId) {
     super("It is not your turn in game " + gameId + "; expected player " + expectedPlayerId + ".");
   }
 }

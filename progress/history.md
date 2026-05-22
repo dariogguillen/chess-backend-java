@@ -1514,3 +1514,109 @@ Deleted:
 **Deployment note:** the change is live in code and in the test suite, but not yet in production on EC2. Production deploys via `.github/workflows/deploy.yml` on push to `main`. The compose stack on EC2 already runs `redis:7-alpine` alongside the app (since feature 7.5), so no infra changes are needed — the next deploy will simply start using the new Redis-backed stores.
 
 **Feature note:** `notes/08-redis-active-state.md`.
+
+---
+
+## 2026-05-22 — postgres-game-history
+
+Persisted completed games (`CHECKMATE`, `STALEMATE`, `DRAW`, `ABANDONED`) to Postgres for permanent history. Redis (feature 8) stays as the source of truth for active games; Postgres is the archive layer — write-on-terminal, read-on-history-query. Two-day arc: round-1 was the implementation, round-2 was the type cleanup the user surfaced after reading the round-1 migration. The strongest regression signal is that every existing IT (Room, Game, GameWebSocket, ViewerCount, OpenApi, Redis*, Health) kept passing across both rounds without modification — the new archive path is guarded by `updated.status().isTerminal()` and the ones that DO reach terminal status (`GameControllerIT`'s Fool's Mate, extended in this feature) exercise the trigger transparently in a real REST flow.
+
+**Round 1 — the relational + JPA scaffolding:**
+
+1. **Two-table relational schema** (`games` + `moves`), not a `jsonb` moves column on a single table. Trade-off documented in the note: the `jsonb` shortcut is more Postgres-idiomatic but a relational `moves` table is what a portfolio-grade JPA feature should demonstrate and preserves queryability for future move stats.
+2. **No `players` table** — denormalised player info on `games` (white/black `_player_id` + `_display_name`). Justification rewritten in round 2 to lead with **snapshot semantics**: display name at game time is the audit-correct value (same as Lichess, GitHub commits, Steam friend graphs). When auth lands later, a `V2__create_players.sql` extracts distinct UUIDs with `kind='HISTORICAL_GUEST'` and adds the FK — well-documented and obvious when needed.
+3. **JPA entities mutable classes** with package-private setters (`GameEntity`, `MoveEntity`), composite key via `@IdClass(MoveEntityId.class)` with a Serializable record. Per project convention "DTOs are records, NEVER through controllers" → entities are NOT records.
+4. **Synchronous archive inside `applyMove`** — the new `GameHistoryService.archive(Game)` call sits inside the existing `GameStore.compute(...)` lambda, BEFORE the Redis write. If Postgres throws, Redis does not advance — data integrity > UX.
+5. **`@Enumerated(STRING)` + `ddl-auto: validate`** so the schema owned by Flyway is verified by the entity model at boot — silent drift refuses to start the app. `open-in-view: false` to disable the well-known Spring Boot anti-pattern default.
+6. **JPQL constructor projection** (`SELECT new ArchivedGamePlayerView(... SIZE(g.moves) ...)`) for `findByPlayer` — needed because `open-in-view: false` would otherwise throw `LazyInitializationException` on the move count navigation. This was an implementer deviation from the original plan, justified because the plan itself mandated `open-in-view: false`.
+7. **Hard cap of 50 newest, no pagination param** — out of scope; mentioned as polish for a future `player-stats` feature.
+8. **`GET /api/players/{id}/games` returns 200 with `[]` for unknown player** — no 404, because guest players have no registry and an empty list is the honest answer.
+9. **No `CHECK` constraint on the `status` column** — `@Enumerated(STRING)` already enforces from the only client writing this DB; a DB-side check would have to be touched on every future `GameStatus` addition.
+
+Round-1 reviewer outcome: **APPROVED in round 1**, no rejections. 152 tests (91 unit + 61 IT, +17 new across `GameHistoryRepositoryIT`, `GameHistoryServiceIT`, `PlayerGamesControllerIT`, `GameEntityMapperTest` + 1 extension to `GameControllerIT`).
+
+**User-surfaced issues before the OK and round 2:**
+
+The user reviewed the migration and asked two questions: (a) why TEXT for almost every column when more specific types exist, and (b) whether a `players` table should be introduced anyway given the future auth direction. After discussion the agreed shape was:
+
+1. **Full type cleanup**: `UUID` native columns for Player/Game ids; `VARCHAR(6)` for `room_id` (6-char short code from the custom alphabet `ABCDEFGHJKMNPQRSTUVWXYZ23456789`, NOT a UUID); bounded `VARCHAR(N)` everywhere else (display names 100, FENs 100, status 20, promotion 10); `VARCHAR(2)` for squares.
+2. **No `players` table** — user agreed with the snapshot-semantics rationale. Documentation reinforced.
+3. **No Postgres `ENUM` types** for `status`/`promotion` — user asked, I recommended against. Rationale documented: `@Enumerated(STRING)` already enforces from the only writer; Postgres ENUM adds migration churn on every value addition/rename; Hibernate→Postgres ENUM mapping needs `@JdbcTypeCode(SqlTypes.NAMED_ENUM)` or `AttributeConverter` boilerplate; `VARCHAR + @Enumerated(STRING)` is the idiomatic Spring/JPA pattern used by GitHub, Lichess, the canonical Spring guides.
+4. **Move notation discussion**: user asked about ambiguous moves and whether `promotion` is needed. Answer documented: the `Move(from, to, promotion)` shape is Long Algebraic Notation (UCI/engines), unambiguous by construction because `from + to` defines the move uniquely (SAN is the ambiguous one with `Nbd2`-style disambiguation). Promotion is the only intra-move ambiguity LAN doesn't resolve (a pawn on e7 to e8 could promote to Q/R/B/N) and is therefore correctly modelled as `Optional<Piece>`. Check/checkmate are post-move state on the Game, not part of a Move.
+
+**Round 2 — type cleanup and UUID end-to-end:**
+
+The implementer's first attempt halted correctly: my plan said "keep `String` in domain + `@JdbcTypeCode(SqlTypes.UUID)` on the entity so Hibernate converts; mapper untouched". The implementer investigated and found that combination does NOT work at runtime — Hibernate has no built-in `String ↔ UUID` JDBC binding. Three variants all failed: `@JdbcTypeCode` alone (`HibernateException: Could not convert 'java.lang.String' to 'java.util.UUID'`); `@Convert(StringUuidConverter)` alone (`ERROR: operator does not exist: uuid = character varying` on `WHERE id = ?`); both together (the converter's binding is overridden by `@JdbcTypeCode`).
+
+After user discussion, the correct path was clear: **`UUID` end-to-end** — DB column, JPA entity, AND domain record use `java.util.UUID` for Player.id and Game.id. The earlier "mapper untouched" goal was not load-bearing — the mapper-as-divergence-boundary pattern already exists for records-vs-entities, and applying it to types is the natural extension. `Room.id` and `Game.roomId` stay `String` because they are 6-char short codes, not UUIDs.
+
+Cascade (the implementer caught a few items beyond the explicit prompt):
+
+- Domain (`Player`, `Game`, `Room`) — `UUID` ids; `Room` uniqueness set becomes `Set<UUID>`; compact constructors drop the blank-id check (there is no blank concept for UUID).
+- Entity (`GameEntity`, `MoveEntity`, `MoveEntityId`, `ArchivedGamePlayerView`, `GameHistoryRepository`) — plain `@Id UUID`, no `@JdbcTypeCode` trick; `GameHistoryRepository extends JpaRepository<GameEntity, UUID>`.
+- Mapper — now **simpler** than round 1 (identity over UUID fields, no `.toString()` / `UUID.fromString` left).
+- Services (`GameStore`, `RoomService`, `GameService`, `GameHistoryService`) — UUID parameters end-to-end; `RoomService` mints ids with `UUID.randomUUID()` (no `.toString()`).
+- Cache (`RedisGameStore`) — key built with `id.toString()`; `StripedKeyLock<String>` API still receives a String; `Jackson2JsonRedisSerializer<Game>` serialises UUID to string in JSON unchanged.
+- Exceptions (`GameNotFoundException`, `GameAlreadyEndedException`, `IllegalMoveException`, `NotYourTurnException`) — UUID parameters.
+- `GlobalExceptionHandler` — **new handler** `MethodArgumentTypeMismatchException → 400 MALFORMED_REQUEST`, reusing the existing 9-code allowlist from feature 6.6 (no expansion). Two new ITs lock the behaviour: `PlayerGamesControllerIT.getPlayerGames_malformedUuid_returns400MalformedRequest` and `GameControllerIT.getGame_malformedUuid_returns400MalformedRequest`.
+- Web (`GameController`, `PlayerGamesController`, `RoomResponse`, `GameStateResponse`, `PlayerGameSummary`) — `@PathVariable UUID`, `@RequestHeader UUID playerId`, DTO fields UUID. JSON wire format identical (Jackson UUID→string), Springdoc auto-adds `format: "uuid"` to the OpenAPI spec — no frontend coordination needed.
+- WebSocket (`MoveEvent`, `ViewerCountEvent`, `ViewerCountTracker`) — UUID in wire types. `ViewerCountTracker` parses STOMP topic captures and the `playerId` header with a tolerant `parseUuidOrNull` helper (silently ignores malformed values — no auth, no error path to propagate). Documented at class- and method-javadoc level.
+- Tests — `UUID.randomUUID()` / `UUID.fromString("00000000-...")` replacing literal strings throughout the test suite. One obsolete test removed (`GameTest.shouldReject_whenIdIsBlank` — blank concept no longer applies to UUID). Net delta: +2 new (malformed-UUID 400 ITs) − 1 removed = +1 test.
+
+**`CHAR(2)` rejection** (documented in the migration header and the note): the implementer tried `CHAR(2)` for squares as planned, but `ddl-auto: validate` blocks boot with a Hibernate `Types.VARCHAR` vs Postgres `Types.CHAR` type-code mismatch. Hibernate maps Java `String` to `Types.VARCHAR` regardless of `columnDefinition`. Switched to `VARCHAR(2)` with an inline migration comment explaining why.
+
+**`MoveEvent` / `ViewerCountEvent` cascade** (the implementer caught this beyond my explicit prompt): both wire-shaped websocket events carried `String gameId`/`movedBy`; migrated to UUID. Required the `parseUuidOrNull` helper in `ViewerCountTracker` for the STOMP topic regex capture and the `playerId` STOMP header.
+
+**Bonus**: the implementer fixed a pre-existing fully-qualified `ResultActions` reference in `GameControllerIT` while editing that file, internalising the lesson from feature 8's round-1 rejection.
+
+Round-2 reviewer outcome: **APPROVED in round 1 (of round 2)**, no rejections. Two out-of-scope observations: a duplicate "no `players` table" section in the note (residue from round 1, the rich version with snapshot-semantics + Lichess/GitHub/Steam led but the weaker copy hung around lower down); and `parseUuidOrNull` without a direct unit test (behaviour unobservable from outside, javadoc-documented, indirect coverage via positive paths in `ViewerCountIT`/`GameWebSocketIT`). User chose to polish the duplicate, accept the indirect coverage for `parseUuidOrNull`.
+
+**Polish round** (two passes):
+
+1. Deleted the duplicate "no `players` table" section in the note (lines 178-192 at the time), keeping the rich version that leads. No information lost — the V2 migration path was only in the rich version anyway.
+2. Cleaned up a triple-blank-line residue around lines 162-164 and added the missing bold inline heading `**Separate games and moves tables, not a jsonb move history.**` to the orphaned decision so it matches the style of its neighbours. Bonus fix in the same pass: a broken inline code span on line 421 in a Scala parallel (unbalanced backtick mid-expression) repaired.
+
+**Final test totals across the two rounds and the polish:** 90 unit + 63 IT = **153 tests**, all green, zero skips, zero failures, zero errors. `./init.sh` exits 0.
+
+**Files touched across the arc:**
+
+Created (round 1):
+- `src/main/resources/db/migration/V1__create_game_history.sql`
+- `src/main/java/io/github/dariogguillen/chess/persistence/GameEntity.java`
+- `src/main/java/io/github/dariogguillen/chess/persistence/MoveEntity.java`
+- `src/main/java/io/github/dariogguillen/chess/persistence/MoveEntityId.java`
+- `src/main/java/io/github/dariogguillen/chess/persistence/GameHistoryRepository.java`
+- `src/main/java/io/github/dariogguillen/chess/persistence/ArchivedGamePlayerView.java`
+- `src/main/java/io/github/dariogguillen/chess/persistence/GameEntityMapper.java`
+- `src/main/java/io/github/dariogguillen/chess/service/GameHistoryService.java`
+- `src/main/java/io/github/dariogguillen/chess/web/game/PlayerGamesController.java`
+- `src/main/java/io/github/dariogguillen/chess/web/game/PlayerGameSummary.java`
+- `src/test/java/io/github/dariogguillen/chess/persistence/GameHistoryRepositoryIT.java`
+- `src/test/java/io/github/dariogguillen/chess/persistence/GameEntityMapperTest.java`
+- `src/test/java/io/github/dariogguillen/chess/service/GameHistoryServiceIT.java`
+- `src/test/java/io/github/dariogguillen/chess/web/game/PlayerGamesControllerIT.java`
+- `notes/09-postgres-game-history.md`
+
+Modified across both rounds + polish:
+- `src/main/resources/application.yml` (round 1: `spring.jpa.*`, `spring.flyway.*`)
+- `src/main/java/io/github/dariogguillen/chess/service/GameService.java` (round 1: archive call; round 2: UUID parameters)
+- `src/main/java/io/github/dariogguillen/chess/service/GameStore.java` (round 2: UUID parameters)
+- `src/main/java/io/github/dariogguillen/chess/service/RoomService.java` (round 2: `UUID.randomUUID()` instead of `.toString()`)
+- `src/main/java/io/github/dariogguillen/chess/domain/Player.java` (round 2: `id` → UUID)
+- `src/main/java/io/github/dariogguillen/chess/domain/Game.java` (round 2: `id` → UUID)
+- `src/main/java/io/github/dariogguillen/chess/domain/Room.java` (round 2: uniqueness set → `Set<UUID>`)
+- `src/main/java/io/github/dariogguillen/chess/cache/RedisGameStore.java` (round 2: UUID id, key build)
+- `src/main/java/io/github/dariogguillen/chess/config/RedisConfig.java` (round 2: javadoc clarification)
+- `src/main/java/io/github/dariogguillen/chess/exception/GameNotFoundException.java`, `GameAlreadyEndedException.java`, `IllegalMoveException.java`, `NotYourTurnException.java`, `GlobalExceptionHandler.java` (round 2: UUID parameters; new MethodArgumentTypeMismatchException handler)
+- `src/main/java/io/github/dariogguillen/chess/web/game/GameController.java`, `GameStateResponse.java`, `PlayerGameSummary.java`, `web/room/RoomResponse.java` (round 2: UUID wire types; 400 annotations)
+- `src/main/java/io/github/dariogguillen/chess/websocket/MoveEvent.java`, `ViewerCountEvent.java`, `ViewerCountTracker.java` (round 2: UUID wire types + `parseUuidOrNull`)
+- All persistence/service/web/cache/websocket tests touched by the UUID cascade
+- `src/test/java/io/github/dariogguillen/chess/web/game/GameControllerIT.java` (round 1: post-mate Postgres assertion; round 2: UUID + new 400 IT + preexisting FQN fix)
+- `docs/architecture.md` (round 1: new "Game history in Postgres" subsection; round 2: UUID end-to-end, bounded VARCHAR, no players table snapshot rationale, no Postgres ENUM, LAN-not-SAN)
+- `notes/09-postgres-game-history.md` (round 1: initial content; round 2: UUID end-to-end + reinforced sections + Scala parallels; polish 1: duplicate removed; polish 2: bold heading + blank-line cleanup + inline-code repair)
+
+Deleted: none (one obsolete test removed in round 2: `GameTest.shouldReject_whenIdIsBlank`).
+
+**Deployment note:** the change is live in code and tests but not yet in production on EC2. Production deploys via `.github/workflows/deploy.yml` on push to `main`. RDS is private to the EC2 SG; Flyway will apply `V1__create_game_history.sql` automatically on first boot of the new container. If the migration fails in prod, `ddl-auto: validate` refuses to start the app and the workflow's smoke test catches it.
+
+**Feature note:** `notes/09-postgres-game-history.md`.

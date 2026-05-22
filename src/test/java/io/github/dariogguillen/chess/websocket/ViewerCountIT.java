@@ -8,6 +8,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.github.dariogguillen.chess.TestcontainersConfiguration;
 import java.lang.reflect.Type;
 import java.net.URI;
+import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -213,7 +214,7 @@ class ViewerCountIT {
    * ViewerCountEvent} broadcasts land in the returned queue. Does NOT itself bump the count — the
    * tracker's regex is anchored at {@code $} so the {@code /viewers} sub-topic does not match.
    */
-  private BlockingQueue<ViewerCountEvent> subscribeViewers(StompSession session, String gameId)
+  private BlockingQueue<ViewerCountEvent> subscribeViewers(StompSession session, UUID gameId)
       throws InterruptedException {
     BlockingQueue<ViewerCountEvent> queue = new ArrayBlockingQueue<>(8);
     session.subscribe(
@@ -239,12 +240,12 @@ class ViewerCountIT {
    * server uses it to exclude the subscriber from the count if it matches white or black of the
    * game. Discards inbound payloads (we only care about the side effect on the viewers topic).
    */
-  private StompSession.Subscription subscribeGame(
-      StompSession session, String gameId, String playerId) throws InterruptedException {
+  private StompSession.Subscription subscribeGame(StompSession session, UUID gameId, UUID playerId)
+      throws InterruptedException {
     StompHeaders headers = new StompHeaders();
     headers.setDestination("/topic/games/" + gameId);
     if (playerId != null) {
-      headers.add("playerId", playerId);
+      headers.add("playerId", playerId.toString());
     }
     StompSession.Subscription sub =
         session.subscribe(
@@ -276,7 +277,7 @@ class ViewerCountIT {
             String.class);
     JsonNode createBody = objectMapper.readTree(createResponse.getBody());
     String roomId = createBody.get("roomId").asText();
-    String whitePlayerId = createBody.get("playerId").asText();
+    UUID whitePlayerId = UUID.fromString(createBody.get("playerId").asText());
 
     ResponseEntity<String> joinResponse =
         restTemplate.exchange(
@@ -285,8 +286,8 @@ class ViewerCountIT {
             new HttpEntity<>("{\"displayName\":\"" + blackName + "\"}", headers),
             String.class);
     JsonNode joinBody = objectMapper.readTree(joinResponse.getBody());
-    String gameId = joinBody.get("gameId").asText();
-    String blackPlayerId = joinBody.get("playerId").asText();
+    UUID gameId = UUID.fromString(joinBody.get("gameId").asText());
+    UUID blackPlayerId = UUID.fromString(joinBody.get("playerId").asText());
 
     return new GameSetup(gameId, whitePlayerId, blackPlayerId);
   }
@@ -295,5 +296,5 @@ class ViewerCountIT {
     return URI.create("http://localhost:" + port).toString();
   }
 
-  private record GameSetup(String gameId, String whitePlayerId, String blackPlayerId) {}
+  private record GameSetup(UUID gameId, UUID whitePlayerId, UUID blackPlayerId) {}
 }

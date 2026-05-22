@@ -4,6 +4,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * A room that holds up to two players and tracks its own lifecycle.
@@ -43,7 +44,7 @@ public record Room(String id, List<Player> players, RoomStatus status) {
       throw new IllegalArgumentException(
           "Room must hold at most " + MAX_PLAYERS + " players, got: " + players.size());
     }
-    Set<String> ids = new HashSet<>();
+    Set<UUID> ids = new HashSet<>();
     for (Player player : players) {
       Objects.requireNonNull(player, "players must not contain null entries");
       if (!ids.add(player.id())) {

@@ -1,6 +1,7 @@
 package io.github.dariogguillen.chess.exception;
 
 import io.github.dariogguillen.chess.domain.GameStatus;
+import java.util.UUID;
 
 /**
  * Thrown when a caller attempts a move in a game whose status is already terminal (checkmate,
@@ -18,7 +19,7 @@ public class GameAlreadyEndedException extends ConflictException {
    * @param gameId the game in which the move was attempted; non-null.
    * @param status the terminal status the game is in; non-null.
    */
-  public GameAlreadyEndedException(String gameId, GameStatus status) {
+  public GameAlreadyEndedException(UUID gameId, GameStatus status) {
     super("Game " + gameId + " has already ended with status " + status + ".");
   }
 }

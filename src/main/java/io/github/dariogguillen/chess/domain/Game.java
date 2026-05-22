@@ -2,6 +2,7 @@ package io.github.dariogguillen.chess.domain;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * A chess game between two distinct players, anchored to the room it was started in.
@@ -9,7 +10,11 @@ import java.util.Objects;
  * <p>The compact constructor enforces structural invariants:
  *
  * <ul>
- *   <li>{@code id} and {@code roomId} must not be null or blank.
+ *   <li>{@code id} must not be null. It is a {@link UUID} — minted with {@code UUID.randomUUID()}
+ *       at game creation, persisted as a native Postgres {@code uuid}, exposed as a string on the
+ *       JSON wire.
+ *   <li>{@code roomId} must not be null or blank. It is the 6-char room short code (alphabet {@code
+ *       ABCDEFGHJKMNPQRSTUVWXYZ23456789}), <em>not</em> a UUID — stays a {@link String}.
  *   <li>{@code white} and {@code black} must not be null and must have different ids.
  *   <li>{@code startingFen} must not be null or blank. It is the FEN the game began from, fixed at
  *       construction. The chess service uses it together with {@code moves} to reconstruct the
@@ -25,7 +30,7 @@ import java.util.Objects;
  * <p>At game creation time, {@code startingFen} and {@code fen} hold the same value. They diverge
  * after the first successful move.
  *
- * @param id the game identifier; not null, not blank.
+ * @param id the game identifier; not null.
  * @param roomId the id of the room this game belongs to; not null, not blank.
  * @param white the player playing the white pieces; distinct from {@code black}.
  * @param black the player playing the black pieces; distinct from {@code white}.
@@ -36,7 +41,7 @@ import java.util.Objects;
  * @param moves the history of moves played so far; defensively copied.
  */
 public record Game(
-    String id,
+    UUID id,
     String roomId,
     Player white,
     Player black,
@@ -54,9 +59,6 @@ public record Game(
     Objects.requireNonNull(fen, "fen");
     Objects.requireNonNull(status, "status");
     Objects.requireNonNull(moves, "moves");
-    if (id.isBlank()) {
-      throw new IllegalArgumentException("Game id must not be blank");
-    }
     if (roomId.isBlank()) {
       throw new IllegalArgumentException("Game roomId must not be blank");
     }

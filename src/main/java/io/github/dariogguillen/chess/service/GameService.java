@@ -11,6 +11,7 @@ import io.github.dariogguillen.chess.exception.NotYourTurnException;
 import io.github.dariogguillen.chess.websocket.MoveEvent;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -22,8 +23,8 @@ import org.springframework.stereotype.Service;
  * WebSocket controller) will share; it holds no state of its own and delegates persistence to
  * {@link GameStore} and rule evaluation to {@link ChessRules}.
  *
- * <p>{@link #applyMove(String, String, Move)} runs the read-check-write block inside {@link
- * GameStore#compute(String, java.util.function.BiFunction)}, which serializes concurrent move
+ * <p>{@link #applyMove(UUID, UUID, Move)} runs the read-check-write block inside {@link
+ * GameStore#compute(UUID, java.util.function.BiFunction)}, which serializes concurrent move
  * requests on the same {@code gameId}. The second of two racing callers either succeeds with the
  * next side's move (because the first one moved already and the turn has flipped) or receives a
  * {@link NotYourTurnException}; it never observes a half-state.
@@ -37,16 +38,19 @@ public class GameService {
   private final ChessRules chessRules;
   private final SimpMessagingTemplate messagingTemplate;
   private final Clock clock;
+  private final GameHistoryService gameHistoryService;
 
   public GameService(
       GameStore gameStore,
       ChessRules chessRules,
       SimpMessagingTemplate messagingTemplate,
-      Clock clock) {
+      Clock clock,
+      GameHistoryService gameHistoryService) {
     this.gameStore = gameStore;
     this.chessRules = chessRules;
     this.messagingTemplate = messagingTemplate;
     this.clock = clock;
+    this.gameHistoryService = gameHistoryService;
   }
 
   /**
@@ -56,14 +60,14 @@ public class GameService {
    * @return the game with the given id.
    * @throws GameNotFoundException if no game exists for {@code gameId}.
    */
-  public Game findById(String gameId) {
+  public Game findById(UUID gameId) {
     return gameStore.findById(gameId).orElseThrow(() -> new GameNotFoundException(gameId));
   }
 
   /**
    * Applies {@code move} on behalf of the player identified by {@code playerId}.
    *
-   * <p>The read-check-write block runs inside {@link GameStore#compute(String,
+   * <p>The read-check-write block runs inside {@link GameStore#compute(UUID,
    * java.util.function.BiFunction)}, atomic per {@code gameId}. The checks run in fixed order:
    * existence → not-already-ended → turn-belongs-to-caller → move-is-legal. Each failure throws a
    * specific exception that {@code GlobalExceptionHandler} maps to its documented HTTP status.
@@ -88,7 +92,7 @@ public class GameService {
    * @throws NotYourTurnException if it is not {@code playerId}'s turn to move.
    * @throws IllegalMoveException if chesslib rejects the move in the current position.
    */
-  public Game applyMove(String gameId, String playerId, Move move) {
+  public Game applyMove(UUID gameId, UUID playerId, Move move) {
     // Mirrors the Game[1] holder idiom in RoomService.joinRoom: the lambda's return type is fixed
     // to Game, so we surface the produced value to the outer scope via a one-element array. The
     // alternative (re-reading the value after compute returns) would race against other writers.
@@ -124,6 +128,14 @@ public class GameService {
                   outcome.state().currentFen(),
                   outcome.state().currentStatus(),
                   outcome.state().history());
+          // Archive to Postgres BEFORE the GameStore.compute write completes (the store writes
+          // the lambda's return value). If archive throws, the compute lambda throws, the move
+          // request fails with 500, and Redis still holds the previous state — strictly better
+          // than the inverse (Redis advances but the archive silently disappears, leaving a
+          // ghost terminal game that nobody can ever observe in history).
+          if (updated.status().isTerminal()) {
+            gameHistoryService.archive(updated);
+          }
           holder[0] = updated;
           return updated;
         });
@@ -140,7 +152,7 @@ public class GameService {
    * failed mutation. Any {@link RuntimeException} thrown by the broker is caught and logged at
    * {@code WARN}; the broadcast is fire-and-forget by design.
    */
-  private void broadcastMoveEvent(Game updated, String playerId, Move move) {
+  private void broadcastMoveEvent(Game updated, UUID playerId, Move move) {
     int moveNumber = updated.moves().size();
     // After the move is appended, an odd moveNumber means White's move just landed (move 1 is
     // White's first), an even moveNumber means Black's. The next turn is therefore the inverse.

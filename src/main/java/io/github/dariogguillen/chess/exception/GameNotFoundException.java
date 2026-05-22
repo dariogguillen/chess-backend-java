@@ -1,5 +1,7 @@
 package io.github.dariogguillen.chess.exception;
 
+import java.util.UUID;
+
 /**
  * Thrown when a caller references a game id that the {@code GameStore} has no entry for. Mapped to
  * HTTP 404 by {@link GlobalExceptionHandler} with error code {@code GAME_NOT_FOUND}.
@@ -15,7 +17,7 @@ public class GameNotFoundException extends NotFoundException {
    *
    * @param gameId the game id that could not be located; non-null.
    */
-  public GameNotFoundException(String gameId) {
+  public GameNotFoundException(UUID gameId) {
     super("Game " + gameId + " does not exist.");
   }
 }

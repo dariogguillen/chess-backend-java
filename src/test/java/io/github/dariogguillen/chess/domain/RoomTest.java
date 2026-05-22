@@ -6,13 +6,17 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class RoomTest {
 
-  private static final Player ALICE = new Player("alice", "Alice");
-  private static final Player BOB = new Player("bob", "Bob");
-  private static final Player CHARLIE = new Player("charlie", "Charlie");
+  private static final UUID ALICE_ID = UUID.fromString("00000000-0000-0000-0000-00000000000a");
+  private static final UUID BOB_ID = UUID.fromString("00000000-0000-0000-0000-00000000000b");
+  private static final UUID CHARLIE_ID = UUID.fromString("00000000-0000-0000-0000-00000000000c");
+  private static final Player ALICE = new Player(ALICE_ID, "Alice");
+  private static final Player BOB = new Player(BOB_ID, "Bob");
+  private static final Player CHARLIE = new Player(CHARLIE_ID, "Charlie");
 
   @Test
   void shouldConstruct_whenZeroPlayersAndWaiting() {
@@ -46,7 +50,7 @@ class RoomTest {
 
   @Test
   void shouldReject_whenDuplicatePlayerId() {
-    Player aliceClone = new Player("alice", "Alice the second");
+    Player aliceClone = new Player(ALICE_ID, "Alice the second");
 
     assertThatThrownBy(
             () -> new Room("r-1", List.of(ALICE, aliceClone), RoomStatus.WAITING_FOR_PLAYER))

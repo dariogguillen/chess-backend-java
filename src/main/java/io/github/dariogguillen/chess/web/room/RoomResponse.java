@@ -1,6 +1,7 @@
 package io.github.dariogguillen.chess.web.room;
 
 import io.swagger.v3.oas.annotations.media.Schema;
+import java.util.UUID;
 
 /**
  * Unified response body for both {@code POST /api/rooms} (create) and {@code POST
@@ -15,6 +16,9 @@ import io.swagger.v3.oas.annotations.media.Schema;
  *
  * <p>Nulls are emitted in the serialized JSON (Jackson's default) so the field is always present —
  * easier for the client than checking key existence.
+ *
+ * <p>{@code playerId} and {@code gameId} are {@link UUID}s; Jackson serialises them to plain JSON
+ * strings, so the wire shape is identical to the previous {@code String}-typed version.
  *
  * @param roomId the room id (six-character short code on create, the same id passed in on join).
  * @param playerId the server-assigned UUID for the caller.
@@ -31,7 +35,7 @@ public record RoomResponse(
     @Schema(
             description = "Server-generated UUID identifying the caller as a player in the room.",
             example = "8b3c1f04-1234-5678-9abc-def012345678")
-        String playerId,
+        UUID playerId,
     @Schema(
             description =
                 "Side assigned to the caller. WHITE for the room creator, BLACK for the joiner.",
@@ -43,4 +47,4 @@ public record RoomResponse(
                     + "(no game exists yet); non-null on the join response.",
             example = "0d52a8a0-aaaa-bbbb-cccc-ddddeeee0000",
             nullable = true)
-        String gameId) {}
+        UUID gameId) {}

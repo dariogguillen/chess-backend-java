@@ -5,6 +5,7 @@ import io.github.dariogguillen.chess.domain.Piece;
 import io.github.dariogguillen.chess.domain.Side;
 import io.github.dariogguillen.chess.exception.ErrorResponse;
 import java.time.Instant;
+import java.util.UUID;
 
 /**
  * Wire shape broadcast over STOMP to {@code /topic/games/{gameId}} after every successful move
@@ -40,8 +41,8 @@ import java.time.Instant;
  *     Clock}, in UTC.
  */
 public record MoveEvent(
-    String gameId,
-    String movedBy,
+    UUID gameId,
+    UUID movedBy,
     Side side,
     String from,
     String to,

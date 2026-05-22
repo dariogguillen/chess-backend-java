@@ -5,6 +5,7 @@ import io.github.dariogguillen.chess.domain.Game;
 import io.github.dariogguillen.chess.service.GameStore;
 import java.time.Duration;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.locks.Lock;
 import java.util.function.BiFunction;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -17,13 +18,17 @@ import org.springframework.stereotype.Component;
  *
  * <p>The contract mirrors {@link RedisRoomStore} on a different keyspace: every {@code save} sets
  * or refreshes the TTL from {@link RedisActiveStateProperties#activeStateTtl()}; reads do not
- * refresh; {@link #compute(String, BiFunction)} runs the remapping function inside a process-local
+ * refresh; {@link #compute(UUID, BiFunction)} runs the remapping function inside a process-local
  * {@link Lock} keyed by game id, serializing concurrent move applications on the same game while
  * letting different games proceed in parallel.
  *
  * <p>The store is unaware of the cross-store invariant "a game exists iff its room is ACTIVE" —
  * that invariant lives in {@code RoomService.joinRoom}, which performs the {@code gameStore.save}
  * inside the {@code roomStore.compute} block.
+ *
+ * <p>Game ids are {@link UUID}s end-to-end; the {@link StripedKeyLock} keys on the canonical {@code
+ * UUID.toString()} form, and the Redis key is built from the same string so the keyspace stays
+ * {@code redis-cli GET game:<uuid>} -inspectable.
  */
 @Component
 public class RedisGameStore implements GameStore {
@@ -42,7 +47,7 @@ public class RedisGameStore implements GameStore {
   }
 
   @Override
-  public Optional<Game> findById(String id) {
+  public Optional<Game> findById(UUID id) {
     return Optional.ofNullable(redisTemplate.opsForValue().get(key(id)));
   }
 
@@ -52,8 +57,8 @@ public class RedisGameStore implements GameStore {
   }
 
   @Override
-  public Game compute(String id, BiFunction<String, Game, Game> remappingFunction) {
-    Lock lock = locks.get(id);
+  public Game compute(UUID id, BiFunction<UUID, Game, Game> remappingFunction) {
+    Lock lock = locks.get(id.toString());
     lock.lock();
     try {
       String key = key(id);
@@ -70,7 +75,7 @@ public class RedisGameStore implements GameStore {
     }
   }
 
-  private static String key(String id) {
+  private static String key(UUID id) {
     return KEY_PREFIX + id;
   }
 }

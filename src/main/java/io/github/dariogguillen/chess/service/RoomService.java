@@ -65,7 +65,7 @@ public class RoomService {
    *     or a broken {@link RoomCodeGenerator}.
    */
   public CreatedRoom createRoom(String displayName) {
-    Player creator = new Player(UUID.randomUUID().toString(), displayName);
+    Player creator = new Player(UUID.randomUUID(), displayName);
     for (int attempt = 1; attempt <= MAX_CODE_ATTEMPTS; attempt++) {
       String candidate = codeGenerator.generate();
       Room created =
@@ -112,7 +112,7 @@ public class RoomService {
    * @throws RoomFullException if the room already holds two players.
    */
   public JoinedRoom joinRoom(String roomId, String displayName) {
-    Player joiner = new Player(UUID.randomUUID().toString(), displayName);
+    Player joiner = new Player(UUID.randomUUID(), displayName);
     // The created game is captured from inside the atomic block so the outer code can return it.
     Game[] createdGameHolder = new Game[1];
 
@@ -134,7 +134,7 @@ public class RoomService {
               String initialFen = chessRules.standardInitialState().currentFen();
               Game game =
                   new Game(
-                      UUID.randomUUID().toString(),
+                      UUID.randomUUID(),
                       id,
                       creator,
                       joiner,

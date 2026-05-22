@@ -14,6 +14,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.util.Optional;
+import java.util.UUID;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -30,6 +31,11 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>The controller is a thin translation layer: HTTP in, {@link GameService} call, {@link
  * GameStateResponse} out. No try/catch — exceptions thrown by the service surface through the
  * global {@code @RestControllerAdvice} as structured error responses.
+ *
+ * <p>{@code id} and {@code X-Player-Id} are bound as {@link UUID}. Spring's default {@code
+ * String→UUID} converter parses them; a malformed value triggers {@code
+ * MethodArgumentTypeMismatchException}, which the global handler maps to {@code 400
+ * MALFORMED_REQUEST}.
  */
 @Tag(name = "Games", description = "Make moves and read game state.")
 @RestController
@@ -55,6 +61,13 @@ public class GameController {
               mediaType = MediaType.APPLICATION_JSON_VALUE,
               schema = @Schema(implementation = GameStateResponse.class)))
   @ApiResponse(
+      responseCode = "400",
+      description = "Invalid request (malformed UUID in path)",
+      content =
+          @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = ErrorResponse.class)))
+  @ApiResponse(
       responseCode = "404",
       description = "Game does not exist",
       content =
@@ -62,7 +75,7 @@ public class GameController {
               mediaType = MediaType.APPLICATION_JSON_VALUE,
               schema = @Schema(implementation = ErrorResponse.class)))
   @GetMapping("/{id}")
-  public GameStateResponse get(@PathVariable("id") String id) {
+  public GameStateResponse get(@PathVariable("id") UUID id) {
     return toResponse(gameService.findById(id));
   }
 
@@ -82,8 +95,8 @@ public class GameController {
   @ApiResponse(
       responseCode = "400",
       description =
-          "Invalid request (validation failure on body fields, malformed JSON body, or missing "
-              + "X-Player-Id header)",
+          "Invalid request (validation failure on body fields, malformed JSON body, malformed "
+              + "UUID in path or header, or missing X-Player-Id header)",
       content =
           @Content(
               mediaType = MediaType.APPLICATION_JSON_VALUE,
@@ -111,8 +124,8 @@ public class GameController {
               schema = @Schema(implementation = ErrorResponse.class)))
   @PostMapping("/{id}/moves")
   public GameStateResponse move(
-      @PathVariable("id") String id,
-      @RequestHeader("X-Player-Id") String playerId,
+      @PathVariable("id") UUID id,
+      @RequestHeader("X-Player-Id") UUID playerId,
       @Valid @RequestBody MoveRequest request) {
     Move move =
         new Move(

@@ -8,6 +8,7 @@ import io.github.dariogguillen.chess.domain.Side;
 import io.github.dariogguillen.chess.domain.Square;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Unified response body for both {@code GET /api/games/{id}} and {@code POST
@@ -21,7 +22,7 @@ import java.util.List;
  * record below. It is intentionally nested because it has no reference site outside this response;
  * outside this file the type is {@code GameStateResponse.MoveSummary}.
  *
- * @param id the game identifier.
+ * @param id the game identifier; a UUID serialised as a JSON string.
  * @param roomId the id of the room this game belongs to.
  * @param white the player playing the white pieces.
  * @param black the player playing the black pieces.
@@ -31,7 +32,7 @@ import java.util.List;
  * @param moves the move history in playback order, each entry as a {@link MoveSummary}.
  */
 public record GameStateResponse(
-    String id,
+    UUID id,
     String roomId,
     Player white,
     Player black,

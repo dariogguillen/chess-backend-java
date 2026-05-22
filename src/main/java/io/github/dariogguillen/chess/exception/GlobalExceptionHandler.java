@@ -11,6 +11,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /**
  * Centralised translation from thrown exceptions into HTTP responses with a shared {@link
@@ -26,10 +27,12 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  *       ROOM_FULL}).
  *   <li><strong>Spring's framework exceptions</strong> ({@link MethodArgumentNotValidException} for
  *       Bean Validation failures, {@link HttpMessageNotReadableException} for malformed JSON
- *       bodies, {@link MissingRequestHeaderException} for missing required headers) — mapped to
- *       HTTP 400 with the codes {@code VALIDATION_FAILED}, {@code MALFORMED_REQUEST}, and {@code
- *       MISSING_HEADER} respectively, so clients see a single response shape regardless of which
- *       layer produced the rejection.
+ *       bodies, {@link MissingRequestHeaderException} for missing required headers, {@link
+ *       MethodArgumentTypeMismatchException} for path or header values that fail Spring's type
+ *       converter — e.g. a malformed UUID in {@code /api/games/{id}}) — mapped to HTTP 400 with the
+ *       codes {@code VALIDATION_FAILED}, {@code MALFORMED_REQUEST}, {@code MISSING_HEADER}, and
+ *       {@code MALFORMED_REQUEST} respectively, so clients see a single response shape regardless
+ *       of which layer produced the rejection.
  * </ul>
  *
  * <p>The {@link Clock} is injected so that the {@code timestamp} in error bodies is testable and
@@ -86,6 +89,23 @@ public class GlobalExceptionHandler {
     String message = "Required header '" + ex.getHeaderName() + "' is missing.";
     log.warn("Missing request header: {}", ex.getHeaderName());
     return build(HttpStatus.BAD_REQUEST, "MISSING_HEADER", message);
+  }
+
+  /**
+   * Maps Spring's {@link MethodArgumentTypeMismatchException} to HTTP 400 / {@code
+   * MALFORMED_REQUEST}. Triggered when a {@code @PathVariable} or {@code @RequestHeader} value
+   * cannot be coerced to the declared parameter type by Spring's default {@code ConversionService}
+   * — most commonly a non-UUID string where a {@code java.util.UUID} parameter expects one. Sharing
+   * the {@code MALFORMED_REQUEST} code with {@link HttpMessageNotReadableException} keeps the
+   * 4xx-vocabulary minimal (see feature 6.6's nine-code allowlist) — both errors are "the bytes you
+   * sent could not be turned into a structured input the controller could read".
+   */
+  @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+  public ResponseEntity<ErrorResponse> handleArgumentTypeMismatch(
+      MethodArgumentTypeMismatchException ex) {
+    String message = "Parameter '" + ex.getName() + "' has an invalid value.";
+    log.warn("Argument type mismatch: name={}, value={}", ex.getName(), ex.getValue());
+    return build(HttpStatus.BAD_REQUEST, "MALFORMED_REQUEST", message);
   }
 
   private ResponseEntity<ErrorResponse> build(HttpStatus status, String error, String message) {

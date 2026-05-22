@@ -5,6 +5,7 @@ import io.github.dariogguillen.chess.exception.GameNotFoundException;
 import io.github.dariogguillen.chess.service.GameService;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -40,6 +41,12 @@ import org.springframework.web.socket.messaging.SessionUnsubscribeEvent;
  * portfolio-level trade-off documented in {@code docs/architecture.md}; a future auth feature would
  * replace "trust" with "verify" without changing this class's public surface.
  *
+ * <p>The {@code gameId} captured from the destination and the {@code playerId} header are both
+ * parsed as {@link UUID}. A malformed value (a topic for a non-UUID id, or a header that is not a
+ * UUID) is treated as "no match" — the subscription is ignored for tracking purposes. This is the
+ * least-surprising failure mode for a non-authenticated broadcast layer: client-side bugs do not
+ * crash the broadcast handler.
+ *
  * <p>Concurrency: the three internal maps are {@link ConcurrentHashMap}s, with set-valued entries
  * backed by {@link ConcurrentHashMap#newKeySet()}. The "is this the last subscription of the
  * session for this game?" check on unsubscribe is racy under tight interleavings but the count
@@ -67,10 +74,10 @@ public class ViewerCountTracker {
   private final SimpMessagingTemplate messagingTemplate;
 
   // gameId -> set of session ids currently viewing the game (excluding players).
-  private final Map<String, Set<String>> sessionsByGame = new ConcurrentHashMap<>();
+  private final Map<UUID, Set<String>> sessionsByGame = new ConcurrentHashMap<>();
 
   // sessionId -> set of game ids the session is currently viewing.
-  private final Map<String, Set<String>> gamesBySession = new ConcurrentHashMap<>();
+  private final Map<String, Set<UUID>> gamesBySession = new ConcurrentHashMap<>();
 
   // subscriptionId -> (sessionId, gameId). Required because SessionUnsubscribeEvent does not carry
   // the destination, only the subscription id; we recover the game from the subscription id here.
@@ -92,7 +99,7 @@ public class ViewerCountTracker {
       String destination = accessor.getDestination();
       String sessionId = accessor.getSessionId();
       String subscriptionId = accessor.getSubscriptionId();
-      String playerId = accessor.getFirstNativeHeader("playerId");
+      String playerIdHeader = accessor.getFirstNativeHeader("playerId");
 
       if (destination == null || sessionId == null || subscriptionId == null) {
         return;
@@ -101,7 +108,11 @@ public class ViewerCountTracker {
       if (!matcher.matches()) {
         return;
       }
-      String gameId = matcher.group(1);
+      UUID gameId = parseUuidOrNull(matcher.group(1));
+      if (gameId == null) {
+        return;
+      }
+      UUID playerId = playerIdHeader == null ? null : parseUuidOrNull(playerIdHeader);
 
       if (playerId != null && isPlayerOfGame(gameId, playerId)) {
         return;
@@ -150,7 +161,7 @@ public class ViewerCountTracker {
       Set<String> sessions = sessionsByGame.get(gs.gameId());
       boolean removed = sessions != null && sessions.remove(gs.sessionId());
 
-      Set<String> games = gamesBySession.get(gs.sessionId());
+      Set<UUID> games = gamesBySession.get(gs.sessionId());
       if (games != null) {
         games.remove(gs.gameId());
         if (games.isEmpty()) {
@@ -180,12 +191,12 @@ public class ViewerCountTracker {
         return;
       }
 
-      Set<String> games = gamesBySession.remove(sessionId);
+      Set<UUID> games = gamesBySession.remove(sessionId);
       if (games == null) {
         return;
       }
 
-      for (String gameId : games) {
+      for (UUID gameId : games) {
         Set<String> sessions = sessionsByGame.get(gameId);
         if (sessions != null && sessions.remove(sessionId)) {
           broadcast(gameId, sessions.size());
@@ -204,7 +215,7 @@ public class ViewerCountTracker {
    * non-player (the broadcast still goes out; the client sees {@code count: 1} for a game it should
    * have validated before subscribing).
    */
-  private boolean isPlayerOfGame(String gameId, String playerId) {
+  private boolean isPlayerOfGame(UUID gameId, UUID playerId) {
     try {
       Game game = gameService.findById(gameId);
       return playerId.equals(game.white().id()) || playerId.equals(game.black().id());
@@ -213,7 +224,7 @@ public class ViewerCountTracker {
     }
   }
 
-  private void broadcast(String gameId, int count) {
+  private void broadcast(UUID gameId, int count) {
     try {
       messagingTemplate.convertAndSend(
           "/topic/games/" + gameId + "/viewers", new ViewerCountEvent(gameId, count));
@@ -222,6 +233,20 @@ public class ViewerCountTracker {
     }
   }
 
+  /**
+   * Parses {@code value} as a {@link UUID}, returning {@code null} if it is not a valid UUID. Used
+   * at the STOMP boundary where input comes from untrusted clients — a non-UUID destination segment
+   * or {@code playerId} header is treated as "not a known game / player" rather than as a fatal
+   * error.
+   */
+  private static UUID parseUuidOrNull(String value) {
+    try {
+      return UUID.fromString(value);
+    } catch (IllegalArgumentException ex) {
+      return null;
+    }
+  }
+
   /** Records the (session, game) pair a subscription is bound to, keyed by subscription id. */
-  private record GameSubscription(String sessionId, String gameId) {}
+  private record GameSubscription(String sessionId, UUID gameId) {}
 }

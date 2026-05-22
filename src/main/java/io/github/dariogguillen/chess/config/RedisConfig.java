@@ -17,9 +17,11 @@ import org.springframework.data.redis.serializer.StringRedisSerializer;
  * call type-safe at the call site, and lets us pick a per-type {@link Jackson2JsonRedisSerializer}
  * that omits {@code @class} type metadata — the JSON in Redis stays {@code redis-cli GET}-readable.
  *
- * <p>Keys are serialized with {@link StringRedisSerializer}: room and game ids are already strings
- * at the domain level (the room code or a UUID), and we want the Redis keyspace ({@code
- * room:ABC123}, {@code game:&lt;uuid&gt;}) to be inspectable from the CLI.
+ * <p>Keys are serialized with {@link StringRedisSerializer}: the room id is the 6-char short code
+ * (always a {@code String} at the domain level), and the game id is a {@code java.util.UUID} whose
+ * {@code toString()} form is what the store concatenates with the {@code game:} prefix before
+ * handing it to the template. The Redis keyspace ({@code room:ABC123}, {@code game:<uuid>}) stays
+ * inspectable from the CLI.
  *
  * <p>The serializer uses an {@link ObjectMapper} obtained from the Spring context. Spring Boot's
  * autoconfigured mapper already registers the Java 8 modules we depend on — most notably {@code

@@ -1,5 +1,7 @@
 package io.github.dariogguillen.chess.websocket;
 
+import java.util.UUID;
+
 /**
  * Wire shape broadcast over STOMP to {@code /topic/games/{gameId}/viewers} every time the viewer
  * count for a game changes — i.e. on every {@code SUBSCRIBE}, {@code UNSUBSCRIBE}, or session
@@ -21,4 +23,4 @@ package io.github.dariogguillen.chess.websocket;
  * @param count the current number of subscribers to {@code /topic/games/{gameId}} that are not one
  *     of the two players (i.e. did not declare a matching {@code playerId} STOMP header).
  */
-public record ViewerCountEvent(String gameId, int count) {}
+public record ViewerCountEvent(UUID gameId, int count) {}

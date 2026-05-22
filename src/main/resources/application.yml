@@ -9,6 +9,25 @@ spring:
     redis:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
       port: ${SPRING_DATA_REDIS_PORT:6379}
+  jpa:
+    hibernate:
+      # Flyway is the source of truth for the schema. `validate` makes the JPA model
+      # verify against the actual database at boot — if a future entity gains a column
+      # that the migration forgets, the app refuses to start instead of silently
+      # diverging. `update` (the seductive default) is the silent-drift footgun.
+      ddl-auto: validate
+    # Disable the open-in-view anti-pattern: keeping the JPA session open for the whole
+    # request hides lazy-loading bugs in the view layer. Off here means every lazy access
+    # outside a @Transactional service method fails loudly, which is what we want.
+    open-in-view: false
+    properties:
+      hibernate.format_sql: true
+  flyway:
+    locations: classpath:db/migration
+    # First migration ever in this codebase; no legacy schema to baseline against.
+    # Leaving this false means an unexpected pre-existing schema fails the build rather
+    # than being silently adopted.
+    baseline-on-migrate: false
 
 chess:
   redis:

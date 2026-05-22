@@ -37,8 +37,8 @@ class RedisRoomStoreIT {
   @Test
   void save_thenFindById_returnsEqualRoom() {
     String id = uniqueRoomId();
-    Player alice = new Player(UUID.randomUUID().toString(), "Alice");
-    Player bob = new Player(UUID.randomUUID().toString(), "Bob");
+    Player alice = new Player(UUID.randomUUID(), "Alice");
+    Player bob = new Player(UUID.randomUUID(), "Bob");
     Room room = new Room(id, List.of(alice, bob), RoomStatus.ACTIVE);
 
     roomStore.save(room);
@@ -59,7 +59,7 @@ class RedisRoomStoreIT {
   @Test
   void compute_onMissingKey_passesNullToFunctionAndPersistsResult() {
     String id = uniqueRoomId();
-    Player alice = new Player(UUID.randomUUID().toString(), "Alice");
+    Player alice = new Player(UUID.randomUUID(), "Alice");
 
     Room created =
         roomStore.compute(
@@ -76,7 +76,7 @@ class RedisRoomStoreIT {
   @Test
   void compute_returningNull_removesKey() {
     String id = uniqueRoomId();
-    Player alice = new Player(UUID.randomUUID().toString(), "Alice");
+    Player alice = new Player(UUID.randomUUID(), "Alice");
     roomStore.save(new Room(id, List.of(alice), RoomStatus.WAITING_FOR_PLAYER));
 
     Room result = roomStore.compute(id, (key, existing) -> null);
@@ -94,7 +94,7 @@ class RedisRoomStoreIT {
     // room with three players (rejected by Room's compact constructor with an
     // IllegalArgumentException).
     String id = uniqueRoomId();
-    Player creator = new Player(UUID.randomUUID().toString(), "Creator");
+    Player creator = new Player(UUID.randomUUID(), "Creator");
     roomStore.save(new Room(id, List.of(creator), RoomStatus.WAITING_FOR_PLAYER));
 
     int threads = 8;
@@ -106,7 +106,7 @@ class RedisRoomStoreIT {
 
     try {
       for (int i = 0; i < threads; i++) {
-        Player joiner = new Player(UUID.randomUUID().toString(), "Joiner-" + i);
+        Player joiner = new Player(UUID.randomUUID(), "Joiner-" + i);
         executor.submit(
             () -> {
               try {

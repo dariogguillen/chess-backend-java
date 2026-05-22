@@ -1,5 +1,6 @@
 package io.github.dariogguillen.chess.web.game;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
@@ -12,6 +13,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.dariogguillen.chess.TestcontainersConfiguration;
+import io.github.dariogguillen.chess.domain.GameStatus;
+import io.github.dariogguillen.chess.persistence.GameEntity;
+import io.github.dariogguillen.chess.persistence.GameHistoryRepository;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -20,6 +25,8 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Integration tests for {@code GET /api/games/{id}} and {@code POST /api/games/{id}/moves}. Boots
@@ -37,12 +44,24 @@ class GameControllerIT {
 
   @Autowired private ObjectMapper objectMapper;
 
+  @Autowired private GameHistoryRepository gameHistoryRepository;
+
   @Test
   void getGame_unknownId_returns404() throws Exception {
     mockMvc
-        .perform(get("/api/games/{id}", "non-existent-id"))
+        .perform(get("/api/games/{id}", UUID.randomUUID()))
         .andExpect(status().isNotFound())
         .andExpect(jsonPath("$.error", equalTo("GAME_NOT_FOUND")))
+        .andExpect(jsonPath("$.message").exists())
+        .andExpect(jsonPath("$.timestamp").exists());
+  }
+
+  @Test
+  void getGame_malformedUuid_returns400MalformedRequest() throws Exception {
+    mockMvc
+        .perform(get("/api/games/{id}", "not-a-uuid"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.error", equalTo("MALFORMED_REQUEST")))
         .andExpect(jsonPath("$.message").exists())
         .andExpect(jsonPath("$.timestamp").exists());
   }
@@ -54,10 +73,10 @@ class GameControllerIT {
     mockMvc
         .perform(get("/api/games/{id}", setup.gameId()))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.id", equalTo(setup.gameId())))
-        .andExpect(jsonPath("$.white.id", equalTo(setup.whitePlayerId())))
+        .andExpect(jsonPath("$.id", equalTo(setup.gameId().toString())))
+        .andExpect(jsonPath("$.white.id", equalTo(setup.whitePlayerId().toString())))
         .andExpect(jsonPath("$.white.displayName", equalTo("Alice")))
-        .andExpect(jsonPath("$.black.id", equalTo(setup.blackPlayerId())))
+        .andExpect(jsonPath("$.black.id", equalTo(setup.blackPlayerId().toString())))
         .andExpect(jsonPath("$.black.displayName", equalTo("Bob")))
         .andExpect(jsonPath("$.status", equalTo("ONGOING")))
         .andExpect(jsonPath("$.turn", equalTo("WHITE")))
@@ -84,6 +103,30 @@ class GameControllerIT {
         // still reflects whose turn it would be next (white, who is in fact mated here).
         .andExpect(jsonPath("$.turn", equalTo("WHITE")))
         .andExpect(jsonPath("$.moves", hasSize(4)));
+  }
+
+  @Test
+  @Transactional
+  void moveSequence_foolsMate_archivesGameToPostgres() throws Exception {
+    // Same Fool's Mate flow as above, but here we follow the REST mutation with a direct read
+    // of the Postgres archive. The archive call happens inside GameService.applyMove right before
+    // GameStore.compute commits, so reaching CHECKMATE on the REST side must produce exactly one
+    // row in the games table for this game id. @Transactional keeps the JPA session open across
+    // the call so the lazy `moves` collection is reachable for the size assertion.
+    GameSetup setup = createGame("Alice", "Bob");
+
+    applyMove(setup.gameId(), setup.whitePlayerId(), "f2", "f3").andExpect(status().isOk());
+    applyMove(setup.gameId(), setup.blackPlayerId(), "e7", "e5").andExpect(status().isOk());
+    applyMove(setup.gameId(), setup.whitePlayerId(), "g2", "g4").andExpect(status().isOk());
+    applyMove(setup.gameId(), setup.blackPlayerId(), "d8", "h4")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status", equalTo("CHECKMATE")));
+
+    GameEntity archived = gameHistoryRepository.findById(setup.gameId()).orElseThrow();
+    assertThat(archived.getStatus()).isEqualTo(GameStatus.CHECKMATE);
+    assertThat(archived.getMoves()).hasSize(4);
+    assertThat(archived.getWhitePlayerId()).isEqualTo(setup.whitePlayerId());
+    assertThat(archived.getBlackPlayerId()).isEqualTo(setup.blackPlayerId());
   }
 
   @Test
@@ -142,12 +185,12 @@ class GameControllerIT {
         .andExpect(jsonPath("$.timestamp").exists());
   }
 
-  private org.springframework.test.web.servlet.ResultActions applyMove(
-      String gameId, String playerId, String from, String to) throws Exception {
+  private ResultActions applyMove(UUID gameId, UUID playerId, String from, String to)
+      throws Exception {
     return mockMvc.perform(
         post("/api/games/{id}/moves", gameId)
             .contentType(MediaType.APPLICATION_JSON)
-            .header("X-Player-Id", playerId)
+            .header("X-Player-Id", playerId.toString())
             .content("{\"from\":\"" + from + "\",\"to\":\"" + to + "\"}"));
   }
 
@@ -166,7 +209,7 @@ class GameControllerIT {
             .andReturn();
     JsonNode createBody = objectMapper.readTree(createResult.getResponse().getContentAsString());
     String roomId = createBody.get("roomId").asText();
-    String whitePlayerId = createBody.get("playerId").asText();
+    UUID whitePlayerId = UUID.fromString(createBody.get("playerId").asText());
 
     MvcResult joinResult =
         mockMvc
@@ -177,12 +220,12 @@ class GameControllerIT {
             .andExpect(status().isOk())
             .andReturn();
     JsonNode joinBody = objectMapper.readTree(joinResult.getResponse().getContentAsString());
-    String gameId = joinBody.get("gameId").asText();
-    String blackPlayerId = joinBody.get("playerId").asText();
+    UUID gameId = UUID.fromString(joinBody.get("gameId").asText());
+    UUID blackPlayerId = UUID.fromString(joinBody.get("playerId").asText());
 
     return new GameSetup(gameId, whitePlayerId, blackPlayerId);
   }
 
   /** Tuple returned by {@link #createGame(String, String)}. */
-  private record GameSetup(String gameId, String whitePlayerId, String blackPlayerId) {}
+  private record GameSetup(UUID gameId, UUID whitePlayerId, UUID blackPlayerId) {}
 }

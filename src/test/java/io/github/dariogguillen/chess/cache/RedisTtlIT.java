@@ -52,7 +52,7 @@ class RedisTtlIT {
   @Test
   void save_setsTtlCloseToConfiguredValue() {
     String id = uniqueRoomId();
-    Player alice = new Player(UUID.randomUUID().toString(), "Alice");
+    Player alice = new Player(UUID.randomUUID(), "Alice");
     roomStore.save(new Room(id, List.of(alice), RoomStatus.WAITING_FOR_PLAYER));
 
     Long ttlMillis = roomRedisTemplate.getExpire("room:" + id, TimeUnit.MILLISECONDS);
@@ -67,7 +67,7 @@ class RedisTtlIT {
   @Test
   void resave_refreshesTtl() throws Exception {
     String id = uniqueRoomId();
-    Player alice = new Player(UUID.randomUUID().toString(), "Alice");
+    Player alice = new Player(UUID.randomUUID(), "Alice");
     Room room = new Room(id, List.of(alice), RoomStatus.WAITING_FOR_PLAYER);
     roomStore.save(room);
 
@@ -91,8 +91,8 @@ class RedisTtlIT {
   @Test
   void compute_refreshesTtl_onSuccessfulWrite() throws Exception {
     String id = uniqueRoomId();
-    Player alice = new Player(UUID.randomUUID().toString(), "Alice");
-    Player bob = new Player(UUID.randomUUID().toString(), "Bob");
+    Player alice = new Player(UUID.randomUUID(), "Alice");
+    Player bob = new Player(UUID.randomUUID(), "Bob");
     Room initial = new Room(id, List.of(alice), RoomStatus.WAITING_FOR_PLAYER);
     roomStore.save(initial);
 

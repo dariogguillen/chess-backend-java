@@ -1,6 +1,7 @@
 package io.github.dariogguillen.chess.exception;
 
 import io.github.dariogguillen.chess.domain.Move;
+import java.util.UUID;
 
 /**
  * Thrown when chesslib rejects a candidate move in a game. Mapped to HTTP 422 by {@link
@@ -20,7 +21,7 @@ public class IllegalMoveException extends UnprocessableException {
    * @param gameId the game in which the move was attempted; non-null.
    * @param move the move chesslib rejected; non-null.
    */
-  public IllegalMoveException(String gameId, Move move) {
+  public IllegalMoveException(UUID gameId, Move move) {
     super(
         "Move "
             + move.from().value()

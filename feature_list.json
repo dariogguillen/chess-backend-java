@@ -194,7 +194,7 @@
     "id": "postgres-game-history",
     "title": "Game history in Postgres",
     "description": "Persist completed games to Postgres for history. JPA entities, Flyway migrations for the schema. Endpoint to list a player's recent games.",
-    "status": "pending",
+    "status": "done",
     "priority": 9,
     "acceptance": [
       "Flyway migration V1__games.sql creates the games table.",
@@ -205,11 +205,29 @@
     ]
   },
   {
+    "id": "rest-cors",
+    "title": "CORS configuration for REST endpoints",
+    "description": "Add a CORS configuration so the deployed frontend on GitHub Pages can call /api/** in the browser. Backend currently has CORS only for the WebSocket handshake (WebSocketConfig#setAllowedOriginPatterns). The REST surface is silent, which means the browser blocks the preflight OPTIONS /api/rooms for any cross-origin request. Unblocks chess-frontend feature 4 (rest-room-integration), whose plan in chess-frontend/progress/current.md explicitly waits for this. The allowed origins mirror the WebSocket list (https://dariogguillen.github.io for prod GitHub Pages, http://localhost:* for dev). Implementation via a WebMvcConfigurer (NOT @CrossOrigin per controller — single source of truth for origin policy). Includes ITs asserting the preflight succeeds for an allowed origin and is rejected for a disallowed one (drift canary).",
+    "status": "pending",
+    "priority": 10,
+    "acceptance": [
+      "A WebMvcConfigurer bean registers CORS mappings for /api/** with allowed origins matching the WebSocket configuration (https://dariogguillen.github.io and http://localhost:* via setAllowedOriginPatterns).",
+      "Allowed methods cover GET, POST, PUT, DELETE, OPTIONS.",
+      "Allowed headers cover Content-Type and Accept.",
+      "allowCredentials is set explicitly with the rationale documented in the feature note (default to false since the API is stateless JSON; flip to true only when auth ships).",
+      "Preflight IT: OPTIONS /api/rooms with Origin: https://dariogguillen.github.io returns 200 with the expected Access-Control-Allow-* headers.",
+      "Drift canary IT: OPTIONS /api/rooms with Origin: https://evil.example returns 403 (or omits the Access-Control-Allow-Origin header) so a future origin-list edit cannot accidentally widen the surface.",
+      "Actual cross-origin POST IT: a request with the allowed origin succeeds; one with a disallowed origin fails the CORS check.",
+      "docs/architecture.md updated: the existing 'Allowed origins (CORS for the WebSocket handshake)' subsection becomes a single 'CORS' section covering REST + WebSocket, with the obsolete 'mirrors the existing CORS strategy on the REST side' line replaced by an accurate description.",
+      "./init.sh passes."
+    ]
+  },
+  {
     "id": "disconnect-handling",
     "title": "Disconnect and reconnect",
     "description": "Track player connection state. On disconnect, start a grace period (e.g., 60s). If the player reconnects within the grace period, restore them to the game. If not, mark the game as abandoned.",
     "status": "pending",
-    "priority": 10,
+    "priority": 11,
     "acceptance": [
       "Reconnection within grace period restores game state for the player.",
       "Timeouts mark the game as abandoned with the opponent as winner.",
@@ -222,7 +240,7 @@
     "title": "Docker Compose for local development",
     "description": "Docker Compose file that spins up the app, Postgres, and Redis. Document the workflow in README.",
     "status": "pending",
-    "priority": 11,
+    "priority": 12,
     "acceptance": [
       "docker compose up -d brings up app + postgres + redis on local ports.",
       "README has a 'Run locally' section.",
@@ -234,7 +252,7 @@
     "title": "CI pipeline on GitHub Actions (PR validation)",
     "description": "GitHub Actions workflow that runs ./init.sh on every pull request (not on push to main — feature 7.7's deploy.yml already validates that path). Catches regressions before they hit main. Caches Maven dependencies. Adds a status badge to README.",
     "status": "pending",
-    "priority": 12,
+    "priority": 13,
     "acceptance": [
       ".github/workflows/ci.yml exists and runs ./init.sh on pull_request events targeting main.",
       "Maven cache configured (actions/setup-java@v4 with cache: maven).",
@@ -250,7 +268,7 @@
     "title": "Polished README with architecture diagram",
     "description": "Final README with: project overview, stack, how to run, architecture diagram (Mermaid), API summary, screenshots if available. This is the artifact a recruiter will read.",
     "status": "pending",
-    "priority": 13,
+    "priority": 14,
     "acceptance": [
       "README explains what the project is and how to run it in under 5 minutes.",
       "Mermaid architecture diagram is rendered correctly on GitHub.",

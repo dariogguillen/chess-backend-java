@@ -10,6 +10,7 @@ import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.domain.Side;
 import java.lang.reflect.Type;
 import java.net.URI;
+import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -192,7 +193,7 @@ class GameWebSocketIT {
         .get(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
   }
 
-  private BlockingQueue<MoveEvent> subscribe(StompSession session, String gameId)
+  private BlockingQueue<MoveEvent> subscribe(StompSession session, UUID gameId)
       throws InterruptedException {
     BlockingQueue<MoveEvent> queue = new ArrayBlockingQueue<>(8);
     session.subscribe(
@@ -218,10 +219,10 @@ class GameWebSocketIT {
    * status code (the WebSocket test cares about both 2xx and 4xx responses). Uses a custom error
    * handler so 4xx responses do not throw — the negative tests need to read them.
    */
-  private ResponseEntity<String> applyMove(String gameId, String playerId, String from, String to) {
+  private ResponseEntity<String> applyMove(UUID gameId, UUID playerId, String from, String to) {
     HttpHeaders headers = new HttpHeaders();
     headers.setContentType(MediaType.APPLICATION_JSON);
-    headers.set("X-Player-Id", playerId);
+    headers.set("X-Player-Id", playerId.toString());
     String body = "{\"from\":\"" + from + "\",\"to\":\"" + to + "\"}";
     try {
       return restTemplate.exchange(
@@ -247,7 +248,7 @@ class GameWebSocketIT {
             String.class);
     JsonNode createBody = objectMapper.readTree(createResponse.getBody());
     String roomId = createBody.get("roomId").asText();
-    String whitePlayerId = createBody.get("playerId").asText();
+    UUID whitePlayerId = UUID.fromString(createBody.get("playerId").asText());
 
     ResponseEntity<String> joinResponse =
         restTemplate.exchange(
@@ -256,8 +257,8 @@ class GameWebSocketIT {
             new HttpEntity<>("{\"displayName\":\"" + blackName + "\"}", headers),
             String.class);
     JsonNode joinBody = objectMapper.readTree(joinResponse.getBody());
-    String gameId = joinBody.get("gameId").asText();
-    String blackPlayerId = joinBody.get("playerId").asText();
+    UUID gameId = UUID.fromString(joinBody.get("gameId").asText());
+    UUID blackPlayerId = UUID.fromString(joinBody.get("playerId").asText());
 
     return new GameSetup(gameId, whitePlayerId, blackPlayerId);
   }
@@ -266,5 +267,5 @@ class GameWebSocketIT {
     return URI.create("http://localhost:" + port).toString();
   }
 
-  private record GameSetup(String gameId, String whitePlayerId, String blackPlayerId) {}
+  private record GameSetup(UUID gameId, UUID whitePlayerId, UUID blackPlayerId) {}
 }

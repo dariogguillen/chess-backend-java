@@ -41,13 +41,13 @@ class RedisGameStoreIT {
 
   @Test
   void save_thenFindById_returnsEqualGame_includingMoveHistory() {
-    Player white = new Player(UUID.randomUUID().toString(), "Alice");
-    Player black = new Player(UUID.randomUUID().toString(), "Bob");
+    Player white = new Player(UUID.randomUUID(), "Alice");
+    Player black = new Player(UUID.randomUUID(), "Bob");
     Move nonPromotion = new Move(new Square("e2"), new Square("e4"), Optional.<Piece>empty());
     Move withPromotion = new Move(new Square("a7"), new Square("a8"), Optional.of(Piece.QUEEN));
     Game game =
         new Game(
-            UUID.randomUUID().toString(),
+            UUID.randomUUID(),
             "ROOM01",
             white,
             black,
@@ -77,14 +77,14 @@ class RedisGameStoreIT {
 
   @Test
   void findById_unknownId_returnsEmpty() {
-    assertThat(gameStore.findById(UUID.randomUUID().toString())).isEmpty();
+    assertThat(gameStore.findById(UUID.randomUUID())).isEmpty();
   }
 
   @Test
   void compute_onMissingKey_passesNullAndPersistsResult() {
-    String id = UUID.randomUUID().toString();
-    Player white = new Player(UUID.randomUUID().toString(), "Alice");
-    Player black = new Player(UUID.randomUUID().toString(), "Bob");
+    UUID id = UUID.randomUUID();
+    Player white = new Player(UUID.randomUUID(), "Alice");
+    Player black = new Player(UUID.randomUUID(), "Bob");
 
     Game created =
         gameStore.compute(
@@ -108,11 +108,11 @@ class RedisGameStoreIT {
 
   @Test
   void compute_returningNull_removesKey() {
-    Player white = new Player(UUID.randomUUID().toString(), "Alice");
-    Player black = new Player(UUID.randomUUID().toString(), "Bob");
+    Player white = new Player(UUID.randomUUID(), "Alice");
+    Player black = new Player(UUID.randomUUID(), "Bob");
     Game game =
         new Game(
-            UUID.randomUUID().toString(),
+            UUID.randomUUID(),
             "ROOM03",
             white,
             black,
@@ -133,11 +133,11 @@ class RedisGameStoreIT {
     // Simulate the canonical use of compute: read game, append a move, write game. With true
     // atomicity, N concurrent compute calls produce a final move list of exactly N moves. Without
     // it, lost updates would leave fewer.
-    Player white = new Player(UUID.randomUUID().toString(), "Alice");
-    Player black = new Player(UUID.randomUUID().toString(), "Bob");
+    Player white = new Player(UUID.randomUUID(), "Alice");
+    Player black = new Player(UUID.randomUUID(), "Bob");
     Game initial =
         new Game(
-            UUID.randomUUID().toString(),
+            UUID.randomUUID(),
             "ROOM04",
             white,
             black,
