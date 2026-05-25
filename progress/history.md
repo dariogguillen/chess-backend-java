@@ -1960,3 +1960,41 @@ Test counts unchanged: 181 (97 unit + 84 IT). No application code was touched. `
 - `progress/history.md` (this entry)
 
 **Feature note:** `notes/13-github-actions-ci.md`.
+
+---
+
+## 2026-05-25 — readme-polish (portfolio closure)
+
+**Status:** done
+
+**Summary:** The final feature in the plan. The README went from a 197-line work-in-progress framing to a 294-line recruiter-grade portfolio surface — same engineering depth, but reorganised around what someone unfamiliar with the project actually needs in the first 30 seconds: a one-paragraph pitch, three live URLs, a highlights block, two diagrams, and a path into the engineering depth.
+
+The old README opened with "This repo is a portfolio project. It's a work in progress." and a "Currently in early development" Status section — both factually wrong at 22 features delivered with a production deploy and 181 tests green. The new README opens with the locked Hybrid pitch (technical capability, named differentiators, harness mentioned), then a "Try it live" block exposing the GitHub Pages frontend + the AWS-deployed backend health probe + the Swagger UI before the reader has to scroll. The plan made the live URLs the second-priority content for exactly the reason a portfolio README exists in the first place: a recruiter who cannot try the project loses the moment.
+
+Two Mermaid diagrams were the headline addition. The first is a top-to-bottom `flowchart TB` that mirrors `docs/architecture.md`'s "Layered architecture" dependency direction (Frontend → REST `/api/**` + STOMP `/ws` → web/websocket/service/cache/persistence/domain → Redis active + Postgres durable + chesslib in-process). The second is a `sequenceDiagram` walking the full E2E flow: Player A creates a room, subscribes to `/topic/rooms/{roomId}`, Player B joins via REST, the backend writes Redis room + creates the Game, broadcasts `RoomJoinedEvent`, both players subscribe to `/topic/games/{gameId}` with the `playerId` native header, moves flow over REST with `X-Player-Id`, the backend validates + persists + broadcasts `MoveEvent`, and the terminal state archives to Postgres. The sequence diagram is the clearest possible answer to "what does this thing actually do," which is the question the prose can only answer in paragraphs. Both diagrams render natively on GitHub's Mermaid pipeline; no image artefacts in git, no out-of-band documentation toolchain to maintain.
+
+A dedicated `## Engineering process` section was the second-largest addition. The leader/implementer/reviewer harness + persisted `progress/` state + `notes/` learning trail is one of the strongest differentiators of this project — and was completely invisible in the old README. The new section names and links the eight pieces (`CLAUDE.md`, `AGENTS.md`, the three `.claude/agents/*.md` role files, `feature_list.json`, the combined `progress/current.md` + `progress/history.md` bullet, and `notes/`) with 1–2 sentences of "what this does" per item. The user picked the dedicated-section framing (β) over a soft mention (α) or a front-loaded everywhere-emphasis (γ); the chosen balance is "strong but not overplayed."
+
+The four-option pitch/diagrams/harness/URLs decision tree was decided up front during planning, with all four recommendations accepted by the user — Hybrid pitch, two Mermaid diagrams, dedicated engineering section, bullets-with-descriptions for the URLs. The implementer surfaced no scope deviations; every link target the spec called out resolved to an existing file (16-of-16 link validation pass). The "181 tests" claim in the highlights block was flagged by the reviewer as a static number that will drift if the suite grows in the future; the user chose to keep it as-is, since the project is closed and the count is accurate.
+
+`./init.sh` is green; the test count is unchanged at 181 (97 unit via Surefire + 84 IT via Failsafe). Mermaid validation is by structural review against the long-stable subset of Mermaid syntax that GitHub's renderer has supported since 2022 (no theme directives, no extension diagram types, no `%%{init}%%`); the implementer flagged that the final visual confirmation requires opening the file's Preview tab on GitHub after push, since local Mermaid previews can render differently than GitHub's.
+
+**This closes the portfolio.** Counts after this entry: 22 done, 0 in_progress, 0 pending. The project ships at: production-deployed on AWS Free Tier under `https://chess-backend.duckdns.org`, frontend on GitHub Pages, 181 tests green through `./init.sh`, full E2E validated in two-browser flow, full doc trail across `docs/architecture.md` + 22 feature notes + `progress/history.md`. Future work mode begins on the next session — no more features in the queue.
+
+**Files touched:**
+
+- `README.md` (modified; full overhaul 197 → 294 lines; structure: title + CI badge, Hybrid pitch, Try-it-live block with 3 URLs + two-browser usage hint, highlights block, architecture Mermaid diagram, end-to-end sequence Mermaid diagram, Stack, Running locally [unchanged 3-workflow section], API [stale "lands with feature 6" line removed; curl examples kept], WebSocket [wscat example kept], Deployment [AWS + Caddy + OIDC kept], Engineering process [new dedicated section linking the 8 harness items], Repository structure tree [expanded to include `.github/`, `infra/`, `notes/`, `progress/`, `docs/`], Out of scope [lifted from `docs/architecture.md`'s closing section: auth, ratings, tournaments, time controls], License)
+- `notes/14-readme-polish.md` (new; follows `notes/_template.md`; sections: What we built, Java/Spring concepts [Mermaid as diagram-as-code, README discoverability strategy, GitHub-native rendering], Decisions taken [audit findings, pitch options, diagram count, harness framing, URL formatting], How this compares to what I know [sbt multi-module README discipline + http4s/cats-effect/fs2 + mdoc parallels], Gotchas [GitHub Mermaid version lag, trailing-slash URL convention, escaped-HTML-in-Mermaid footgun], To dig deeper, File map)
+- `feature_list.json` (modified: `readme-polish.status` → `done`)
+- `progress/current.md` (replaced with the portfolio-closed final note)
+- `progress/history.md` (this entry)
+
+**Feature note:** `notes/14-readme-polish.md`.
+
+---
+
+## Portfolio milestone — 2026-05-25
+
+22 features delivered. 0 in_progress. 0 pending. The plan is complete.
+
+The chess-backend-java repo is now a closed portfolio deliverable. The next session is no longer "pick the lowest-priority pending feature" — there are none. Future sessions are bug fixes, observed-in-production tweaks, dependency bumps, or out-of-scope items the user explicitly opens by adding a new entry to `feature_list.json`.

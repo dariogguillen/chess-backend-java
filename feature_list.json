@@ -346,7 +346,7 @@
     "id": "readme-polish",
     "title": "Polished README with architecture diagram",
     "description": "Final README with: project overview, stack, how to run, architecture diagram (Mermaid), API summary, screenshots if available. This is the artifact a recruiter will read.",
-    "status": "pending",
+    "status": "done",
     "priority": 14,
     "acceptance": [
       "README explains what the project is and how to run it in under 5 minutes.",
