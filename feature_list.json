@@ -318,7 +318,7 @@
     "id": "docker-compose",
     "title": "Docker Compose for local development",
     "description": "Docker Compose file that spins up the app, Postgres, and Redis. Document the workflow in README.",
-    "status": "pending",
+    "status": "done",
     "priority": 12,
     "acceptance": [
       "docker compose up -d brings up app + postgres + redis on local ports.",
@@ -330,7 +330,7 @@
     "id": "github-actions-ci",
     "title": "CI pipeline on GitHub Actions (PR validation)",
     "description": "GitHub Actions workflow that runs ./init.sh on every pull request (not on push to main — feature 7.7's deploy.yml already validates that path). Catches regressions before they hit main. Caches Maven dependencies. Adds a status badge to README.",
-    "status": "pending",
+    "status": "done",
     "priority": 13,
     "acceptance": [
       ".github/workflows/ci.yml exists and runs ./init.sh on pull_request events targeting main.",

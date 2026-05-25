@@ -1,5 +1,7 @@
 # chess-backend-java
 
+[![CI](https://github.com/dariogguillen/chess-backend-java/actions/workflows/ci.yml/badge.svg)](https://github.com/dariogguillen/chess-backend-java/actions/workflows/ci.yml)
+
 Backend service for an online multiplayer chess game. Two players connect
 through a shareable room and play in real time. This is the Java rewrite of an
 earlier Node/TypeScript backend ([chess-game](https://github.com/dariogguillen/chess-game)).

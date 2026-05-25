@@ -1903,3 +1903,60 @@ Deleted: none.
 **Deployment note**: the new INFO lines start appearing on the next deploy automatically. No env var, no infra change, no behavioural change. The next operator (or the user) can confirm any of the six broadcasts simply by tailing the production logs at INFO level.
 
 **Feature note**: `notes/11.8-broadcast-observability.md`.
+
+---
+
+## 2026-05-25 — docker-compose
+
+**Status:** done (closed as redundant — no implementation cycle)
+
+**Summary:** Feature 12 (`docker-compose`) was closed without delegating to the implementer or reviewer. Its three acceptance criteria are a strict subset of feature 7's (`backend-containerize`) already-shipped deliverables, confirmed by an on-disk audit on 2026-05-25:
+
+| Acceptance criterion (feature 12) | Where it already lives |
+| --- | --- |
+| `docker compose up -d` brings up app + Postgres + Redis on local ports | `docker-compose.yml` (postgres:16 on 5432, redis:7-alpine on 6379, `build: .` app on 8080, healthchecks + `depends_on: service_healthy`) — shipped in feature 7. |
+| README has a 'Run locally' section | `README.md` `## Running locally` with three workflows: Testcontainers (`./mvnw spring-boot:test-run`), docker-compose (`docker compose up --build`), hybrid (`docker compose up postgres redis -d` + `./mvnw spring-boot:run`) — shipped in feature 7. |
+| `./init.sh` passes | Green continuously through features 8–11.8; no docker-compose-related regression has surfaced. |
+
+Three options were presented to the user: (A) close as redundant with a `done` flip and a documented rationale, (B) delete the entry from `feature_list.json`, (C) re-scope to invented "dev tooling polish" work. The user picked A. Rationale for A over B: deleting the entry hides the decision from anyone reading the history; closing with a clear log entry makes the deliberate-no-op visible. Rationale for A over C: manufacturing scope for the sake of a feature count is dishonest for a portfolio repo where engineering quality is the explicit value driver (per `AGENTS.md`).
+
+No `notes/12-docker-compose.md` was produced — there is no implementation to teach from. This entry IS the documentation of the closure. The CLAUDE.md leader rule "no `done` without reviewer + passing init.sh" is honoured in spirit because the acceptance criteria were satisfied (and reviewer-validated) by feature 7's cycle; the alternative — running a no-op implementer + reviewer cycle on already-shipped code — would be performance, not verification.
+
+**Files touched:**
+
+- `feature_list.json` (modified: `docker-compose.status` → `done`)
+- `progress/history.md` (this entry)
+- `progress/current.md` (replaced with session-closed note pointing to `github-actions-ci` as next in queue)
+
+**Feature note:** none (deliberate; see Summary).
+
+---
+
+## 2026-05-25 — github-actions-ci
+
+**Status:** done
+
+**Summary:** Added a PR validation workflow that runs `./init.sh` on every `pull_request` targeting `main`, complementing feature 7.7's `deploy.yml` (which already validates push-to-`main`). Until this feature, nothing was catching regressions BEFORE a PR merged — a bad change could only be caught after the deploy pipeline started, too late. The new `.github/workflows/ci.yml` uses a concurrency group keyed by the PR number with `cancel-in-progress: true` (a new commit cancels the in-flight check), and least-privilege `permissions.contents: read` (no `id-token: write` is needed because no AWS work happens on PRs — a deliberate separation from the deploy workflow's elevated privileges).
+
+The shared Java setup + verify sequence — used by both `ci.yml` and `deploy.yml` — was extracted into a composite action at `.github/actions/build/action.yml` to avoid drift (precedent: feature 11.7's CORS header allow-list silently fell out of sync with the header introduced in feature 5). The composite holds two steps: `actions/setup-java@v4` (Temurin 21, Maven cache) and `run: ./init.sh` (with explicit `shell: bash`, required for composite `run:` steps). `deploy.yml` was refactored to call the composite for its prologue; the `Checkout` step and everything from `Configure AWS credentials (OIDC)` onwards (ECR build/tag/push, EC2 SSH, smoke test) are byte-identical to the pre-refactor version, so production deploy behaviour is preserved.
+
+The original plan locked a **three-step** composite that included `actions/checkout@v4` alongside the setup-java + init.sh steps. The implementer caught this as a blocker before writing any code: a *local* composite action (`uses: ./.github/actions/build`) cannot self-include checkout because the runner needs to read `action.yml` from the workspace BEFORE it can execute any step inside the composite — an empty workspace at that point means no `action.yml` and a hard failure. The canonical pattern in GitHub's docs has `actions/checkout@v4` in the calling workflow first, then `uses: ./.github/actions/...`. The leader updated the plan to a two-step composite + caller-does-checkout shape, the implementer resumed cleanly, and the blocker discovery was captured in the feature note's Gotchas section as a portfolio-grade learning artefact rather than a planning failure to hide.
+
+The architectural choice — composite action (B) vs. duplicate three steps (D) vs. reusable workflow (R, `workflow_call`) — was raised at planning time and decided by the user in favour of B. Composite is the idiomatic answer for shared step sequences; D risks the same drift that bit us in feature 11.7; R is overkill for step reuse (it was designed for job orchestration, with its own `runs-on` and runner pool). The trade-off is one indirection at read time (`uses: ./.github/actions/build` doesn't tell you what it does without opening the file), accepted in exchange for a single source of truth on Java version + verify invocation.
+
+README gained a CI status badge between the H1 and the tagline, using GitHub's canonical badge URL pointing at `ci.yml`. Branch protection (block merge on failed check) is configured via the GitHub web UI by the user — out of code scope, documented in the feature note. The first real CI run will happen on the next PR opened against `main`; the close is justified on the static validation done locally (YAML parses clean under `python3 yaml.safe_load`, structure/permissions/concurrency reviewed, `./init.sh` green locally — the exact command the workflow will run) plus the fact that `deploy.yml`'s post-prologue is unchanged, so production deploy is unaffected even if `ci.yml` has a defect we missed.
+
+Test counts unchanged: 181 (97 unit + 84 IT). No application code was touched. `actionlint` is not on the dev machine's PATH; manual YAML parsing via `python3 yaml.safe_load` confirmed all three files parse cleanly. GitHub's own parse-on-push validation remains as the fallback.
+
+**Files touched:**
+
+- `.github/actions/build/action.yml` (new; composite action with 2 steps — `setup-java@v4` Temurin 21 with Maven cache + `./init.sh` with `shell: bash`; top-of-file comment and `description:` field both document the checkout caveat for future readers)
+- `.github/workflows/ci.yml` (new; `pull_request → main` trigger, concurrency keyed by `github.event.pull_request.number` with `cancel-in-progress: true`, `permissions: contents: read` only, two-step job: checkout + composite)
+- `.github/workflows/deploy.yml` (modified; replaced `Set up Java 21` and `Run init.sh (compile + unit + integration tests)` with a single `Build and verify` step calling the composite; `Checkout` and everything from `Configure AWS credentials (OIDC)` onwards byte-identical)
+- `README.md` (modified; CI status badge inserted between the H1 and the tagline)
+- `notes/13-github-actions-ci.md` (new; full template coverage; Gotchas section captures the composite-action checkout caveat, the `shell:` requirement on composite `run:` steps, the `pull_request` merge-ref behaviour, and the missing `actionlint`; Decisions taken documents the B/D/R trade-off; "How this compares to what I know" includes the `sbt-github-actions` parallel)
+- `feature_list.json` (modified: `github-actions-ci.status` → `done`)
+- `progress/current.md` (replaced with session-closed note pointing to `readme-polish` as next)
+- `progress/history.md` (this entry)
+
+**Feature note:** `notes/13-github-actions-ci.md`.

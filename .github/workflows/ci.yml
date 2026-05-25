@@ -1,0 +1,37 @@
+# PR validation workflow for chess-backend.
+#
+# Triggers on every pull request targeting `main`. Runs the same ./init.sh
+# the deploy workflow runs, so a regression that would break main is caught
+# before the merge — not after deploy.yml starts pulling artifacts.
+#
+# Concurrency: keyed by PR number with cancel-in-progress: true. A new push
+# to the same PR cancels the in-flight check; only the latest commit's
+# verification is allowed to finish. (deploy.yml uses the opposite policy —
+# queue, do not drop — because partial deploys are worse than slow deploys.)
+#
+# Permissions: contents: read is the least-privilege default. No AWS access
+# is needed (this workflow does not push to ECR), so id-token: write stays off.
+
+name: CI
+
+"on":
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and verify
+        uses: ./.github/actions/build
