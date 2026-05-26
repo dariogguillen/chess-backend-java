@@ -24,7 +24,7 @@ import org.springframework.test.web.servlet.MockMvc;
  * faithful to production. The four cases cover:
  *
  * <ul>
- *   <li>preflight from the production GitHub Pages origin,
+ *   <li>preflight from the production Cloudflare Pages origin,
  *   <li>preflight from a dev localhost origin (matches the {@code http://localhost:*} pattern),
  *   <li>preflight from a disallowed origin — the drift canary that locks in the rejection behaviour
  *       so a future config edit cannot silently widen the surface,
@@ -37,22 +37,23 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureMockMvc
 class CorsConfigIT {
 
-  private static final String GITHUB_PAGES_ORIGIN = "https://dariogguillen.github.io";
+  private static final String CLOUDFLARE_PAGES_ORIGIN = "https://chess-frontend-52i.pages.dev";
   private static final String LOCALHOST_DEV_ORIGIN = "http://localhost:5173";
   private static final String DISALLOWED_ORIGIN = "https://evil.example";
 
   @Autowired private MockMvc mockMvc;
 
   @Test
-  void preflight_allowedOriginGithubPages_returnsCorsHeaders() throws Exception {
+  void preflight_allowedOriginCloudflarePages_returnsCorsHeaders() throws Exception {
     mockMvc
         .perform(
             options("/api/rooms")
-                .header(HttpHeaders.ORIGIN, GITHUB_PAGES_ORIGIN)
+                .header(HttpHeaders.ORIGIN, CLOUDFLARE_PAGES_ORIGIN)
                 .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
                 .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "Content-Type"))
         .andExpect(status().isOk())
-        .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, GITHUB_PAGES_ORIGIN))
+        .andExpect(
+            header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, CLOUDFLARE_PAGES_ORIGIN))
         .andExpect(
             header()
                 .string(HttpHeaders.ACCESS_CONTROL_ALLOW_METHODS, Matchers.containsString("POST")))
@@ -101,11 +102,12 @@ class CorsConfigIT {
     mockMvc
         .perform(
             options("/api/games/{gameId}/moves", UUID.randomUUID())
-                .header(HttpHeaders.ORIGIN, GITHUB_PAGES_ORIGIN)
+                .header(HttpHeaders.ORIGIN, CLOUDFLARE_PAGES_ORIGIN)
                 .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
                 .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "Content-Type, X-Player-Id"))
         .andExpect(status().isOk())
-        .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, GITHUB_PAGES_ORIGIN))
+        .andExpect(
+            header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, CLOUDFLARE_PAGES_ORIGIN))
         .andExpect(
             header()
                 .string(
@@ -118,10 +120,11 @@ class CorsConfigIT {
     mockMvc
         .perform(
             post("/api/rooms")
-                .header(HttpHeaders.ORIGIN, GITHUB_PAGES_ORIGIN)
+                .header(HttpHeaders.ORIGIN, CLOUDFLARE_PAGES_ORIGIN)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"displayName\":\"Alice\"}"))
         .andExpect(status().isCreated())
-        .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, GITHUB_PAGES_ORIGIN));
+        .andExpect(
+            header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, CLOUDFLARE_PAGES_ORIGIN));
   }
 }

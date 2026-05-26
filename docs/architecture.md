@@ -245,8 +245,8 @@ third origin (e.g. a Vercel preview deploy) needs to be allowed.
 The default list, embedded as the env-var default in
 `application.yml`:
 
-- `https://dariogguillen.github.io` — production frontend on GitHub
-  Pages.
+- `https://chess-frontend-52i.pages.dev` — production frontend on
+  Cloudflare Pages.
 - `http://localhost:*` — development frontend on any localhost
   port (5173 for Vite, 3000 for CRA, etc.).
 

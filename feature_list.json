@@ -353,5 +353,21 @@
       "Mermaid architecture diagram is rendered correctly on GitHub.",
       "Links to harness engineering files (CLAUDE.md, AGENTS.md) are present so reviewers can see the workflow."
     ]
+  },
+  {
+    "id": "cors-cloudflare-origin",
+    "title": "Switch frontend CORS origin to Cloudflare Pages",
+    "description": "The frontend migrated from GitHub Pages (https://dariogguillen.github.io) to Cloudflare Pages (https://chess-frontend-52i.pages.dev). The backend CORS allow-list, related tests, and docs need to swap origins. Pure config + docs change; no behavioural surface change beyond the allow-list itself. Reopens scope after the 2026-05-25 portfolio-closure milestone; precedent for treating a one-line CORS change as a full harness cycle was set by feature 11.7 (cors-x-player-id).",
+    "status": "done",
+    "priority": 15,
+    "acceptance": [
+      "application.yml default value for chess.cors.allowed-origin-patterns swaps https://dariogguillen.github.io for https://chess-frontend-52i.pages.dev; the localhost wildcard is kept.",
+      "CorsConfigIT GITHUB_PAGES_ORIGIN constant renamed to CLOUDFLARE_PAGES_ORIGIN with the new value; the three tests that use it (and the test-method name + class-JavaDoc bullet) are updated for consistency.",
+      "Drift canary preflight_disallowedOrigin_omitsCorsHeaders stays green — the policy stays restrictive.",
+      "docs/architecture.md CORS section updates the production-frontend bullet from GitHub Pages to Cloudflare Pages.",
+      "README.md Try-it-live frontend URL and description updated; the chess-frontend GitHub repo link (separate from the deploy URL) stays unchanged.",
+      "No stale 'dariogguillen.github.io' string survives anywhere in src/ or docs/ (excepting README.md's link to the GitHub repo itself, which is not a deploy URL).",
+      "./init.sh passes."
+    ]
   }
 ]

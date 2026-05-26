@@ -6,7 +6,7 @@ Multiplayer chess backend in Java/Spring Boot, deployed to AWS Free Tier. Server
 
 ## Try it live
 
-- **Frontend:** <https://dariogguillen.github.io/chess-frontend/> — React/Vite SPA on GitHub Pages.
+- **Frontend:** <https://chess-frontend-52i.pages.dev/> — React/Vite SPA on Cloudflare Pages.
 - **Backend health:** <https://chess-backend.duckdns.org/api/health> — liveness probe; returns 200 OK with status, version, timestamp.
 - **API docs (Swagger UI):** <https://chess-backend.duckdns.org/swagger-ui/index.html> — interactive REST surface.
 

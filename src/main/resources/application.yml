@@ -40,7 +40,7 @@ chess:
     # STOMP /ws handshake. Spring binds the comma-separated env-var string to List<String>
     # natively. Override in production without recompiling (e.g. to add a Vercel preview
     # origin) by setting CHESS_CORS_ALLOWED_ORIGIN_PATTERNS on the EC2 host.
-    allowed-origin-patterns: ${CHESS_CORS_ALLOWED_ORIGIN_PATTERNS:https://dariogguillen.github.io,http://localhost:*}
+    allowed-origin-patterns: ${CHESS_CORS_ALLOWED_ORIGIN_PATTERNS:https://chess-frontend-52i.pages.dev,http://localhost:*}
   disconnect:
     # How long the server waits after a player's STOMP DISCONNECT before mutating their game to
     # ABANDONED. A reconnect within this window cancels the timer. Accepts any Spring-relaxed

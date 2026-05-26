@@ -1998,3 +1998,40 @@ The four-option pitch/diagrams/harness/URLs decision tree was decided up front d
 22 features delivered. 0 in_progress. 0 pending. The plan is complete.
 
 The chess-backend-java repo is now a closed portfolio deliverable. The next session is no longer "pick the lowest-priority pending feature" — there are none. Future sessions are bug fixes, observed-in-production tweaks, dependency bumps, or out-of-scope items the user explicitly opens by adding a new entry to `feature_list.json`.
+
+---
+
+## 2026-05-25 — cors-cloudflare-origin (maintenance reopen)
+
+**Status:** done
+
+**Summary:** First feature shipped after the portfolio-closure milestone. The frontend migrated from GitHub Pages to Cloudflare Pages at `https://chess-frontend-52i.pages.dev`, so the backend's CORS allow-list and related tests/docs needed to swap the github.io origin for the new Cloudflare one. Added to `feature_list.json` as priority 15 with feature 11.7 (`cors-x-player-id`) as the precedent for treating a one-line CORS change as a full harness cycle. The decision tree (replace vs keep github.io; feature vs env-var-only vs informal PR) was settled with the user via AskUserQuestion before the plan was drafted: replace github.io entirely, full feature, full harness.
+
+The single-source-of-truth wiring from feature 10 paid off concretely: because REST (`CorsConfig`) and STOMP (`WebSocketConfig`) both read from one `CorsProperties` record, the migration was 1 line in `application.yml`, ~5 lines in `CorsConfigIT` (constant rename + value swap + test-method rename + JavaDoc bullet), 2 lines in `docs/architecture.md`, and 2 lines in `README.md`. No drift surface; no two-place edit possible by construction.
+
+The `GITHUB_PAGES_ORIGIN` constant in `CorsConfigIT` was renamed to `CLOUDFLARE_PAGES_ORIGIN` rather than kept with a new value. Keeping the old name would have lied to the next reader; the rename was trivial and the value of "names that describe what they hold" is cumulative. The two other tests that referenced the constant (the feature-11.7 X-Player-Id regression lock-in and the actual-POST flow test) inherited the new value transparently with no further edits.
+
+The drift canary `preflight_disallowedOrigin_omitsCorsHeaders` stayed intact and green — proving the new default did not accidentally widen the policy. The `evil.example` request is still rejected. `./init.sh` reports 181 tests green (97 unit + 84 IT), unchanged count because this is a value swap, not new behaviour.
+
+**Operator follow-up at deploy time:** after the next push to `main` triggers `deploy.yml`, the user should SSH to EC2 and run `cat /opt/chess/.env | grep CHESS_CORS`. If the env var override is set and still points at github.io, remove or update it; if not set, the new YAML default takes effect automatically.
+
+**Cross-repo:** none required. The frontend already moved; this feature catches the backend up.
+
+**Files touched:**
+
+- `src/main/resources/application.yml` (modified; line 43 default value swap from github.io to Cloudflare)
+- `src/test/java/io/github/dariogguillen/chess/config/CorsConfigIT.java` (modified; constant rename `GITHUB_PAGES_ORIGIN` → `CLOUDFLARE_PAGES_ORIGIN`, test method rename `preflight_allowedOriginGithubPages_*` → `preflight_allowedOriginCloudflarePages_*`, class JavaDoc bullet updated, 2 inherited call sites updated automatically; drift canary `preflight_disallowedOrigin_omitsCorsHeaders` untouched)
+- `docs/architecture.md` (modified; line 248 bullet "production frontend on GitHub Pages" → "Cloudflare Pages")
+- `README.md` (modified; line 9 "Try it live" Frontend URL + description swapped; README:101 source-repo link `github.com/dariogguillen/chess-frontend` deliberately untouched — it's a code-repo URL, not a deploy URL)
+- `notes/15-cors-cloudflare-origin.md` (new; follows `_template.md`; gotchas captures the EC2 `/opt/chess/.env` operator follow-up and the feature-11.7 precedent for treating a one-line CORS change as a full harness cycle; "How this compares to what I know" includes the `pureconfig` Scala parallel)
+- `feature_list.json` (modified; new entry inserted at priority 15, then flipped to `done`)
+- `progress/current.md` (replaced with maintenance-mode session-closed note)
+- `progress/history.md` (this entry)
+
+**Feature note:** `notes/15-cors-cloudflare-origin.md`.
+
+---
+
+## Maintenance-mode counts as of 2026-05-25 (after feature 15)
+
+23 features delivered. 0 in_progress. 0 pending. The portfolio remains a closed deliverable; feature 15 was a maintenance reopen via a new entry, not a plan extension. The pattern for the future: any change worth doing in this repo earns its own `feature_list.json` entry and walks the full leader/implementer/reviewer cycle, however small the diff.
