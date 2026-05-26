@@ -1,0 +1,33 @@
+# Composite action: set up Java 21 Temurin + Maven cache, then run ./init.sh.
+#
+# Shared by .github/workflows/ci.yml (PR validation) and
+# .github/workflows/deploy.yml (push to main). Centralising the Java setup +
+# verify invocation here keeps the two workflows from drifting on JDK version,
+# distribution, cache key, or init.sh arguments — see notes/13-github-actions-ci.md.
+#
+# Checkout caveat: a local composite action (`uses: ./.github/actions/build`)
+# requires the calling workflow to have already checked out the repository.
+# The runner cannot read this action.yml from an empty workspace, so
+# `actions/checkout@v4` MUST be the first step of every caller — it cannot
+# live inside this composite. The two existing callers do exactly that.
+
+name: "Build and verify"
+description: >-
+  Set up Java 21 Temurin with a Maven dependency cache, then run ./init.sh
+  (compile + unit + integration tests).
+  IMPORTANT: callers must run actions/checkout@v4 BEFORE this action — a local
+  composite action cannot self-checkout the repository it lives in.
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Java 21
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '21'
+        cache: maven
+
+    - name: Run init.sh (compile + unit + integration tests)
+      run: ./init.sh
+      shell: bash
