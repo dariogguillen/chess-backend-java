@@ -369,5 +369,102 @@
       "No stale 'dariogguillen.github.io' string survives anywhere in src/ or docs/ (excepting README.md's link to the GitHub repo itself, which is not a deploy URL).",
       "./init.sh passes."
     ]
+  },
+  {
+    "id": "auth-core",
+    "title": "Authentication foundation (User entity, Spring Security base, JWT validation, /api/me)",
+    "description": "First feature of the auth bundle (16–20). Introduces the User aggregate (uuid id, unique email, displayName, nullable passwordHash, nullable googleSub, createdAt), Flyway migration V2 for the users table, and two nullable FK columns on the existing games table (white_user_id, black_user_id) so future features can link authenticated users to their games on a fresh-start basis. NO intermediate players table — V1 explicitly denormalises player data onto games, and adding user FKs alongside the existing player snapshots is the cleanest fit with that shape. Also: Spring Security base config with a stateless filter chain that validates incoming JWTs (HS256, secret from env), and a single new endpoint GET /api/me that returns the authenticated user or 401. JWT issuance is NOT in scope (feature 17 owns it); this feature only adds the validator side so /api/me can be tested with a pre-generated token. The anonymous guest flow (POST /api/games, GET /api/games/{id}, STOMP /ws) stays open. CORS configuration is unchanged this feature (allowCredentials stays false; the Authorization header is already on the allow-list since feature 11.7's X-Player-Id work, but a new IT will lock the Bearer-header path).",
+    "status": "done",
+    "priority": 16,
+    "acceptance": [
+      "New domain User record/entity at io.github.dariogguillen.chess.domain.User with fields: UUID id, String email (unique), String displayName, String passwordHash (nullable), String googleSub (nullable), Instant createdAt.",
+      "New persistence UserRepository (Spring Data JPA) at io.github.dariogguillen.chess.persistence.UserRepository.",
+      "Flyway migration V2__create_users_and_game_user_links.sql creates the users table (id UUID PK; email TEXT NOT NULL UNIQUE; display_name TEXT NOT NULL; password_hash TEXT NULL; google_sub TEXT NULL; created_at TIMESTAMPTZ NOT NULL) with a partial unique index on google_sub WHERE google_sub IS NOT NULL. The same migration also alters the existing games table to add two nullable FK columns — white_user_id UUID NULL REFERENCES users(id) and black_user_id UUID NULL REFERENCES users(id) — each with a partial index WHERE the column IS NOT NULL. The migration does NOT create a players table; this is a deliberate departure from the first implementation pass — see progress/current.md bundle decision 6 for rationale.",
+      "New config SecurityConfig at io.github.dariogguillen.chess.config.SecurityConfig: stateless filter chain, BCryptPasswordEncoder bean, custom JwtAuthenticationFilter that reads Authorization: Bearer <token>, validates HS256 against auth.jwt.secret, loads the User by sub claim, and sets the SecurityContext.",
+      "Anonymous allow-list: POST /api/games, GET /api/games/{id}, /api/games/{id}/moves, /actuator/health, /v3/api-docs/**, /swagger-ui/**, /ws/**, OPTIONS * — all stay reachable without auth.",
+      "AuthProperties (@ConfigurationProperties prefix=auth.jwt) with fields: secret, expirySeconds (default 604800 = 7 days). Secret read from AUTH_JWT_SECRET env var with no default in prod yaml; test profile provides a fixed secret.",
+      "New web controller MeController at io.github.dariogguillen.chess.web.auth.MeController with GET /api/me returning 200 + MeResponse(id, email, displayName) when authenticated, 401 otherwise.",
+      "Integration test AuthCoreIT covers: (a) /api/me without Authorization header returns 401; (b) /api/me with a valid pre-generated JWT returns 200 with the expected user payload; (c) /api/me with an expired JWT returns 401; (d) /api/me with a malformed token returns 401.",
+      "Smoke IT or existing GameIT extension confirms anonymous game-create flow still returns 201 without any Authorization header.",
+      "docs/architecture.md gains an 'Authentication' section describing the User aggregate, stateless JWT model, fresh-start identity linking decision, and the bundle scope.",
+      "README.md NOT updated this feature — public API still anonymous-only until feature 17 lands the issuance endpoints. Reviewer confirms README claim is unchanged.",
+      "Feature note notes/16-auth-core.md follows _template.md with cross-ecosystem comparisons (Scala Typelevel parallels: pac4j / tsec / http4s middleware; jjwt-java vs the Scala equivalents).",
+      "./init.sh passes; test counts grow by the AuthCoreIT cases."
+    ]
+  },
+  {
+    "id": "auth-jwt",
+    "title": "Email/password registration + login → JWT issuance",
+    "description": "Second feature of the auth bundle. Adds POST /api/auth/register and POST /api/auth/login. Register validates email format + password strength (Jakarta Validation), creates a User with BCrypt password hash, and returns 201 with a fresh JWT. Login validates credentials and returns 200 with a JWT. Errors: 409 email taken, 400 validation, 401 bad credentials. The JWT shape (claims: sub=user.id, email, exp, iat) is locked here for the rest of the bundle.",
+    "status": "in_progress",
+    "priority": 17,
+    "acceptance": [
+      "POST /api/auth/register accepts {email, password, displayName}, creates the User (BCrypt-hashed password), returns 201 + {token, user: {id, email, displayName}}.",
+      "POST /api/auth/login accepts {email, password}, returns 200 + {token, user} on success, 401 on bad credentials.",
+      "Validation errors return 400 with a structured error body matching the project's existing error format.",
+      "Duplicate email on register returns 409.",
+      "AuthService at io.github.dariogguillen.chess.service.auth.AuthService owns user creation, password verification, and JWT issuance via a new JwtIssuer service.",
+      "JwtIssuer/JwtVerifier symmetry: token issued in /api/auth/login is accepted by the JwtAuthenticationFilter from feature 16, and a subsequent GET /api/me with that token returns the same user.",
+      "Integration tests cover: register→login→/api/me round-trip, dup-email 409, bad-password 401, weak-password 400, malformed-email 400.",
+      "Feature note notes/17-auth-jwt.md.",
+      "README.md adds an 'Authentication (optional)' subsection in the API section pointing at the new endpoints; the Swagger UI is the canonical spec.",
+      "docs/architecture.md API-contract section gains the new endpoints with their request/response shapes.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "auth-google-oauth",
+    "title": "Google OAuth 2.0 sign-in → JWT redirect to frontend",
+    "description": "Third feature of the auth bundle. Adds Spring Security OAuth2 client config with Google as the provider. On successful Google callback, the backend looks up the User by googleSub (or creates a new one with email + displayName lifted from the OAuth2User profile), then redirects the browser to https://chess-frontend-52i.pages.dev/auth/callback#token=<jwt> using the same JWT shape as feature 17. The frontend reads the fragment, stores the token, and clears it from the URL via history.replaceState (frontend work is out of this repo). Spring Security's default endpoints /oauth2/authorization/google and /login/oauth2/code/google are kept.",
+    "status": "pending",
+    "priority": 18,
+    "acceptance": [
+      "OAuth2 client config in SecurityConfig (or a dedicated OAuth2ClientConfig) registers Google with client-id/client-secret read from GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET env vars (no defaults in prod yaml).",
+      "Custom AuthenticationSuccessHandler at io.github.dariogguillen.chess.config.OAuth2SuccessHandler: finds-or-creates the User by googleSub, issues a JWT via JwtIssuer (from feature 17), and redirects to the configured frontend callback URL with the token in the URL fragment.",
+      "auth.oauth.frontend-redirect-base property (env-overridable) holds the frontend's callback URL prefix; default is the Cloudflare Pages URL in prod, http://localhost:5173 in dev/test profiles.",
+      "CORS update: allowCredentials stays false because OAuth callback uses a top-level browser redirect (no XHR), so no CORS update is needed. Reviewer confirms.",
+      "Integration test OAuth2SuccessIT: stubs an OAuth2User in the SecurityContext (or uses Spring Security's testing support) and verifies the success handler creates the User and emits the redirect with the JWT fragment.",
+      "Integration test confirms /api/me works with the JWT minted by the OAuth flow (round-trip parity with feature 17's JWT).",
+      "Feature note notes/18-auth-google-oauth.md with the Google Cloud Console setup steps documented under 'Operator follow-ups' (creating the OAuth client, configuring the redirect URI).",
+      "docs/architecture.md Authentication section gains the OAuth flow diagram (Mermaid sequenceDiagram).",
+      "README.md mentions Google sign-in as an option.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "auth-my-games",
+    "title": "Protected GET /api/me/games — list authenticated user's own games (paginated)",
+    "description": "Fourth feature of the auth bundle. Adds GET /api/me/games (requires Bearer JWT) that returns the authenticated user's games, paginated. The Game flow is extended: when a Game is created via POST /api/games AND the request is authenticated, the active-state Player on the corresponding side carries the user id, and at archive time the games row gets white_user_id and/or black_user_id populated; when the request is anonymous (no Authorization header), both columns stay null and the existing X-Player-Id flow continues unchanged. Query is a direct filter on games (no join through an intermediate players table — see feature 16 for the data-model decision). This wires up the actual product benefit the user stated: 'con una cuenta se pueden revisar las partidas jugadas'.",
+    "status": "pending",
+    "priority": 19,
+    "acceptance": [
+      "GET /api/me/games?page={p}&size={s} requires authentication; without Bearer JWT returns 401.",
+      "Default pagination size 20, max 100. Response includes total count and page metadata.",
+      "Game creation flow: GameService.createGame is extended to accept an optional currentUserId; if present, the active-state Player on the corresponding side carries the user id, and the archive path writes it to games.white_user_id or games.black_user_id (whichever side maps to the authenticated user).",
+      "Anonymous flow regression: existing POST /api/games without Authorization still works and produces games rows with white_user_id = black_user_id = NULL. Existing IT must stay green.",
+      "Integration test MyGamesIT covers: (a) 401 without auth; (b) authenticated user sees only their own games; (c) games created anonymously are NOT visible to any authenticated user (fresh-start identity model confirmed); (d) pagination boundaries.",
+      "MyGamesQuery service or a JPA query method on GameRepository runs the direct filter `WHERE white_user_id = :userId OR black_user_id = :userId ORDER BY ended_at DESC` and projects only the fields needed for the list response (id, opponent display name as denormalised on games, status, result, ended_at).",
+      "Feature note notes/19-auth-my-games.md.",
+      "README.md API section documents the new endpoint.",
+      "docs/architecture.md API-contract section adds the endpoint.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "auth-stomp-trust",
+    "title": "WebSocket auth — JWT-validated STOMP CONNECT + ChannelInterceptor identity check",
+    "description": "Fifth and final feature of the auth bundle. Closes the gap left after features 16–19: REST is auth-aware, but the WebSocket / STOMP surface still trusts whatever playerId or X-Player-Id the client sends. This feature adds a STOMP ChannelInterceptor that (a) on CONNECT, reads the Authorization header from the native STOMP headers and, if present, validates the JWT against the same JwtVerifier used by REST; (b) on SEND/SUBSCRIBE, verifies that the playerId in the frame corresponds to either the authenticated user's player rows OR a matching X-Player-Id anonymous session. Anonymous WebSocket use is preserved for guest play, but identity spoofing is blocked.",
+    "status": "pending",
+    "priority": 20,
+    "acceptance": [
+      "WebSocketConfig registers a ChannelInterceptor at io.github.dariogguillen.chess.websocket.StompAuthInterceptor.",
+      "On STOMP CONNECT: if Authorization header is present and valid, the session is tagged with the user id; if absent, the session is anonymous (current behaviour preserved).",
+      "On STOMP SEND/SUBSCRIBE that carries a playerId: the interceptor verifies the playerId belongs to either (a) the authenticated user's known Player rows, or (b) the anonymous session's known X-Player-Id (whichever was used to create the player). Mismatch returns an ERROR frame and disconnects.",
+      "Integration test StompAuthIT covers: (a) STOMP connect+subscribe+send anonymous still works (regression); (b) STOMP connect with valid JWT works and the session is identified; (c) STOMP connect with invalid/expired JWT works but session stays anonymous (does NOT reject the connection — only blocks identity spoofing); (d) SEND from an authenticated session with a playerId that belongs to a different user returns an ERROR; (e) SEND from an anonymous session with a playerId not matching X-Player-Id returns an ERROR.",
+      "Feature note notes/20-auth-stomp-trust.md with explicit cross-ecosystem comparison (the http4s+fs2 WebSocket auth idiom).",
+      "docs/architecture.md WebSocket section documents the trust model.",
+      "README.md WebSocket subsection mentions the JWT auth option.",
+      "./init.sh passes."
+    ]
   }
 ]

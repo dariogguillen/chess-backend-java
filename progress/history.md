@@ -2035,3 +2035,50 @@ The drift canary `preflight_disallowedOrigin_omitsCorsHeaders` stayed intact and
 ## Maintenance-mode counts as of 2026-05-25 (after feature 15)
 
 23 features delivered. 0 in_progress. 0 pending. The portfolio remains a closed deliverable; feature 15 was a maintenance reopen via a new entry, not a plan extension. The pattern for the future: any change worth doing in this repo earns its own `feature_list.json` entry and walks the full leader/implementer/reviewer cycle, however small the diff.
+
+---
+
+## 2026-05-27 — auth-core (feature 16, first of the auth bundle)
+
+**Status:** done.
+
+**Summary:** First feature of the post-portfolio-closure auth bundle (16–20). Lands the entire foundation for optional authentication without yet exposing any user-facing auth flow. The user's stated goal: *"seria opcional, se puede seguir juegando sin cuenta, pero con una cuenta se pueden revisar las partidas jugadas por ejemplo"*. Feature 16's contribution is the data model, the Spring Security wiring, and the JWT validator side; feature 17 lands issuance, feature 18 lands OAuth, feature 19 lands `/api/me/games`, feature 20 lands STOMP trust.
+
+The bundle as a whole was planned upfront with five locked decisions (token transport = JWT in `Authorization: Bearer`, OAuth callback = redirect to frontend with JWT in URL fragment, identity linking = fresh start, CORS `allowCredentials` stays false, anonymous STOMP keeps working). Those decisions live in `progress/current.md` and are copy-forwarded into each subsequent feature's plan so reviewers cross-reference one source.
+
+Two-cycle close. The first cycle delivered the spec verbatim, but a leader/user review of the data model surfaced an alternative design that better matched the repo's existing shape. V1's `games` table is deliberately denormalised — `white_player_id` + `white_display_name` + `black_player_id` + `black_display_name` — precisely because adding a `players` row would duplicate the UUID + display name with no extra attached data. The first cycle had created exactly such a `players` table, prepared as a bridge to a future "users → players → games via JOIN" query path. The second cycle replaced it: V2 now creates `users` and adds two nullable FK columns directly on `games` — `white_user_id` and `black_user_id`, each with a partial index `WHERE *_user_id IS NOT NULL`. Feature 19's `GET /api/me/games` query becomes a direct filter on `games` with no join through an intermediate table. The historical `games.{white,black}_player_id` columns remain as audit-time identity snapshots (unconstrained UUIDs, no FK), preserving snapshot semantics: a future rename of `User.display_name` will not rewrite the audit row. The cycle-1 mistake is captured as a portfolio-grade Gotchas entry in the feature note ("comments that foreshadow future migrations are hints, not blueprints").
+
+Spring Security wiring follows the Spring 6 idiom — `SecurityFilterChain` bean (no deprecated `WebSecurityConfigurerAdapter`), stateless `SessionCreationPolicy`, CSRF disabled (safe for header-based JWT), CORS delegates to the existing `CorsConfig`, lambda-style `HttpSecurity` DSL. A custom `JwtAuthenticationFilter` (`OncePerRequestFilter`) reads `Authorization: Bearer <token>`, verifies the HS256 signature via a dedicated `JwtVerifier` wrapping jjwt, loads the `User` by `sub` claim, and sets the `SecurityContext`. All failures are tolerant — the chain continues anonymous and the authorization rules decide whether to 401. The anonymous allow-list explicitly keeps `POST /api/games`, `GET /api/games/{id}`, `/api/games/{id}/moves`, `/actuator/health`, `/v3/api-docs/**`, `/swagger-ui/**`, `/ws/**`, and OPTIONS preflight open for guest play; only `/api/me` (the single new endpoint this feature) is `authenticated()`.
+
+The 401 response shape was settled in cycle 2 alongside the data-model change: `HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)` writes an empty body, and `MeController.@ApiResponse(401)` declares `content = @Content` (empty) so the OpenAPI spec matches the runtime. Adding a structured `AUTHENTICATION_REQUIRED` code to the `ErrorResponse` allow-list is deferred to feature 17 where the issuance endpoints introduce other auth-domain error codes (`EMAIL_ALREADY_TAKEN`, `INVALID_CREDENTIALS`) and the change fits naturally.
+
+`AuthProperties` (`@ConfigurationProperties("auth.jwt")`) binds the secret + expiry from env vars with compact-constructor invariants (secret ≥ 32 bytes for HS256, expiry > 0). Prod has no default for `auth.jwt.secret` — boot fails fast at `BeanCreationException` if `AUTH_JWT_SECRET` is missing. The test profile (`src/test/resources/application-test.yml`) provides a fixed 64-byte secret activated via Surefire + Failsafe `systemPropertyVariables` in `pom.xml`, so every existing IT picks up the test profile without per-class `@ActiveProfiles`.
+
+Test count: 187 (97 unit + 90 IT). Delta +6: `AuthCoreIT` covers missing-header / valid / expired / malformed / wrong-signature on `/api/me`; `BearerCorsIT` pins that a preflight including `Authorization` echoes it in `Access-Control-Allow-Headers`. The 181 existing tests stay green without modification — the implementer confirmed the anonymous game-create / room / WebSocket flows are untouched. `Authorization` was added to `CorsProperties.allowed-headers` (the existing list already had `Content-Type, Accept, X-Player-Id` from feature 11.7).
+
+**Cross-repo:** none required this feature. `/api/me` is unreachable without a JWT and JWT issuance lands in feature 17; the frontend's auth work begins coordinated against that feature, not this one.
+
+**Files touched:**
+
+- `pom.xml` (modified; adds `spring-boot-starter-security` + jjwt-api/impl/jackson 0.12.6 with inline POM justification comments; Surefire+Failsafe `systemPropertyVariables` activate `spring.profiles.active=test` so every IT picks up `src/test/resources/application-test.yml`)
+- `src/main/resources/application.yml` (modified; `auth.jwt.secret: ${AUTH_JWT_SECRET:}` fail-fast prod default; `auth.jwt.expiry-seconds: 604800`)
+- `src/main/resources/db/migration/V2__create_users_and_game_user_links.sql` (new in cycle 2, replacing the cycle-1 `V2__create_users_and_player_user_link.sql` which was deleted from disk before any commit; creates `users` table — UUID PK, email VARCHAR(254) NOT NULL UNIQUE per RFC 5321, display_name VARCHAR(100), password_hash VARCHAR(60) per BCrypt, google_sub VARCHAR(255) per Google `sub` upper bound, created_at TIMESTAMPTZ NOT NULL DEFAULT now() — partial unique index on `google_sub WHERE google_sub IS NOT NULL`, and adds two nullable FK columns to `games`: `white_user_id` and `black_user_id` each with a partial index `WHERE *_user_id IS NOT NULL`)
+- `src/main/java/io/github/dariogguillen/chess/domain/User.java` (new; JPA entity with column-length annotations matching the migration caps; mutable on purpose with package-private setters; never returned through a controller)
+- `src/main/java/io/github/dariogguillen/chess/persistence/UserRepository.java` (new; `JpaRepository<User, UUID>` with `findByEmail` and `findByGoogleSub`)
+- `src/main/java/io/github/dariogguillen/chess/config/AuthProperties.java` (new; `@ConfigurationProperties("auth.jwt")` record with compact-constructor invariants)
+- `src/main/java/io/github/dariogguillen/chess/config/SecurityConfig.java` (new; `SecurityFilterChain` bean, stateless, CSRF off, anonymous allow-list, `HttpStatusEntryPoint(401)`, `BCryptPasswordEncoder` bean)
+- `src/main/java/io/github/dariogguillen/chess/config/security/JwtVerifier.java` (new; jjwt wrapper holding the HS256 `SecretKey`)
+- `src/main/java/io/github/dariogguillen/chess/config/security/JwtAuthenticationFilter.java` (new; `OncePerRequestFilter`, tolerant of all failures, leaves chain anonymous on bad/missing token)
+- `src/main/java/io/github/dariogguillen/chess/web/auth/MeController.java` (new; `GET /api/me` with springdoc annotations; cycle 2 changed the 401 `@ApiResponse` to declare `content = @Content` empty so the spec matches the runtime)
+- `src/main/java/io/github/dariogguillen/chess/web/auth/MeResponse.java` (new; DTO record)
+- `src/main/java/io/github/dariogguillen/chess/config/CorsConfig.java` (modified; adds `Authorization` to `allowedHeaders`)
+- `src/test/resources/application-test.yml` (new; fixed 64-byte HS256 test secret)
+- `src/test/java/io/github/dariogguillen/chess/config/security/AuthCoreIT.java` (new; 5 cases — missing-header, valid JWT, expired, malformed, wrong-signature)
+- `src/test/java/io/github/dariogguillen/chess/config/BearerCorsIT.java` (new; preflight pin for `Authorization`)
+- `docs/architecture.md` (modified; new "Authentication" section between API contract and CORS, documents the bundle scope, User aggregate, JWT model, fresh-start identity, two-FK-on-games design, and audit-snapshot retention of `games.{white,black}_player_id`; cycle 2 rewrote this section)
+- `notes/16-auth-core.md` (new; follows `_template.md`; Decisions taken describes the cycle-2 data-model resolution, the `HttpStatusEntryPoint` vs custom entry point decision, Surefire profile activation; Gotchas captures the cycle-1 mistake as a portfolio-grade design lesson; "How this compares to what I know" covers tsec / http4s middleware / pureconfig / jjwt parallels)
+- `feature_list.json` (new entries 16–20 added for the auth bundle; `auth-core` flipped to done after user OK)
+- `progress/current.md` (rewritten with the bundle plan + feature-16 detail; will be rewritten again with feature-17 detail at this entry's close)
+- `progress/history.md` (this entry)
+
+**Feature note:** `notes/16-auth-core.md`.

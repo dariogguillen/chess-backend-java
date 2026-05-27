@@ -48,6 +48,22 @@ chess:
     # @TestPropertySource so the timer fires in well under a second).
     grace-period: ${CHESS_DISCONNECT_GRACE_PERIOD:60s}
 
+auth:
+  jwt:
+    # HS256 shared secret. No default — feature 16's plan documents the fail-fast posture: a
+    # production deploy without AUTH_JWT_SECRET set causes the AuthProperties compact constructor
+    # to throw at bean-binding time, which is the desired behaviour (silent default secrets are
+    # an auth footgun). The test profile (src/test/resources/application-test.yml) provides a
+    # long-enough fixed secret so Testcontainers ITs can mint and verify tokens without touching
+    # the environment; pom.xml's surefire+failsafe configs activate that profile for tests.
+    secret: ${AUTH_JWT_SECRET:}
+    # ^ The trailing ':' yields the empty string when the env var is unset; AuthProperties'
+    #   compact constructor rejects empty / short secrets and surfaces a clear BeanCreationException
+    #   on startup.
+    # Token lifetime in seconds. 604800 = 7 days, the user-confirmed lifetime from the bundle-
+    # level decisions in progress/current.md.
+    expiry-seconds: ${AUTH_JWT_EXPIRY_SECONDS:604800}
+
 server:
   # Honor X-Forwarded-* headers (Proto, Host, For) when the app sits behind a
   # reverse proxy. Caddy in production sends X-Forwarded-Proto: https by default;

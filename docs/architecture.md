@@ -228,6 +228,154 @@ GET /api/rooms/{id}
 - **No path-level auth** — the room id is the shared secret, same
   posture as the rest of the API.
 
+## Authentication
+
+Feature 16 (`auth-core`) lands the foundation of the auth bundle
+(features 16-20). This section records the bundle-level shape and the
+state after feature 16 ships. Subsequent features in the bundle
+(issuance, OAuth, "my games", STOMP trust) layer on top without
+revisiting these decisions.
+
+**Bundle scope.** Authentication is **optional**. Guest play stays
+open on every existing surface — `POST /api/rooms`, `POST
+/api/rooms/{id}/join`, `GET /api/rooms/{id}`, `POST /api/games`, `GET
+/api/games/{id}`, `POST /api/games/{id}/moves`, `GET
+/api/players/{id}/games`, and the STOMP `/ws` handshake all stay
+anonymous. An account unlocks "review my past games" (feature 19) and
+is the foundation for future per-user features. Confirmed with the
+user 2026-05-27: *"seria opcional, se puede seguir jugando sin cuenta,
+pero con una cuenta se pueden revisar las partidas jugadas"*.
+
+### The `User` aggregate
+
+A `User` represents an account: email, display name, and either a
+BCrypt password hash (feature 17) or a Google `sub` claim (feature
+18) — both nullable independently because the two registration paths
+produce different shapes. Mapped to the `users` table created by
+`V2__create_users_and_game_user_links.sql`. The `email` column has a
+DB-level `UNIQUE` constraint; application code normalises to
+lowercase before write so case-insensitive uniqueness is enforced at
+the application boundary without Postgres CITEXT. The `google_sub`
+column has a partial unique index `WHERE google_sub IS NOT NULL` so
+the index ignores email-only users. Column caps are derived from the
+relevant standards: `email` is `VARCHAR(254)` (RFC 5321 path max),
+`password_hash` is `VARCHAR(60)` (BCrypt's fixed-length output),
+`google_sub` is `VARCHAR(255)` (Google's documented `sub` upper
+bound), `display_name` is `VARCHAR(100)` to match
+`games.{white,black}_display_name`.
+
+`User` is a JPA entity in the `domain` package, not a record. JPA
+requires a no-args constructor and writable fields; records satisfy
+neither. Mutability is contained: setters are package-private, so
+only the `domain` and `persistence` packages can mutate an instance.
+
+### Fresh-start identity model
+
+`User.id` is the new canonical identity for authenticated users.
+The link between a `User` and the games they played lives as **two
+nullable FK columns directly on the `games` table** —
+`white_user_id` and `black_user_id`, each `UUID NULL REFERENCES
+users(id)`. There is no intermediate `players` table. This mirrors
+V1's deliberate denormalisation
+(`white_player_id` + `white_display_name`, same on the black side):
+adding a `players` row would only duplicate the (UUID + display
+name) snapshot and force a join on every history query — exactly
+the shape V1 was designed to avoid.
+
+The historical `games.white_player_id` / `games.black_player_id`
+columns are kept **unchanged and without a FK to users(id)**. They
+are the audit-time identity snapshot — the per-session player UUID
+minted by `RoomService` when a guest creates or joins a room — and
+they remain unconstrained UUIDs. Even when an authenticated user
+plays a game, their `*_player_id` is the per-session identity,
+independent of `users.id` by design. The display name surfaces
+(`games.{white,black}_display_name`) similarly stay frozen as the
+audit-correct name at game time, never rewritten by a future user
+rename: same shape as Lichess game records and GitHub commit author
+names.
+
+Three rules govern the fresh-start model:
+
+1. Anonymous games created before feature 17 ships stay anonymous
+   forever — `white_user_id` and `black_user_id` are NULL and no
+   backfill is ever attempted.
+2. Anonymous games created during features 16-18 also stay
+   anonymous: feature 16 doesn't issue tokens, and features 17-18
+   issue tokens but feature 19 is the one that wires
+   authenticated game creation.
+3. Starting in feature 19, authenticated `POST /api/games` writes
+   the matching `white_user_id` or `black_user_id` so the user's
+   history query (`GET /api/me/games`) can find them via a direct
+   `WHERE white_user_id = :userId OR black_user_id = :userId`.
+
+Account linking ("I had a guest game last week, claim it to my new
+account") is **explicitly out of scope** for the whole bundle.
+
+### JWT model
+
+- **Algorithm:** HS256 with a shared secret read from
+  `AUTH_JWT_SECRET`. Symmetric is fine because issuer = verifier
+  (same backend). Production fails fast at boot if the env var is
+  unset; the test profile provides a fixed test secret in
+  `src/test/resources/application-test.yml`.
+- **Lifetime:** 7 days (`auth.jwt.expiry-seconds = 604800`). No
+  refresh tokens, no revocation list — a 7-day blast radius is
+  the portfolio-scale trade-off.
+- **Claims:** `sub = User.id` (UUID string), `email`, `iat`, `exp`.
+  No roles or authorities — the only role today is "authenticated
+  user".
+- **Transport:** `Authorization: Bearer <token>` on every
+  request. Stateless: no session cookies, no `HttpSession`. CSRF
+  protection is safely disabled because the credential is a
+  script-set header, not a browser-attached cookie.
+- **CORS:** `allowCredentials` stays `false` (cookies were never
+  in play); the `Authorization` header is on the REST CORS
+  allow-list (added by this feature alongside `X-Player-Id` from
+  feature 11.7).
+
+### Spring Security wiring
+
+The `SecurityConfig` bean configures a `SecurityFilterChain` in the
+Spring Security 6+ idiom — no deprecated
+`WebSecurityConfigurerAdapter`. Key elements:
+
+- `SessionCreationPolicy.STATELESS` — no `HttpSession` created or
+  read.
+- `JwtAuthenticationFilter` inserted before
+  `UsernamePasswordAuthenticationFilter` — the canonical hook
+  point recommended by the Spring Security reference for custom
+  token filters.
+- Anonymous allow-list pinned in code: the live guest play
+  surface, the operational endpoints (`/api/health`,
+  `/actuator/**`, `/v3/api-docs/**`, `/swagger-ui/**`), the STOMP
+  handshake (`/ws/**`), and every `OPTIONS *` preflight.
+  Everything else requires auth — today that means `GET /api/me`,
+  the only authenticated route until feature 17 lands issuance.
+- `HttpStatusEntryPoint(401)` — unauthenticated requests to
+  protected endpoints return `401 Unauthorized`, not `403`. The
+  body is empty by design at this stage; feature 17 may wrap the
+  response in `ErrorResponse` if needed.
+- `BCryptPasswordEncoder` bean exposed now — unused this feature
+  but pre-wired so feature 17's `AuthService` can inject it as a
+  pure-additive change.
+
+### `GET /api/me`
+
+The single authenticated endpoint today. Returns 200 with `{ id,
+email, displayName }` on a valid JWT; returns 401 on a missing,
+malformed, expired, or differently-signed JWT. Used as the frontend's
+"is my stored token still valid?" probe and as the regression-locking
+surface for the auth filter chain.
+
+### What's not in this feature
+
+- **JWT issuance** — feature 17 (`auth-jwt`).
+- **Google OAuth** — feature 18 (`auth-google-oauth`).
+- **Per-user game history** — feature 19 (`auth-my-games`).
+- **STOMP identity verification** — feature 20 (`auth-stomp-trust`).
+- **Refresh tokens, password reset, email verification, 2FA,
+  account linking** — out of scope for the whole bundle.
+
 ## CORS
 
 Both the REST surface (`/api/**`) and the STOMP handshake (`/ws`)
@@ -824,9 +972,12 @@ already finished.
   shape as Lichess game records, GitHub commit author names, Steam
   friend graph history): a future rename must not retroactively
   rewrite past games. Denormalising both fields onto `games` is
-  the right call for both reasons. When auth lands,
-  `V2__create_players.sql` extracts distinct UUIDs into a new table
-  with `kind='HISTORICAL_GUEST'` and adds the FK.
+  the right call for both reasons. When auth landed in feature 16,
+  the User-to-Game link was added as two nullable FK columns
+  directly on `games` (`white_user_id`, `black_user_id`) rather
+  than an intermediate `players` table — preserving the same
+  denormalised shape V1 codified. See the "Authentication" section
+  above for the full rationale.
 - **No Postgres ENUM type for `status` / `promotion`.** `VARCHAR`
   with JPA's `@Enumerated(STRING)` enforces the alphabet on the
   only writer of the DB. A Postgres ENUM would require a one-way

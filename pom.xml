@@ -66,6 +66,40 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-websocket</artifactId>
 		</dependency>
+		<!--
+			Spring Security (feature 16 — auth-core). Pulls in spring-security-config and
+			spring-security-web transitively so SecurityFilterChain + HttpSecurity DSL +
+			OncePerRequestFilter + BCryptPasswordEncoder are on the classpath. No Spring
+			Boot version bump — the starter aligns to the parent (3.5.x).
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-security</artifactId>
+		</dependency>
+		<!--
+			jjwt (feature 16 — auth-core). The de-facto JWT library for Java. Split into
+			three artifacts: api is the public surface used by code, impl is the runtime
+			implementation, jackson provides JSON (de)serialization of claims. impl and
+			jackson are runtime-scope by upstream convention so application code only
+			compiles against api.
+		-->
+		<dependency>
+			<groupId>io.jsonwebtoken</groupId>
+			<artifactId>jjwt-api</artifactId>
+			<version>0.12.6</version>
+		</dependency>
+		<dependency>
+			<groupId>io.jsonwebtoken</groupId>
+			<artifactId>jjwt-impl</artifactId>
+			<version>0.12.6</version>
+			<scope>runtime</scope>
+		</dependency>
+		<dependency>
+			<groupId>io.jsonwebtoken</groupId>
+			<artifactId>jjwt-jackson</artifactId>
+			<version>0.12.6</version>
+			<scope>runtime</scope>
+		</dependency>
 		<dependency>
 			<groupId>org.flywaydb</groupId>
 			<artifactId>flyway-core</artifactId>
@@ -164,9 +198,31 @@
 					</execution>
 				</executions>
 			</plugin>
+			<!--
+				surefire (unit tests, *Test.java) and failsafe (integration tests, *IT.java)
+				both activate the Spring profile `test` so that auth-core's secret
+				(auth.jwt.secret in src/test/resources/application-test.yml) is on the
+				classpath without per-test @ActiveProfiles annotations. dev / prod use the
+				default profile and must supply AUTH_JWT_SECRET via the environment — the
+				fail-fast posture documented in notes/16-auth-core.md.
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<systemPropertyVariables>
+						<spring.profiles.active>test</spring.profiles.active>
+					</systemPropertyVariables>
+				</configuration>
+			</plugin>
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-failsafe-plugin</artifactId>
+				<configuration>
+					<systemPropertyVariables>
+						<spring.profiles.active>test</spring.profiles.active>
+					</systemPropertyVariables>
+				</configuration>
 			</plugin>
 			<plugin>
 				<groupId>com.diffplug.spotless</groupId>

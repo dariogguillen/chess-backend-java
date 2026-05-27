@@ -1,0 +1,14 @@
+# Test-profile overrides. Activated by surefire and failsafe via
+# -Dspring.profiles.active=test in pom.xml so every IT and unit test that boots a
+# Spring context picks these settings up without per-test annotations.
+#
+# The single concern this file owns today is the auth-core secret. dev and prod
+# read AUTH_JWT_SECRET from the environment; tests pin a deterministic value here so
+# the JWTs minted by AuthCoreIT's test helper verify against the same key the
+# JwtVerifier bean uses inside the running context. 64-character ASCII string ->
+# 64 bytes UTF-8, well above the 32-byte HS256 minimum that AuthProperties' compact
+# constructor enforces.
+
+auth:
+  jwt:
+    secret: test-secret-for-auth-core-it-only-do-not-use-in-prod-aaaaaaaaaaaa
