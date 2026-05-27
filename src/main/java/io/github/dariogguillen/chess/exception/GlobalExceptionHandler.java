@@ -67,6 +67,20 @@ public class GlobalExceptionHandler {
     return build(HttpStatus.UNPROCESSABLE_ENTITY, codeOf(ex), ex.getMessage());
   }
 
+  /**
+   * Maps {@link InvalidCredentialsException} to HTTP 401 / {@code INVALID_CREDENTIALS}. Unlike
+   * {@link NotFoundException}, {@link ConflictException}, and {@link UnprocessableException}, this
+   * exception has no umbrella superclass in our hierarchy — the single-401 case in the codebase
+   * does not yet justify one. The handler is therefore narrow, targeting the concrete class.
+   */
+  @ExceptionHandler(InvalidCredentialsException.class)
+  public ResponseEntity<ErrorResponse> handleInvalidCredentials(InvalidCredentialsException ex) {
+    // Deliberately not logging the supplied email or password — both are inputs we never want in
+    // the logs. The uniform "Invalid credentials" message is the only trace this path leaves.
+    log.warn("Invalid credentials login attempt");
+    return build(HttpStatus.UNAUTHORIZED, codeOf(ex), ex.getMessage());
+  }
+
   @ExceptionHandler(MethodArgumentNotValidException.class)
   public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException ex) {
     String message =

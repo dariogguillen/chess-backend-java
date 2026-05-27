@@ -58,8 +58,18 @@ class AuthCoreIT {
   @Autowired private AuthProperties authProperties;
 
   @Test
-  void me_withoutAuthHeader_returns401() throws Exception {
-    mockMvc.perform(get("/api/me")).andExpect(status().isUnauthorized());
+  void me_withoutAuthHeader_returns401WithAuthenticationRequiredBody() throws Exception {
+    // Feature 17 swapped the placeholder HttpStatusEntryPoint for AuthEntryPoint, which writes a
+    // structured ErrorResponse body with code AUTHENTICATION_REQUIRED. The other 4 cases stay
+    // unchanged — the body assertion would apply equally there, but pinning it once on the
+    // canonical "no credential" case is enough to lock the new behaviour without duplicating
+    // assertions everywhere.
+    mockMvc
+        .perform(get("/api/me"))
+        .andExpect(status().isUnauthorized())
+        .andExpect(jsonPath("$.error", equalTo("AUTHENTICATION_REQUIRED")))
+        .andExpect(jsonPath("$.message").exists())
+        .andExpect(jsonPath("$.timestamp").exists());
   }
 
   @Test

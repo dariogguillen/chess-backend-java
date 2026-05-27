@@ -396,7 +396,7 @@
     "id": "auth-jwt",
     "title": "Email/password registration + login → JWT issuance",
     "description": "Second feature of the auth bundle. Adds POST /api/auth/register and POST /api/auth/login. Register validates email format + password strength (Jakarta Validation), creates a User with BCrypt password hash, and returns 201 with a fresh JWT. Login validates credentials and returns 200 with a JWT. Errors: 409 email taken, 400 validation, 401 bad credentials. The JWT shape (claims: sub=user.id, email, exp, iat) is locked here for the rest of the bundle.",
-    "status": "in_progress",
+    "status": "done",
     "priority": 17,
     "acceptance": [
       "POST /api/auth/register accepts {email, password, displayName}, creates the User (BCrypt-hashed password), returns 201 + {token, user: {id, email, displayName}}.",
@@ -416,7 +416,7 @@
     "id": "auth-google-oauth",
     "title": "Google OAuth 2.0 sign-in → JWT redirect to frontend",
     "description": "Third feature of the auth bundle. Adds Spring Security OAuth2 client config with Google as the provider. On successful Google callback, the backend looks up the User by googleSub (or creates a new one with email + displayName lifted from the OAuth2User profile), then redirects the browser to https://chess-frontend-52i.pages.dev/auth/callback#token=<jwt> using the same JWT shape as feature 17. The frontend reads the fragment, stores the token, and clears it from the URL via history.replaceState (frontend work is out of this repo). Spring Security's default endpoints /oauth2/authorization/google and /login/oauth2/code/google are kept.",
-    "status": "pending",
+    "status": "in_progress",
     "priority": 18,
     "acceptance": [
       "OAuth2 client config in SecurityConfig (or a dedicated OAuth2ClientConfig) registers Google with client-id/client-secret read from GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET env vars (no defaults in prod yaml).",

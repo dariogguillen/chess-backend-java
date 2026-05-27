@@ -1,18 +1,17 @@
 package io.github.dariogguillen.chess.config;
 
+import io.github.dariogguillen.chess.config.security.AuthEntryPoint;
 import io.github.dariogguillen.chess.config.security.JwtAuthenticationFilter;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
-import org.springframework.http.HttpStatus;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 /**
@@ -53,10 +52,13 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
  *   <li><strong>{@link BCryptPasswordEncoder} bean exposed now</strong> — feature 17 will inject it
  *       to hash passwords on register and verify them on login. Exposing it here keeps the wiring
  *       done so feature 17 is a pure-additive change.
- *   <li><strong>{@link HttpStatusEntryPoint} returns 401</strong> — Spring Security's default entry
- *       point for unauthenticated requests can surface 403 depending on the filter arrangement. We
- *       override to {@code 401 Unauthorized} for the "missing or invalid credentials" case so the
- *       contract matches the acceptance criteria.
+ *   <li><strong>{@link AuthEntryPoint} returns 401 with a structured {@link
+ *       io.github.dariogguillen.chess.exception.ErrorResponse} body</strong> — feature 17 swapped
+ *       the {@code HttpStatusEntryPoint} feature 16 wired as a placeholder. Spring Security's
+ *       default entry point for unauthenticated requests can surface 403 depending on the filter
+ *       arrangement; this bean both pins the status to 401 and emits the same {@code ErrorResponse}
+ *       envelope that {@code GlobalExceptionHandler} produces for the rest of the 4xx surface, with
+ *       code {@code AUTHENTICATION_REQUIRED}.
  * </ul>
  */
 @Configuration
@@ -64,9 +66,12 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 public class SecurityConfig {
 
   private final JwtAuthenticationFilter jwtAuthenticationFilter;
+  private final AuthEntryPoint authEntryPoint;
 
-  public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
+  public SecurityConfig(
+      JwtAuthenticationFilter jwtAuthenticationFilter, AuthEntryPoint authEntryPoint) {
     this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+    this.authEntryPoint = authEntryPoint;
   }
 
   @Bean
@@ -98,11 +103,14 @@ public class SecurityConfig {
                     .permitAll()
                     .requestMatchers(HttpMethod.GET, "/api/games/*", "/api/players/*/games")
                     .permitAll()
+                    // Auth issuance endpoints (feature 17): how users acquire a JWT in the first
+                    // place — must be reachable without one.
+                    .requestMatchers(HttpMethod.POST, "/api/auth/register", "/api/auth/login")
+                    .permitAll()
                     // Everything else (today: /api/me) requires authentication.
                     .anyRequest()
                     .authenticated())
-        .exceptionHandling(
-            eh -> eh.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
+        .exceptionHandling(eh -> eh.authenticationEntryPoint(authEntryPoint))
         .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
         .build();
   }

@@ -1,6 +1,7 @@
 package io.github.dariogguillen.chess.web.auth;
 
 import io.github.dariogguillen.chess.domain.User;
+import io.github.dariogguillen.chess.exception.ErrorResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -45,11 +46,13 @@ public class MeController {
   @ApiResponse(
       responseCode = "401",
       description =
-          "Missing, malformed, expired, or unsigned-by-us JWT. Response body is empty by design"
-              + " — the SecurityConfig wires HttpStatusEntryPoint(401), which writes the status"
-              + " code with no payload. A typed auth error code is deferred to feature 17 where"
-              + " it has a natural home alongside the issuance endpoints.",
-      content = @Content)
+          "Missing, malformed, expired, or unsigned-by-us JWT. Feature 17's AuthEntryPoint writes"
+              + " a structured ErrorResponse body with code AUTHENTICATION_REQUIRED — the same"
+              + " envelope every other 4xx in the API uses.",
+      content =
+          @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = ErrorResponse.class)))
   @GetMapping
   public MeResponse me(@AuthenticationPrincipal User user) {
     return new MeResponse(user.getId(), user.getEmail(), user.getDisplayName());

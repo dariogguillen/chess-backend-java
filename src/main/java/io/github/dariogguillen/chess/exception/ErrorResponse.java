@@ -32,7 +32,10 @@ public record ErrorResponse(
               "NOT_YOUR_TURN",
               "VALIDATION_FAILED",
               "MALFORMED_REQUEST",
-              "MISSING_HEADER"
+              "MISSING_HEADER",
+              "AUTHENTICATION_REQUIRED",
+              "EMAIL_ALREADY_TAKEN",
+              "INVALID_CREDENTIALS"
             },
             example = "ROOM_NOT_FOUND")
         String error,

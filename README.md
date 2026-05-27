@@ -20,7 +20,7 @@ Open the frontend in two browsers (Firefox + Chrome works well), create a room i
 - **Disconnect/reconnect lifecycle with grace period.** A STOMP session drop schedules a one-shot 60-second abandon timer; a resubscribe with the matching `playerId` native header cancels it. `PlayerDisconnectedEvent` and `PlayerReconnectedEvent` drive the opponent's "reconnecting..." banner with an absolute `gracePeriodEndsAt` deadline.
 - **Production deploy on AWS Free Tier with OIDC CI/CD.** EC2 + RDS + ECR provisioned by Terraform; Caddy terminates TLS via Let's Encrypt at `chess-backend.duckdns.org`; GitHub Actions authenticates to AWS via federated OIDC (no static keys anywhere) and gates each release on a `/api/health` smoke test.
 - **Leader/implementer/reviewer agent harness with persisted state.** Three role files in `.claude/agents/` separate planning, execution, and verification. State outlives chat: scope in `feature_list.json`, active session in `progress/current.md`, audit trail in `progress/history.md`, learning notes in `notes/`.
-- **181 tests with Testcontainers — no H2, no in-memory fakes.** Integration tests boot a real Postgres and Redis via Testcontainers and exercise the system through the REST + STOMP surfaces. Unit tests cover the domain layer (chess rules, edge cases) where a context boot would be wasted overhead.
+- **196 tests with Testcontainers — no H2, no in-memory fakes.** Integration tests boot a real Postgres and Redis via Testcontainers and exercise the system through the REST + STOMP surfaces. Unit tests cover the domain layer (chess rules, edge cases) where a context boot would be wasted overhead.
 
 ## Architecture
 
@@ -191,6 +191,15 @@ curl -X POST http://localhost:8080/api/games/<gameId>/moves \
   -H "X-Player-Id: <playerId>" \
   -d '{"from": "e2", "to": "e4"}'
 ```
+
+### Authentication (optional)
+
+Guest play stays open on every existing surface; an account unlocks "review my past games" (feature 19) and is the foundation for future per-user features. Feature 17 ships two endpoints:
+
+- `POST /api/auth/register` — `{ email, password, displayName }` → `201 { token, user }`.
+- `POST /api/auth/login` — `{ email, password }` → `200 { token, user }`.
+
+The returned `token` is a stateless HS256 JWT (7-day lifetime). Send it back as `Authorization: Bearer <token>` on subsequent requests to authenticated endpoints (today only `GET /api/me`). Full request/response shapes live in the Swagger UI linked above.
 
 ### WebSocket (STOMP)
 

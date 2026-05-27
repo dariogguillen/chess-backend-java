@@ -2082,3 +2082,52 @@ Test count: 187 (97 unit + 90 IT). Delta +6: `AuthCoreIT` covers missing-header 
 - `progress/history.md` (this entry)
 
 **Feature note:** `notes/16-auth-core.md`.
+
+---
+
+## 2026-05-27 — auth-jwt (feature 17, second of the auth bundle)
+
+**Status:** done.
+
+**Summary:** Second feature of the auth bundle. Lands the email/password issuance side that feature 16 deliberately left out, locks the JWT shape for the rest of the bundle, and closes the 401 spec/runtime gap that feature 16's review surfaced as out-of-scope. Two new endpoints — `POST /api/auth/register` and `POST /api/auth/login` — both returning `AuthResponse(token, MeResponse user)`. The `MeResponse` shape is reused from feature 16 so the frontend sees a uniform "current user" payload across `/api/me`, register 201, and login 200.
+
+The 401 entry-point swap is the most architecturally consequential part. Feature 16 closed with `HttpStatusEntryPoint(401)` writing an empty body, and `MeController.@ApiResponse(401)` declaring `content = @Content` (empty) so the OpenAPI spec did not lie. Feature 17 introduces a custom `AuthEntryPoint` that writes a structured `ErrorResponse(error = AUTHENTICATION_REQUIRED, message, timestamp)` JSON body using the same `Clock` + `ObjectMapper` shape `GlobalExceptionHandler.build` uses, the `SecurityConfig.exceptionHandling` block now wires `AuthEntryPoint` in place of `HttpStatusEntryPoint`, and `MeController` restores its 401 `@ApiResponse` to reference `ErrorResponse`. Spec and runtime now agree on a non-empty body. `AuthCoreIT.me_withoutAuthHeader_returns401WithAuthenticationRequiredBody` (renamed from the feature-16 name) asserts the new shape; the other four `AuthCoreIT` cases stay byte-identical.
+
+Three new error codes joined the `ErrorResponse.@Schema(allowableValues)` enum: `AUTHENTICATION_REQUIRED`, `EMAIL_ALREADY_TAKEN`, `INVALID_CREDENTIALS`. Total grew from 9 to 12. The `OpenApiIT` drift canary that pins this list was updated, not deleted — renamed to `errorResponseSchema_listsExactlyTheTwelveKnownErrorCodes` to keep the name honest with the count.
+
+Security defences. `AuthService.authenticate` runs a constant-time login failure path: a `static final` BCrypt dummy hash is matched against the supplied password on the unknown-email branch so the response time matches the wrong-password branch (defence against timing-based user enumeration). The dummy is verified not to collide with `password`, `admin`, `12345678`, or other well-known passwords. A defence-in-depth `user == null` check provides a second safety net. Both failure modes return a 401 with byte-identical `error` and `message` fields (`INVALID_CREDENTIALS` and `"Invalid email or password"`) — `AuthEndpointsIT.login_unknownEmail_returnsSameBodyAsWrongPassword` asserts this equality. `AuthService.register` runs under `@Transactional` and catches `DataIntegrityViolationException` from the DB `UNIQUE` constraint as the race-window safety net, translating it to the same `EmailAlreadyTakenException` that the eager `findByEmail` check throws (one 409 + one code regardless of branch). No password value is logged anywhere. `RegisterRequest.password` declares `@Size(min = 8, max = 72)` to enforce the BCrypt input cap; `LoginRequest.password` deliberately does NOT enforce `@Size` so a wrong-length attempt produces a 401 rather than a 400 (would leak the length policy).
+
+The `JwtIssuer` counterpart to `JwtVerifier` follows the simplest correct shape: both classes independently call `Keys.hmacShaKeyFor(props.secret().getBytes(StandardCharsets.UTF_8))` on the same `AuthProperties` bean, producing byte-identical `SecretKey`s without any inter-class coordination. The round-trip IT case `AuthEndpointsIT.roundTrip_registerThenLogin_thenMeReturnsSameUser` pins the symmetry end-to-end: register → take token from response → login → take token from response → call `/api/me` with token → assert user payload. `JwtIssuer` injects the existing application `Clock` bean from `ClockConfig`, so a future test that swaps the clock for a fixed instant can do so without touching the issuer. The feature-16 `AuthCoreIT.me_withExpiredJwt_returns401` regression keeps working because it pre-mints its expired token via the jjwt API directly rather than via `JwtIssuer` — independent of `JwtIssuer`'s clock.
+
+Exception wiring stayed minimal. `EmailAlreadyTakenException` extends the existing `ConflictException` and `GlobalExceptionHandler.codeOf` already derived the upper-snake-case `EMAIL_ALREADY_TAKEN` code from the simple class name with no need to override anything. `InvalidCredentialsException` extends `ChessException` directly — adding an `UnauthorizedException` umbrella for a single 401 would be over-engineering. A new `@ExceptionHandler(InvalidCredentialsException.class)` method in `GlobalExceptionHandler` maps the exception to 401 with code `INVALID_CREDENTIALS`. `AuthService` consumes the web records (`RegisterRequest`, `LoginRequest`) directly instead of introducing parallel `RegisterCommand` / `LoginCommand`, matching the existing service-layer style (`RoomService.joinRoom(String, String)`).
+
+Test count: 196 (97 unit + 99 IT). Delta +9 IT, +0 unit. All nine cases live in `AuthEndpointsIT`: happy register, dup-email 409, three validation-error 400s (invalid email, weak password, missing displayName), happy login, wrong-password 401, unknown-email 401 (with the byte-equal-body assertion against wrong-password), and the round-trip case. No unit tests added — `JwtIssuer` is a single-line wrapper covered by the round-trip case; validation is exercised at the IT level. `OpenApiIT.apiDocs_includesOperationSummaries` stayed green confirming both new endpoints declare `@Operation(summary = ...)`.
+
+**Cross-repo:** required (additive). The two new endpoints become public surface; the frontend's auth UI feature begins coordinating against this shape. The `docs/architecture.md` Authentication section gained the issuance flow + 3 new codes; the API contract section added the endpoints. `README.md` got a small "Authentication (optional)" subsection linking to Swagger UI, and the static test-count claim was updated from 181 directly to 196 (one of the three 2026-05-25 operator follow-ups partially closes here).
+
+**Files touched:**
+
+- `src/main/java/io/github/dariogguillen/chess/config/security/JwtIssuer.java` (new; jjwt builder wrapper sharing key derivation with feature-16's JwtVerifier)
+- `src/main/java/io/github/dariogguillen/chess/config/security/AuthEntryPoint.java` (new; custom AuthenticationEntryPoint writing the structured 401 body)
+- `src/main/java/io/github/dariogguillen/chess/service/auth/AuthService.java` (new; new `service/auth/` package; `@Transactional register` + constant-time `authenticate`; DataIntegrityViolationException race safety net)
+- `src/main/java/io/github/dariogguillen/chess/web/auth/AuthController.java` (new; class-level `@Tag(name = "Authentication", ...)`, both endpoints fully springdoc-annotated)
+- `src/main/java/io/github/dariogguillen/chess/web/auth/RegisterRequest.java` (new; `@Email @NotBlank @Size` record; 72-cap on password documented inline)
+- `src/main/java/io/github/dariogguillen/chess/web/auth/LoginRequest.java` (new; no `@Size` on password, deliberate)
+- `src/main/java/io/github/dariogguillen/chess/web/auth/AuthResponse.java` (new; `(String token, MeResponse user)` record reusing feature-16's MeResponse)
+- `src/main/java/io/github/dariogguillen/chess/exception/EmailAlreadyTakenException.java` (new; extends ConflictException; `codeOf` derives `EMAIL_ALREADY_TAKEN`)
+- `src/main/java/io/github/dariogguillen/chess/exception/InvalidCredentialsException.java` (new; extends ChessException; constant message)
+- `src/main/java/io/github/dariogguillen/chess/exception/ErrorResponse.java` (modified; `@Schema(allowableValues)` grows 9 → 12)
+- `src/main/java/io/github/dariogguillen/chess/exception/GlobalExceptionHandler.java` (modified; new handleInvalidCredentials → 401)
+- `src/main/java/io/github/dariogguillen/chess/config/SecurityConfig.java` (modified; `/api/auth/register` + `/api/auth/login` added to anonymous allow-list; `HttpStatusEntryPoint` swapped for `AuthEntryPoint`)
+- `src/main/java/io/github/dariogguillen/chess/web/auth/MeController.java` (modified; 401 `@ApiResponse` restored to reference `ErrorResponse` schema)
+- `src/test/java/io/github/dariogguillen/chess/web/auth/AuthEndpointsIT.java` (new; new `test/web/auth/` package; 9 cases)
+- `src/test/java/io/github/dariogguillen/chess/config/security/AuthCoreIT.java` (modified; missing-header case renamed + asserts the structured body; other 4 cases unchanged)
+- `src/test/java/io/github/dariogguillen/chess/config/OpenApiIT.java` (modified; drift canary updated for 12-code list; method renamed)
+- `docs/architecture.md` (modified; Authentication section extended with the issuance flow + new 401 entry point; API contract section adds the endpoints + 3 new error codes)
+- `README.md` (modified; new "Authentication (optional)" subsection in the API section linking to Swagger UI; static test-count claim bumped 181 → 196)
+- `notes/17-auth-jwt.md` (new; follows `_template.md`; cross-ecosystem section covers tsec JWT round-trip / http4s AuthMiddleware / doobie ConnectionIO vs `@Transactional` / `pdi/jwt` / argon2 vs BCrypt; Decisions section captures the 6 implementer decisions including the constant-time login defence; Gotchas covers the 72-byte BCrypt cap, dummy-hash collision-avoidance, and the user-enumeration uniformity rule)
+- `feature_list.json` (modified: `auth-jwt.status` → `done`; `auth-google-oauth.status` → `in_progress`)
+- `progress/current.md` (rewritten with feature-18 detail at this entry's close)
+- `progress/history.md` (this entry)
+
+**Feature note:** `notes/17-auth-jwt.md`.

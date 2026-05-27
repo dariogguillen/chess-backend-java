@@ -169,13 +169,21 @@ list on the client side.
 | `VALIDATION_FAILED` | 400 | `MethodArgumentNotValidException` (`@Valid` failure) |
 | `MALFORMED_REQUEST` | 400 | `HttpMessageNotReadableException` (unparseable JSON body) |
 | `MISSING_HEADER` | 400 | `MissingRequestHeaderException` (e.g. `X-Player-Id` missing) |
+| `AUTHENTICATION_REQUIRED` | 401 | `AuthEntryPoint` (Spring Security 401 entry point) |
+| `EMAIL_ALREADY_TAKEN` | 409 | `EmailAlreadyTakenException` |
+| `INVALID_CREDENTIALS` | 401 | `InvalidCredentialsException` |
 
 The first six codes are produced mechanically by `GlobalExceptionHandler`'s
 `codeOf(ChessException)` derivation — simple class name minus the
 trailing `Exception` suffix, converted from camelCase to
-UPPER_SNAKE_CASE. The last three are hardcoded literals in the
+UPPER_SNAKE_CASE. The next three (`VALIDATION_FAILED`,
+`MALFORMED_REQUEST`, `MISSING_HEADER`) are hardcoded literals in the
 framework-exception handlers because Spring's own exception types do
-not follow our naming.
+not follow our naming. The last three landed with feature 17 — the
+two `*Exception` subclasses follow the mechanical derivation,
+`AUTHENTICATION_REQUIRED` is emitted by `AuthEntryPoint` rather than
+`GlobalExceptionHandler` (it is the only 401-from-security-filter case
+today), but they share the same `ErrorResponse` envelope.
 
 Adding a new code requires updating both `GlobalExceptionHandler` and
 `ErrorResponse.error`'s `@Schema(allowableValues = {...})`. The
@@ -361,15 +369,83 @@ Spring Security 6+ idiom — no deprecated
 
 ### `GET /api/me`
 
-The single authenticated endpoint today. Returns 200 with `{ id,
-email, displayName }` on a valid JWT; returns 401 on a missing,
-malformed, expired, or differently-signed JWT. Used as the frontend's
-"is my stored token still valid?" probe and as the regression-locking
-surface for the auth filter chain.
+Returns 200 with `{ id, email, displayName }` on a valid JWT; returns
+401 (with a structured `ErrorResponse` body — see "401 entry point"
+below) on a missing, malformed, expired, or differently-signed JWT.
+Used as the frontend's "is my stored token still valid?" probe and as
+the regression-locking surface for the auth filter chain.
+
+### JWT issuance (feature 17)
+
+Feature 17 (`auth-jwt`) lands the issuance side and the two
+user-visible endpoints that produce tokens:
+
+- **`POST /api/auth/register`** — `{ email, password, displayName }`
+  → `201` with `{ token, user: { id, email, displayName } }`. The
+  email is normalised to lowercase, the password is BCrypt-hashed
+  (the encoder bean wired by feature 16, default cost factor 10),
+  and the JWT is minted from the freshly created `User`. The whole
+  flow is `@Transactional`: the application-level
+  `UserRepository.findByEmail` uniqueness check and the insert run
+  in one transaction; the database-level `UNIQUE` constraint on
+  `users.email` closes the race between two concurrent registrations
+  by translating the duplicate insert into
+  `DataIntegrityViolationException`, which the service catches and
+  rethrows as `EmailAlreadyTakenException` (409 /
+  `EMAIL_ALREADY_TAKEN`). Validation failures (malformed email,
+  password outside 8-72 chars, blank display name) surface as 400 /
+  `VALIDATION_FAILED` via the existing
+  `MethodArgumentNotValidException` handler.
+
+- **`POST /api/auth/login`** — `{ email, password }` → `200` with the
+  same `{ token, user }` envelope. The email is normalised the same
+  way; the BCrypt encoder's `matches(rawPassword, storedHash)` does
+  the constant-time comparison. The failure path is uniform: an
+  unknown email and a wrong password both throw
+  `InvalidCredentialsException` (401 / `INVALID_CREDENTIALS`) with
+  the same message ("Invalid email or password"). The service also
+  runs the BCrypt comparison against a pre-computed dummy hash on
+  the unknown-email branch so the response time does not leak
+  whether the email exists.
+
+- **Password-policy leak avoidance.** `RegisterRequest.password`
+  carries `@Size(min = 8, max = 72)`; `LoginRequest.password`
+  carries no `@Size` annotation. A wrong-length password on login
+  is a credentials error (401), not a validation error (400) —
+  surfacing "password too short" on login would tell an attacker the
+  policy bounds, which is one bit of information they should not
+  get from a failed login attempt. The 72-byte cap on register
+  matches BCrypt's input block-size limit (passwords longer than 72
+  bytes are silently truncated by the algorithm).
+
+The issuance side uses a `JwtIssuer` bean — counterpart to feature
+16's `JwtVerifier` — both classes derive the HS256 `SecretKey` from
+`AuthProperties.secret` via the same `Keys.hmacShaKeyFor` call, so
+their key bytes are identical and the round-trip is byte-for-byte
+guaranteed. The integration test `AuthEndpointsIT.roundTrip_*` pins
+this: a token minted by `/api/auth/login` is accepted by feature
+16's `JwtAuthenticationFilter`, and a subsequent `GET /api/me` with
+that token returns the same user. `JwtIssuer` injects the
+application's `Clock` bean so the `iat` / `exp` claims are testable
+(swap in `Clock.fixed(...)` via a `@Primary` test bean to assert
+expiry behaviour).
+
+### 401 entry point
+
+Feature 17 swapped feature 16's `HttpStatusEntryPoint(401)`
+placeholder for a custom `AuthEntryPoint` that writes a structured
+`ErrorResponse` body to every 401 emitted by the security filter
+chain. The body shape is the same envelope `GlobalExceptionHandler`
+produces for the other 4xx codes — `{ error, message, timestamp }`
+— with `error = "AUTHENTICATION_REQUIRED"` and a generic message
+("Authentication is required to access this resource."). The
+message is intentionally uniform: missing header, expired token, and
+forged token all surface identically, mirroring
+`JwtAuthenticationFilter`'s policy of not logging the specific JWT
+failure reason in the response.
 
 ### What's not in this feature
 
-- **JWT issuance** — feature 17 (`auth-jwt`).
 - **Google OAuth** — feature 18 (`auth-google-oauth`).
 - **Per-user game history** — feature 19 (`auth-my-games`).
 - **STOMP identity verification** — feature 20 (`auth-stomp-trust`).
