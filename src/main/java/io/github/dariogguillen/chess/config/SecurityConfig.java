@@ -2,6 +2,7 @@ package io.github.dariogguillen.chess.config;
 
 import io.github.dariogguillen.chess.config.security.AuthEntryPoint;
 import io.github.dariogguillen.chess.config.security.JwtAuthenticationFilter;
+import io.github.dariogguillen.chess.config.security.OAuth2SuccessHandler;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -22,7 +23,8 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
  * WebSecurityConfigurerAdapter} subclass shape is removed in Spring Security 6 and is not used
  * here.
  *
- * <p>Key decisions, with rationale documented in {@code notes/16-auth-core.md}:
+ * <p>Key decisions, with rationale documented in {@code notes/16-auth-core.md} and {@code
+ * notes/18-auth-google-oauth.md}:
  *
  * <ul>
  *   <li><strong>Stateless</strong> ({@link SessionCreationPolicy#STATELESS}) — no {@code
@@ -40,15 +42,23 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
  *   <li><strong>Anonymous allow-list</strong> — the live guest play surface (POST /api/rooms, POST
  *       /api/rooms/{id}/join, GET /api/rooms/{id}, POST /api/games, GET /api/games/{id}, POST
  *       /api/games/{id}/moves, GET /api/players/{id}/games), operational endpoints (/api/health,
- *       /actuator/health, springdoc), the STOMP handshake (/ws), and all preflight OPTIONS requests
- *       stay open. {@code /api/me} is deliberately NOT on the allow-list — it is the canonical
- *       "requires auth" probe.
+ *       /actuator/health, springdoc), the STOMP handshake (/ws), the OAuth flow surface (/oauth2/**
+ *       for the authorization request, /login/oauth2/** for the callback — both reached BEFORE the
+ *       user is authenticated; if these required auth the OAuth dance would deadlock), and all
+ *       preflight OPTIONS requests stay open. {@code /api/me} is deliberately NOT on the allow-list
+ *       — it is the canonical "requires auth" probe.
  *   <li><strong>{@link JwtAuthenticationFilter} placed before {@link
  *       UsernamePasswordAuthenticationFilter}</strong> — Spring Security's default filter chain
  *       reaches {@code UsernamePasswordAuthenticationFilter} as the place where form- login would
  *       populate the {@code SecurityContext}. We do not use form login, but inserting our filter at
  *       the same position is the canonical hook point recommended by the Spring Security reference
  *       docs for custom token filters.
+ *   <li><strong>{@code .oauth2Login(...)} with custom success handler</strong> — feature 18 wires
+ *       Spring Security's OAuth2 client DSL to delegate Google sign-in. The default success
+ *       behaviour (redirect to saved-request URI or {@code /}) is replaced by {@link
+ *       OAuth2SuccessHandler}, which mints a JWT via {@link
+ *       io.github.dariogguillen.chess.config.security.JwtIssuer} and redirects the browser to the
+ *       configured frontend with the token in the URL fragment.
  *   <li><strong>{@link BCryptPasswordEncoder} bean exposed now</strong> — feature 17 will inject it
  *       to hash passwords on register and verify them on login. Exposing it here keeps the wiring
  *       done so feature 17 is a pure-additive change.
@@ -67,11 +77,15 @@ public class SecurityConfig {
 
   private final JwtAuthenticationFilter jwtAuthenticationFilter;
   private final AuthEntryPoint authEntryPoint;
+  private final OAuth2SuccessHandler oAuth2SuccessHandler;
 
   public SecurityConfig(
-      JwtAuthenticationFilter jwtAuthenticationFilter, AuthEntryPoint authEntryPoint) {
+      JwtAuthenticationFilter jwtAuthenticationFilter,
+      AuthEntryPoint authEntryPoint,
+      OAuth2SuccessHandler oAuth2SuccessHandler) {
     this.jwtAuthenticationFilter = jwtAuthenticationFilter;
     this.authEntryPoint = authEntryPoint;
+    this.oAuth2SuccessHandler = oAuth2SuccessHandler;
   }
 
   @Bean
@@ -107,10 +121,17 @@ public class SecurityConfig {
                     // place — must be reachable without one.
                     .requestMatchers(HttpMethod.POST, "/api/auth/register", "/api/auth/login")
                     .permitAll()
+                    // OAuth 2.0 client endpoints (feature 18): /oauth2/authorization/{provider}
+                    // initiates the flow, /login/oauth2/code/{provider} is the callback. Both run
+                    // BEFORE the user is authenticated; requiring auth here would deadlock the
+                    // OAuth dance.
+                    .requestMatchers("/oauth2/**", "/login/oauth2/**")
+                    .permitAll()
                     // Everything else (today: /api/me) requires authentication.
                     .anyRequest()
                     .authenticated())
         .exceptionHandling(eh -> eh.authenticationEntryPoint(authEntryPoint))
+        .oauth2Login(oauth -> oauth.successHandler(oAuth2SuccessHandler))
         .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
         .build();
   }

@@ -416,7 +416,7 @@
     "id": "auth-google-oauth",
     "title": "Google OAuth 2.0 sign-in → JWT redirect to frontend",
     "description": "Third feature of the auth bundle. Adds Spring Security OAuth2 client config with Google as the provider. On successful Google callback, the backend looks up the User by googleSub (or creates a new one with email + displayName lifted from the OAuth2User profile), then redirects the browser to https://chess-frontend-52i.pages.dev/auth/callback#token=<jwt> using the same JWT shape as feature 17. The frontend reads the fragment, stores the token, and clears it from the URL via history.replaceState (frontend work is out of this repo). Spring Security's default endpoints /oauth2/authorization/google and /login/oauth2/code/google are kept.",
-    "status": "in_progress",
+    "status": "done",
     "priority": 18,
     "acceptance": [
       "OAuth2 client config in SecurityConfig (or a dedicated OAuth2ClientConfig) registers Google with client-id/client-secret read from GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET env vars (no defaults in prod yaml).",
@@ -435,7 +435,7 @@
     "id": "auth-my-games",
     "title": "Protected GET /api/me/games — list authenticated user's own games (paginated)",
     "description": "Fourth feature of the auth bundle. Adds GET /api/me/games (requires Bearer JWT) that returns the authenticated user's games, paginated. The Game flow is extended: when a Game is created via POST /api/games AND the request is authenticated, the active-state Player on the corresponding side carries the user id, and at archive time the games row gets white_user_id and/or black_user_id populated; when the request is anonymous (no Authorization header), both columns stay null and the existing X-Player-Id flow continues unchanged. Query is a direct filter on games (no join through an intermediate players table — see feature 16 for the data-model decision). This wires up the actual product benefit the user stated: 'con una cuenta se pueden revisar las partidas jugadas'.",
-    "status": "pending",
+    "status": "in_progress",
     "priority": 19,
     "acceptance": [
       "GET /api/me/games?page={p}&size={s} requires authentication; without Bearer JWT returns 401.",

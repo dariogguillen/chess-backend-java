@@ -9,6 +9,24 @@ spring:
     redis:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
       port: ${SPRING_DATA_REDIS_PORT:6379}
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            # Google OAuth 2.0 client credentials (feature 18 — auth-google-oauth). The OAuth flow is
+            # disabled when these are blank because Spring Security skips registering an empty client;
+            # production sets them via the GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET env
+            # vars on the EC2 host. The test profile (application-test.yml) provides fake values so
+            # the context loads even though the OAuth flow is never triggered against Google in tests.
+            client-id: ${GOOGLE_OAUTH_CLIENT_ID:}
+            client-secret: ${GOOGLE_OAUTH_CLIENT_SECRET:}
+            scope: openid, email, profile
+            # {baseUrl} is a Spring Security template that resolves at runtime to the actual scheme +
+            # host + port (e.g. https://chess-backend.duckdns.org or http://localhost:8080). DO NOT
+            # hard-code the production URL here — the template lets the same artifact run in dev,
+            # docker-compose, and prod without rebuilds.
+            redirect-uri: '{baseUrl}/login/oauth2/code/google'
   jpa:
     hibernate:
       # Flyway is the source of truth for the schema. `validate` makes the JPA model
@@ -63,6 +81,16 @@ auth:
     # Token lifetime in seconds. 604800 = 7 days, the user-confirmed lifetime from the bundle-
     # level decisions in progress/current.md.
     expiry-seconds: ${AUTH_JWT_EXPIRY_SECONDS:604800}
+  oauth:
+    # Frontend base URL that the OAuth2 success handler (feature 18) redirects to after minting a
+    # JWT. The handler appends `/auth/callback#token=<jwt>` (or `#error=<code>`) — the property must
+    # NOT include a trailing slash and must NOT include the `/auth/callback` segment. Dev/local
+    # default is the Vite dev server on port 5173; production sets
+    # AUTH_OAUTH_FRONTEND_REDIRECT_BASE=https://chess-frontend-52i.pages.dev on the EC2 host. The
+    # token is delivered in the URL fragment (not the query string) so it never reaches any
+    # intermediate proxy's request log even if the proxy logs full URLs — fragments are not sent to
+    # the server by the browser.
+    frontend-redirect-base: ${AUTH_OAUTH_FRONTEND_REDIRECT_BASE:http://localhost:5173}
 
 server:
   # Honor X-Forwarded-* headers (Proto, Host, For) when the app sits behind a

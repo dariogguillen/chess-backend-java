@@ -444,13 +444,119 @@ forged token all surface identically, mirroring
 `JwtAuthenticationFilter`'s policy of not logging the specific JWT
 failure reason in the response.
 
+### Google OAuth 2.0 sign-in (feature 18)
+
+Feature 18 (`auth-google-oauth`) adds Google as a second sign-in
+path that converges on the same `User` aggregate and the same JWT
+shape feature 17 locked. Spring Security's `oauth2Login` DSL
+handles roughly 80% of the flow — the authorization redirect to
+Google, the code-for-token exchange, and the userinfo fetch that
+produces an `OAuth2User` principal. The remaining 20% is the
+custom `OAuth2SuccessHandler`: it find-or-creates the `User` keyed
+by Google's `sub` claim, mints a JWT via the existing `JwtIssuer`
+(byte-for-byte interchangeable with one minted by
+`/api/auth/login`), and redirects the browser to the configured
+frontend with the token in the URL fragment.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Frontend
+    participant Backend
+    participant Google
+
+    User->>Frontend: Click "Sign in with Google"
+    Frontend->>Backend: GET /oauth2/authorization/google
+    Backend-->>User: 302 to accounts.google.com (authz request)
+    User->>Google: authenticate + consent
+    Google-->>Backend: 302 /login/oauth2/code/google?code=...
+    Backend->>Google: POST /token (exchange code)
+    Google-->>Backend: access_token + id_token
+    Backend->>Google: GET /userinfo (sub, email, name)
+    Google-->>Backend: profile JSON
+    Backend->>Backend: find-or-create User by googleSub<br/>+ JwtIssuer.issue(user)
+    Backend-->>Frontend: 302 ${frontend-redirect-base}/auth/callback#token=<jwt>
+    Frontend->>Frontend: read window.location.hash,<br/>store token, history.replaceState
+```
+
+**Why the URL fragment, not the query string.** Fragments are not
+sent to the server in subsequent requests, so even if an
+intermediate proxy logs full URLs, the token cannot leak into a
+backend's request log. A query parameter (`?token=…`) would appear
+in Caddy's access log, in CloudWatch, and in any browser-history
+exporter — the fragment hides it from all three.
+
+**Identity-collision policy ("Option B").** The handler does NOT
+silently merge identities when a fresh Google `sub` arrives with an
+email that is already taken by an email/password account from
+feature 17. That is the "no account linking" out-of-scope decision
+for the bundle. Instead, the handler redirects to
+`${frontend-redirect-base}/auth/callback#error=email_taken`, and
+the frontend renders a user-facing "this email is already
+registered with a password; please sign in with email/password
+instead." message. A missing-required-attribute case (no `sub` or
+no `email` on the OAuth2User) similarly surfaces as a soft
+fragment-error redirect (`#error=oauth_missing_profile`), not a
+500 — the user did nothing wrong and a server-error page would be
+the wrong UX.
+
+**`passwordHash = null` for OAuth-only users.** The OAuth path
+creates `User` rows with `passwordHash = null`, NOT an empty
+string. BCrypt would happily hash an empty string into a
+valid-looking BCrypt output, and the `BCryptPasswordEncoder.matches`
+call would then accept any `""` password — a phantom-loginable user.
+Null short-circuits the matches path entirely.
+
+**Log hygiene.** The OAuth failure paths emit warnings with NO
+personally identifiable information — no email, no Google `sub`,
+no display name. The messages are deliberately generic ("OAuth
+callback missing required profile attributes", "OAuth callback for
+email already registered to a different identity"). This is a
+defence-in-depth posture: the JWT in the success-path redirect is
+the only OAuth-related data on the wire, and that lives in the
+fragment.
+
+**Allow-list dance.** `/oauth2/**` (Spring Security's
+authorization-request endpoint) and `/login/oauth2/**` (the
+callback) MUST stay anonymous. They are reached BEFORE the user is
+authenticated; requiring auth here would deadlock the OAuth dance
+(the user cannot authenticate without first being authenticated).
+
+#### Operator setup
+
+The Google OAuth client is provisioned outside this repo. The
+one-time setup steps:
+
+1. In **Google Cloud Console**, create or pick a project.
+2. Navigate to **APIs & Services → Credentials → Create credentials
+   → OAuth 2.0 Client ID**. Application type: **Web application**.
+3. Set the **authorised redirect URIs** to both environments:
+   - `https://chess-backend.duckdns.org/login/oauth2/code/google`
+     (production)
+   - `http://localhost:8080/login/oauth2/code/google` (local dev)
+4. Capture the **client-id** and **client-secret**.
+5. On the EC2 host, add to `/opt/chess/.env`:
+   - `GOOGLE_OAUTH_CLIENT_ID=…`
+   - `GOOGLE_OAUTH_CLIENT_SECRET=…`
+   - `AUTH_OAUTH_FRONTEND_REDIRECT_BASE=https://chess-frontend-52i.pages.dev`
+6. Redeploy. The application picks up the env vars at boot via the
+   `spring.security.oauth2.client.registration.google.*` bindings
+   and via `AuthProperties.OAuthProps`.
+
+The feature is shippable to production only after these steps are
+done. The dev/test profile provides fake values so context-load
+stays green without a real Google client.
+
 ### What's not in this feature
 
-- **Google OAuth** — feature 18 (`auth-google-oauth`).
 - **Per-user game history** — feature 19 (`auth-my-games`).
 - **STOMP identity verification** — feature 20 (`auth-stomp-trust`).
 - **Refresh tokens, password reset, email verification, 2FA,
   account linking** — out of scope for the whole bundle.
+- **Multi-provider OAuth** (no Apple, no GitHub) — out of scope for
+  feature 18. Adding more providers later is a
+  `.clientRegistration(...)` per provider; the success handler
+  is provider-agnostic by reading `sub` / `email` / `name`.
 
 ## CORS
 

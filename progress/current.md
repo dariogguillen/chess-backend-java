@@ -1,13 +1,14 @@
-# Current session — auth bundle (feature 18 in progress)
+# Current session — auth bundle (feature 19 in progress)
 
-**Status:** in_progress on feature 18 (`auth-google-oauth`).
+**Status:** in_progress on feature 19 (`auth-my-games`).
 **Opened:** 2026-05-27 (continuing the bundle opened on the same day).
-**Scope of feature 18:** Google OAuth 2.0 sign-in. Spring Security
-OAuth2 client + Google provider. Success handler issues a JWT using
-the same shape locked in feature 17 and redirects the browser to the
-frontend's `/auth/callback#token=<jwt>` URL.
+**Scope of feature 19:** protected `GET /api/me/games?page=&size=`
+endpoint — the actual product benefit the user named: "con una cuenta
+se pueden revisar las partidas jugadas". Game creation flow extended
+so that when the request is authenticated, the new `games` row's
+`white_user_id` / `black_user_id` columns are populated.
 
-`feature_list.json` snapshot: **26 done, 1 in_progress, 2 pending.**
+`feature_list.json` snapshot: **27 done, 1 in_progress, 1 pending.**
 
 ---
 
@@ -17,11 +18,8 @@ User goal (verbatim 2026-05-27): *"seria opcional, se puede seguir
 juegando sin cuenta, pero con una cuenta se pueden revisar las
 partidas jugadas por ejemplo"*.
 
-The auth surface is the single highest-signal addition we can ship to
-a senior backend portfolio: it touches Spring Security, JPA, CORS,
-JWT cryptography, OAuth2 client integration, and STOMP message
-interception — concepts a recruiter expects to see exercised on a
-backend with a real frontend and a real production deploy.
+Feature 19 is where that benefit lands. Features 16–18 built the
+foundation, this feature lights it up.
 
 ---
 
@@ -30,349 +28,320 @@ backend with a real frontend and a real production deploy.
 | Priority | ID | Status | One-line goal |
 | --- | --- | --- | --- |
 | 16 | `auth-core` | done | User entity, Flyway V2, Spring Security base, JWT validation, `GET /api/me`. |
-| 17 | `auth-jwt` | done | Email/password register + login → JWT (HS256). The JWT shape is locked. |
-| 18 | `auth-google-oauth` | **in_progress** | Google OAuth 2.0 client; success handler redirects to frontend with JWT in URL fragment. |
-| 19 | `auth-my-games` | pending | `GET /api/me/games` (paginated). Authenticated game creation links `games.{white,black}_user_id`. |
+| 17 | `auth-jwt` | done | Email/password register + login → JWT (HS256). The JWT shape locked. |
+| 18 | `auth-google-oauth` | done | Google OAuth 2.0 client; success handler redirects to frontend with JWT in URL fragment. |
+| 19 | `auth-my-games` | **in_progress** | `GET /api/me/games` (paginated). Authenticated game creation links `games.{white,black}_user_id`. |
 | 20 | `auth-stomp-trust` | pending | STOMP `ChannelInterceptor` validates JWT on CONNECT and prevents identity spoofing on SEND/SUBSCRIBE. |
 
-Out-of-scope for the whole bundle (decided 2026-05-27 with user):
+Out-of-scope for the whole bundle:
 
-- Refresh tokens (single JWT, 7-day expiry).
-- Email verification / password reset / magic links.
-- 2FA / TOTP.
+- Refresh tokens. Email verification / password reset. 2FA.
 - Account linking (Google + email/password in the same User).
-- Claim flow for pre-existing anonymous games (fresh-start identity
-  model: anonymous games created before login stay anonymous forever).
+- Claim flow for pre-existing anonymous games (fresh-start identity).
 
 ---
 
 ## Bundle-level technical decisions (carried forward verbatim)
 
-These were answered once at the bundle level so each feature plan can
-stay narrow. Reviewers cross-reference here, not in every feature plan.
-
-1. **Token transport:** stateless JWT in `Authorization: Bearer <token>`
-   header. No session cookies. Confirmed with user 2026-05-27.
-2. **JWT algorithm:** HS256 with a shared secret in env var
-   `AUTH_JWT_SECRET`. Symmetric is fine because issuer = verifier
-   (same backend). Token lifetime: 7 days. Locked by feature 16's
-   `JwtVerifier`; feature 17 added `JwtIssuer`. **Feature 18 reuses
-   `JwtIssuer` byte-identically.**
-3. **JWT claims:** `sub` = `User.id` (UUID string), `email`,
-   `iat`, `exp`. No roles / authorities yet. Locked in feature 17;
-   feature 18 produces identical claims regardless of the auth path
-   (email/password or Google OAuth).
-4. **OAuth callback delivery:** backend redirect to
-   `${auth.oauth.frontend-redirect-base}/auth/callback#token=<jwt>`.
-   Frontend reads fragment, stores token, clears with
-   `history.replaceState`. Confirmed with user 2026-05-27.
-5. **CORS:** `allowCredentials` stays **false**. The OAuth flow uses
-   top-level browser redirects, not XHR — no CORS impact. The
-   `Authorization` header is already on the allow-list from
-   feature 16.
-6. **Identity linking:** fresh start. `User.id` is the canonical
-   identity; user-game link via `games.{white,black}_user_id`. No
-   intermediate `players` table.
-7. **STOMP auth surface:** anonymous STOMP keeps working; JWT
-   strengthens identity, never gates access. Spoofing blocked in
-   feature 20.
+1. **Token transport:** stateless JWT in `Authorization: Bearer`.
+2. **JWT algorithm:** HS256 + `AUTH_JWT_SECRET`; 7-day lifetime; same `JwtIssuer` / `JwtVerifier` shared across features 17 and 18.
+3. **JWT claims:** `sub` = `User.id`, `email`, `iat`, `exp`.
+4. **OAuth callback:** backend redirect to frontend with token in URL fragment.
+5. **CORS:** `allowCredentials` stays false.
+6. **Identity linking:** fresh start. User-game link via `games.{white,black}_user_id` (FK columns added in feature 16's V2). No intermediate `players` table. `games.{white,black}_player_id` remain as audit-snapshot UUIDs.
+7. **STOMP auth surface:** anonymous STOMP keeps working; JWT strengthens identity; spoofing blocked in feature 20.
 
 ---
 
-## Feature 18 — `auth-google-oauth` — detailed plan
+## Feature 19 — `auth-my-games` — detailed plan
 
 ### Approach
 
-Spring Security has first-class OAuth2 client support — adding the
-starter, registering Google as a provider in `application.yml`, and
-configuring `.oauth2Login()` in the `SecurityFilterChain` gets us
-~80% of the way. The remaining 20% is the success handler: take the
-`OAuth2User` Spring builds from Google's userinfo response, find or
-create our `User` by `googleSub`, mint a JWT via the existing
-`JwtIssuer` from feature 17, and redirect to the frontend with the
-token in the URL fragment.
+This feature has two surfaces that must move together:
 
-The flow end-to-end:
+1. **Read surface — the new endpoint.** `GET /api/me/games?page=&size=`
+   returns the authenticated user's archived games (terminal status,
+   newest first), paginated. Auth-required (Bearer JWT). Returns
+   401 without auth. This is a separate endpoint from the existing
+   guest-friendly `GET /api/players/{id}/games` — that one stays
+   open and unchanged, filtering by `player_id`; the new one filters
+   by `user_id`.
 
-1. User clicks "Login with Google" on the frontend → frontend
-   navigates to `https://chess-backend.duckdns.org/oauth2/authorization/google`.
-2. Spring Security redirects to Google with the OAuth2 authz request.
-3. Google authenticates the user, asks for consent, redirects back
-   to `https://chess-backend.duckdns.org/login/oauth2/code/google?code=…`.
-4. Spring Security exchanges the code for tokens, fetches userinfo,
-   builds an `OAuth2User` principal, and invokes the configured
-   success handler.
-5. Our custom `OAuth2SuccessHandler` extracts `sub` (Google's
-   stable user id), `email`, and `name` from the `OAuth2User`,
-   calls `UserRepository.findByGoogleSub` to find-or-create the
-   `User`, issues a JWT via `JwtIssuer`, and writes a
-   `302 Location: ${frontend-redirect-base}/auth/callback#token=<jwt>`
-   to the response.
-6. Frontend's `/auth/callback` route reads `window.location.hash`,
-   parses `token=…`, calls `history.replaceState` to clean the URL,
-   and stores the token (the frontend's auth UI feature).
+2. **Write surface — populating the FK columns.** When a game is
+   archived (terminal status), `GameEntity` must persist
+   `white_user_id` / `black_user_id` (the FK columns feature 16
+   added) whenever the corresponding side was an authenticated user.
+   For guest games (no auth at creation), both stay null. This
+   requires threading `user_id` from the security context at game
+   creation → through the `Player` domain record → into the
+   active-state representation in Redis → out to the archive write.
+
+The `Player` domain record gains a nullable `UUID userId` field.
+The compact constructor accepts null. JSON wire-format leakage is
+checked: `GameStateResponse` and any other DTO that exposes player
+data must NOT include `Player.userId` (the response shape stays
+backwards-compatible).
 
 ### Files created or modified, by package
 
-**`pom.xml`** (modified)
-- Add `spring-boot-starter-oauth2-client`. Inline comment justifies
-  it (Google OAuth 2.0 client + userinfo fetch + token exchange,
-  all wired by Spring Security's standard config). No `oauth2-resource-server`
-  starter — we are an OAuth2 client, not a resource server; our
-  bearer-token validation is the custom feature-16 `JwtAuthenticationFilter`.
+**`io.github.dariogguillen.chess.domain`** (1 modified)
+- `Player.java` — modified. Add nullable `UUID userId` field.
+  Compact constructor accepts null (no `Objects.requireNonNull`
+  on userId; the existing checks on `id` and `displayName` stay).
+  JavaDoc updated to explain the new field and that `null` means
+  "guest / unauthenticated".
 
-**`io.github.dariogguillen.chess.config`** (1 modified)
-- `SecurityConfig.java` — modified.
-  1. New `oauth2Login` block in the `SecurityFilterChain` bean:
-     `.oauth2Login(oauth -> oauth.successHandler(oAuth2SuccessHandler))`.
-     The default `/oauth2/authorization/google` and
-     `/login/oauth2/code/google` endpoints are auto-registered by
-     Spring Security.
-  2. Anonymous allow-list gains `/oauth2/**` and `/login/oauth2/**`
-     (the user is not authenticated yet during the OAuth dance —
-     these endpoints must be reachable before the JWT exists).
-  3. `OAuth2SuccessHandler` constructor-injected.
-- `AuthProperties.java` — modified. Adds nested record
-  `OAuthProps(String frontendRedirectBase)` bound under
-  `auth.oauth`. Compact constructor enforces non-blank.
+**`io.github.dariogguillen.chess.web.game`** (1 modified)
+- `GameStateResponse.java` (or whatever the game-state wire DTO
+  is) — confirm it does NOT include `Player.userId`. If the
+  current implementation embeds `Player` raw, the implementer
+  refactors to a dedicated `PlayerView(id, displayName)` record
+  for the wire — this guarantees zero userId leakage even if a
+  future field is added to `Player`. Trade-off: small refactor;
+  payoff: contract isolation. The implementer makes the call;
+  document in the feature note.
 
-**`io.github.dariogguillen.chess.config.security`** (1 new)
-- `OAuth2SuccessHandler.java` — new. Implements
-  `AuthenticationSuccessHandler`. Constructor-injected:
-  `UserRepository`, `JwtIssuer`, `AuthProperties`, `Clock`. On
-  success:
-  1. Cast `Authentication` to `OAuth2AuthenticationToken`; extract
-     `OAuth2User`.
-  2. Read `sub`, `email`, `name` attributes. Defensive: if
-     `email` or `sub` is null/blank, log a warning and redirect
-     to `${frontend-redirect-base}/auth/callback#error=oauth_missing_profile`
-     (frontend handles the error).
-  3. `userRepository.findByGoogleSub(sub)` — if present, use that
-     `User`; if not, create a new `User` with the Google profile
-     data and `passwordHash = null` (cannot log in via
-     email/password without explicit password set — that's the
-     "no account linking" out-of-scope).
-  4. `jwtIssuer.issue(user)` produces the JWT.
-  5. Redirect to `${frontend-redirect-base}/auth/callback#token=<jwt>`
-     using `DefaultRedirectStrategy`.
+**`io.github.dariogguillen.chess.service`** (1+ modified)
+- `GameService.java` and / or `RoomService.java` (wherever
+  Players are constructed during game creation) — modified to
+  accept an optional `UUID currentUserId` parameter. When
+  present, the new `Player` carries it; when null, guest path.
+  This is a thin pass-through — service does not read the
+  security context itself.
+- `GameHistoryService.java` — modified. New method
+  `Page<ArchivedGamePlayerView> findByUser(UUID userId, Pageable pageable)`.
+  The existing `findByPlayer(UUID playerId)` stays as-is.
 
-**`src/main/resources/application.yml`** (modified)
-- Add `spring.security.oauth2.client.registration.google` block:
-  - `client-id: ${GOOGLE_OAUTH_CLIENT_ID:}` (fail-fast prod; empty
-    in test profile).
-  - `client-secret: ${GOOGLE_OAUTH_CLIENT_SECRET:}`.
-  - `scope: openid, email, profile`.
-  - `redirect-uri: '{baseUrl}/login/oauth2/code/google'` (Spring's
-    template; resolves to backend URL at runtime — works for both
-    localhost and production).
-- Add `auth.oauth.frontend-redirect-base: ${AUTH_OAUTH_FRONTEND_REDIRECT_BASE:http://localhost:5173}`.
-  Dev/local default is the Vite dev server; production
-  override via env var to `https://chess-frontend-52i.pages.dev`.
-- No `provider.google` block needed — Spring Security has Google
-  as a built-in `CommonOAuth2Provider` constant with the standard
-  endpoints baked in.
+**`io.github.dariogguillen.chess.web.game`** (1+ modified)
+- `GameController.java` and / or `RoomController.java` (whichever
+  is the game-creation entrypoint) — modified. Read
+  `currentUserId` from the security context via
+  `@AuthenticationPrincipal` or `SecurityContextHolder`. Anonymous
+  request → null. Authenticated → the User's UUID. Pass it to
+  the service.
 
-**`src/test/resources/application-test.yml`** (modified)
-- Provides fake `client-id` and `client-secret` so the test profile
-  boots; the actual OAuth flow is never exercised against Google in
-  tests. Sets `auth.oauth.frontend-redirect-base: http://localhost:5173`
-  (or whatever the IT prefers).
+**`io.github.dariogguillen.chess.web.me`** (new package)
+- `MyGamesController.java` — new. `@RestController` at
+  `/api/me/games`. `@Tag(name = "My account", description = ...)`
+  (or reuse the `Authentication` tag — implementer's call).
+  `GET` method:
+  - Reads pagination via `@RequestParam(defaultValue = "0") int page`
+    and `@RequestParam(defaultValue = "20") int size`. Validation
+    via `@Min(0)` on page and `@Min(1) @Max(100)` on size, so
+    out-of-bound values surface as `VALIDATION_FAILED` 400.
+  - Reads `currentUser` from the security context. By the time
+    the controller runs, the user is guaranteed authenticated
+    (the SecurityFilterChain would have 401'd otherwise).
+  - Calls `gameHistoryService.findByUser(currentUser.getId(),
+    PageRequest.of(page, size))`.
+  - Returns `MyGamesPage` (record) or Spring's `Page<MyGameSummary>`
+    directly. Implementer chooses; the JSON shape MUST include
+    `content`, `totalElements`, `totalPages`, `size`, `number`
+    (the standard Spring Data fields) so the frontend uses a
+    well-known shape.
+  - Springdoc: `@Operation`, `@ApiResponse(200)` linked to the
+    page schema, `@ApiResponse(400)` for validation,
+    `@ApiResponse(401)` for missing JWT linked to `ErrorResponse`
+    (consistent with `MeController`).
+- `MyGameSummary.java` — new. Record:
+  `(UUID gameId, String roomId, String opponentDisplayName,
+  Side selfSide, GameStatus status, Instant endedAt, int moveCount)`.
+  Mirrors `PlayerGameSummary` but driven by user-id mapping
+  (whichever side's `user_id` matches the authenticated user is
+  "self"; the other side is "opponent"; the display name comes
+  from the audit-snapshot `*_display_name` column).
 
-**`src/test/java/.../config/security/OAuth2SuccessHandlerIT.java`**
-(new IT)
-- Cases:
-  1. `googleLogin_newUser_createsUserAndRedirectsWithToken` —
-     builds an `OAuth2AuthenticationToken` with an `OAuth2User`
-     carrying a fresh `sub`, `email`, `name`; invokes the success
-     handler directly via the Spring MVC test infrastructure;
-     asserts:
-     - `User` row created with the given `googleSub`, `email`,
-       `displayName`; `passwordHash` is null.
-     - Response status 302.
-     - `Location` header starts with the configured frontend
-       base + `/auth/callback#token=`.
-     - The token after `#token=` is accepted by feature-16's
-       `JwtAuthenticationFilter` (call `/api/me` with it →
-       200 with the new user's payload).
-  2. `googleLogin_existingUserByGoogleSub_reusesUser` —
-     pre-insert a `User` with a known `googleSub`; trigger the
-     handler with the same `sub`; assert no new row created
-     (count unchanged) AND the redirect token resolves to the
-     pre-existing user.
-  3. `googleLogin_existingEmailDifferentGoogleSub_doesNotMerge` —
-     pre-insert a User with `email = "x@example.com"` and
-     `googleSub = null` (email/password user from feature 17);
-     trigger the OAuth flow with the same email but a different
-     `sub`; assert behaviour matches the "no account linking"
-     out-of-scope decision. Two options the implementer must
-     choose between:
-     - **Option A:** create a NEW User with the Google `sub`,
-       allowing two users with the same email (violates email
-       UNIQUE — DB will throw, so this is actually impossible
-       given the migration).
-     - **Option B:** treat this as a registration conflict;
-       redirect to `…/auth/callback#error=email_taken`. The
-     **leader's call: Option B.** The bundle's "no account linking"
-     out-of-scope decision means we do not merge identities; the
-     cleanest user-facing outcome is to surface the conflict
-     rather than silently fail at the DB level. The IT asserts
-     the error redirect; the User row count is unchanged.
-  4. `googleLogin_missingEmail_redirectsWithError` — builds an
-     `OAuth2User` with `sub` present but `email` null/blank
-     (defensive); asserts the redirect goes to
-     `…/auth/callback#error=oauth_missing_profile`.
+**`io.github.dariogguillen.chess.persistence`** (3 modified, 1 possibly new)
+- `GameEntity.java` — modified. Add two new fields:
+  `whiteUserId UUID NULL` and `blackUserId UUID NULL` mapped to
+  the existing migration columns `white_user_id` and
+  `black_user_id` (created by V2 in feature 16). Both nullable.
+  `@Column(name = "white_user_id")` / `@Column(name = "black_user_id")`.
+- `GameEntityMapper.java` — modified. When converting a
+  terminated `Game` to a new `GameEntity` (archive path), populate
+  `whiteUserId` from `game.white().userId()` and `blackUserId`
+  from `game.black().userId()`. Both null-tolerant.
+- `GameHistoryRepository.java` — modified. New method:
+  ```java
+  @Query("SELECT new ArchivedGamePlayerView(...) FROM GameEntity g
+         WHERE g.whiteUserId = :userId OR g.blackUserId = :userId
+         ORDER BY g.endedAt DESC")
+  Page<ArchivedGamePlayerView> findByUserId(
+      @Param("userId") UUID userId, Pageable pageable);
+  ```
+  Reuses the existing `ArchivedGamePlayerView` projection — no new
+  projection class needed unless the implementer wants to surface
+  user-side info, in which case extending the projection is fine.
+- `ArchivedGamePlayerView.java` — likely no change. The projection
+  carries enough fields for the controller to determine self-side
+  by comparing `whiteUserId == currentUser.getId()`. **However**:
+  the existing projection might NOT carry `whiteUserId` /
+  `blackUserId` (it was designed pre-feature-16). The implementer
+  may need to add those fields to the projection so the controller
+  knows which side is self. Decide in implementation; document.
 
-The implementer should NOT attempt to test the full OAuth flow
-end-to-end (request to Google, code exchange, userinfo fetch).
-Those are Spring Security's responsibility; we trust the framework.
-Our coverage is the success handler in isolation.
+**`src/test/java/.../web/me/MyGamesIT.java`** (new IT)
 
-**`docs/architecture.md`** (modified)
-- Extend "Authentication" section with a new subsection:
-  - The OAuth flow diagram (a Mermaid `sequenceDiagram` showing
-    Frontend → Backend → Google → Backend → Frontend with the
-    redirect-with-fragment as the final step).
-  - Note that the OAuth and email/password paths converge on the
-    same `User` aggregate, the same JWT shape, and the same
-    `JwtAuthenticationFilter`.
-  - "Operator setup" subsection documenting the Google Cloud
-    Console registration: create OAuth 2.0 Client ID (Web
-    application), set the authorised redirect URIs to
-    `https://chess-backend.duckdns.org/login/oauth2/code/google`
-    AND `http://localhost:8080/login/oauth2/code/google`, capture
-    `client-id` and `client-secret` into AWS env vars
-    `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`.
+Cases:
 
-**`README.md`** (modified)
-- "Authentication (optional)" subsection adds a "or sign in with
-  Google" bullet pointing at `/oauth2/authorization/google`.
-- Static test-count claim bumped (current: 196 → expected ~200,
-  see Verification).
+1. `getMyGames_withoutAuth_returns401WithAuthenticationRequired` —
+   no Bearer → 401 + `ErrorResponse(AUTHENTICATION_REQUIRED, ...)`.
+2. `getMyGames_emptyHistory_returns200WithEmptyPage` — newly
+   registered user, no games → 200 with `content: []`,
+   `totalElements: 0`.
+3. `getMyGames_userHasArchivedGames_returnsOnlyOwn` — register two
+   users A and B; create archived games for each; A's call to
+   `/api/me/games` returns only A's games (count + ids confirmed),
+   B's games are NOT included.
+4. `getMyGames_anonymousArchivedGames_notVisible` — create an
+   anonymous archived game (X-Player-Id only, no auth); register
+   a user A with the same email NOT used by the guest; A's call
+   returns empty (fresh-start identity confirmed end-to-end).
+5. `getMyGames_pagination_respectsPageAndSize` — create 5 archived
+   games for user A; request `?page=0&size=2` returns 2 entries +
+   `totalElements: 5`, `totalPages: 3`; request `?page=2&size=2`
+   returns 1 entry.
+6. `getMyGames_invalidPagination_returns400` — `?size=101`
+   (over max) and `?page=-1` (under min) both return 400 with
+   `VALIDATION_FAILED`.
+7. `getMyGames_authenticatedGameCreation_populatesUserIdColumns` —
+   register user A; create a game where A is white via the auth'd
+   path; archive the game (or assert mid-create); inspect the
+   `GameEntity` (or the JSON response of `/api/me/games`) to
+   confirm `white_user_id = A.id` and `black_user_id = null` (or
+   the other user's id if B is also auth'd).
 
-**`notes/18-auth-google-oauth.md`** (new)
-- Follows `_template.md`. Cross-ecosystem section covers:
-  - http4s `Authentication` + OAuth2 with `org.http4s.client.oauth2`.
-  - Scala `pac4j-scala` and `silhouette` for OAuth2 client work.
-  - Node parallels: `passport-google-oauth20`, `@auth/core` (Auth.js).
-  - The "redirect with fragment, not query" trick (fragment is not
-    sent to the server, so the token does not leak into backend
-    logs even if some intermediate proxy logs the URL).
+A missing case = `[FAIL]`.
+
+**Modified ITs (regression):**
+- `GameIT` / `RoomIT` (existing) — confirm anonymous flow stays
+  green WITHOUT modification: `POST /api/games` without
+  Authorization still works; archived rows have
+  `white_user_id = black_user_id = null`. Implementer must not
+  edit these tests; reviewer verifies via `git diff --name-only`.
+- `PlayerGamesIT` (if it exists) — `GET /api/players/{id}/games`
+  still works for guests, still hard-capped at 50. Unchanged.
+
+**Docs:**
+- `docs/architecture.md` — "API contract" section gains the new
+  `/api/me/games` endpoint. Authentication section gains a note
+  that the data model wired in feature 16 (FK columns on `games`)
+  is now active.
+- `README.md` — API section gains a bullet for the new endpoint;
+  static test-count claim bumped 200 → expected ~207 (97 unit +
+  110 IT = 207; +7 IT from this feature).
+
+**`notes/19-auth-my-games.md`** (new)
+- Follows `_template.md`. Java/Spring concepts: Spring Data
+  `Page<T>` + `Pageable` + JPQL pagination; `@AuthenticationPrincipal`
+  vs `SecurityContextHolder.getContext().getAuthentication()`; how
+  the security filter chain guarantees the controller-time
+  invariant "authenticated user is present"; Jackson record
+  deserialization backwards-compatibility for the `Player.userId`
+  field arriving from Redis state created before this feature.
+- Cross-ecosystem: `doobie` + `fs2` pagination via `LIMIT/OFFSET`;
+  http4s `AuthMiddleware`-passed principals; Scala `cats.data.NonEmptyList`
+  vs Spring `Page<T>` ergonomics.
+- Decisions: (a) self-side determination from user-id comparison
+  vs storing self-side in the projection; (b) view-DTO refactor on
+  `GameStateResponse` if leakage was at risk; (c) keep
+  `GET /api/players/{id}/games` unchanged for guests.
+- Gotchas: Jackson record deserialization with a new nullable
+  field (existing Redis state may be a pre-feature-19 shape; the
+  field MUST default to null cleanly, not throw); JPQL `Page<T>`
+  needs a count query — Spring derives it automatically for
+  simple queries but the implementer should verify by reading the
+  Failsafe logs for "executing count query".
 
 ### Verification
 
-`./init.sh` is the canonical gate. New ITs (`OAuth2SuccessHandlerIT`)
-add 4 IT cases; expected new total: 200 (97 unit + 103 IT). Delta
-from feature 17's 196: +4 IT, 0 unit.
+`./init.sh` is the canonical gate. New IT count: 7
+(`MyGamesIT`). Expected new total: 207 (97 unit + 110 IT).
+Delta from feature 18's 200: +7 IT, 0 unit.
 
 Reviewer's extra checks:
-- The success handler is wired in `SecurityConfig` AND the
-  default Spring auto-config is not overridden in a way that
-  silently disables it.
-- `User` rows minted by the OAuth path have `passwordHash = null`,
-  not an empty string (BCrypt would happily hash an empty string,
-  creating a phantom-loginable user).
-- The JWT minted by the OAuth path is byte-for-byte interchangeable
-  with one minted by `/api/auth/login` (same claims shape, same
-  signing key). The IT round-trip case asserts this implicitly by
-  calling `/api/me`.
-- `application-test.yml` provides client-id / client-secret values
-  so the context loads even though the OAuth flow is never
-  triggered in tests; if missing, every IT will fail at context
-  startup with a Spring binding error.
-- The `oauth2Login` config block does NOT accidentally widen the
-  allow-list — `.authenticated()` rule for `/api/me` must still
-  apply (the OAuth dance does NOT require `/api/me` to be public).
+- `Player.userId` does NOT appear in any JSON wire-format
+  response (`GET /api/games/{id}`, `GET /api/players/{id}/games`,
+  STOMP `MoveEvent` / `RoomEvent` payloads). Grep:
+  `curl -s http://localhost:8080/v3/api-docs | jq` should show no
+  `userId` on any player-shaped schema. If `GameStateResponse`
+  embedded `Player` raw, the implementer's refactor must
+  guarantee this.
+- `games.white_user_id` / `games.black_user_id` are populated on
+  archive when the side was authenticated, null when guest. The
+  IT case `getMyGames_authenticatedGameCreation_populatesUserIdColumns`
+  pins this; the reviewer can cross-check by inspecting the
+  `GameEntity` field after a regression-IT archive completes.
+- The new endpoint does NOT accidentally widen the OPEN allow-list:
+  `/api/me/games` is `.authenticated()` (no `permitAll`
+  match), and the existing `/api/players/{id}/games` is still
+  reachable without auth.
+- The `Pageable` request param binding works: a request without
+  `page` / `size` query params returns the default first-page-20.
+- Existing 200 ITs stay green without modification (regression
+  via `git diff --name-only src/test`).
 
 ### Cross-repo coordination
 
-**Required.** This feature adds a public surface the frontend will
-consume (`/oauth2/authorization/google` link, `/auth/callback`
-fragment handler). The change is **additive** — no existing endpoint
-changes shape — so the backend ships independently. The frontend's
-"Sign in with Google" button is a separate feature on the
-`chess-frontend` repo coordinated via the bundle's locked decisions
-in this file.
-
-### Operator follow-ups this feature adds
-
-These are NOT acceptance items — they are real-world actions the
-user must do outside the code to make production work:
-
-- **Register a Google OAuth 2.0 Client** in Google Cloud Console:
-  - Project: a free-tier dedicated project (or reuse an existing
-    one if appropriate).
-  - Application type: Web application.
-  - Authorised redirect URIs:
-    - `https://chess-backend.duckdns.org/login/oauth2/code/google`
-    - `http://localhost:8080/login/oauth2/code/google`
-  - Capture `client-id` and `client-secret`.
-- **Set env vars in production:**
-  - `GOOGLE_OAUTH_CLIENT_ID`
-  - `GOOGLE_OAUTH_CLIENT_SECRET`
-  - `AUTH_OAUTH_FRONTEND_REDIRECT_BASE` =
-    `https://chess-frontend-52i.pages.dev`
-- These get added to `/opt/chess/.env` on EC2 (see
-  `docs/deploy-runbook.md`).
-
-The feature is shippable to production only after these are done.
-The implementer documents them in `notes/18-auth-google-oauth.md`
-"Operator follow-ups" and in `docs/architecture.md` "Operator setup".
+**Required.** The new endpoint `/api/me/games` is consumed by the
+frontend's "my games" view. The pagination JSON shape is the
+standard Spring Data envelope (`content`, `totalElements`,
+`totalPages`, `size`, `number`), pre-known to the frontend's
+typed client codegen via `/v3/api-docs`. The existing
+`/api/players/{id}/games` stays as-is — the frontend can switch
+between the two endpoints based on auth state. The change is
+additive.
 
 ### Java / Spring concepts to highlight in the feature note
 
-- Spring Security's OAuth2 client surface: `oauth2Login` DSL,
-  `CommonOAuth2Provider` constants for the major providers,
-  `OAuth2AuthenticationToken`, `OAuth2User`.
-- `AuthenticationSuccessHandler` vs the default behaviour (which
-  redirects to a saved-request URI or `/`). Why we need a custom
-  handler at all.
-- The "redirect with URL fragment" pattern: fragments are not sent
-  to the server in subsequent requests, so the token cannot leak
-  into server logs even if an intermediate proxy logs the URL.
-  Different from query parameters.
-- `find-or-create` on `googleSub` as the canonical pattern for
-  social-login first-time sign-in.
-- Why `passwordHash = null` is correct for OAuth-only users (and
-  why an empty string would be a footgun).
-- Spring's `{baseUrl}` template in `redirect-uri` config and how
-  it resolves at runtime to the actual host.
+- Spring Data `Pageable` + `Page<T>` + JPQL pagination; the
+  derived count query; the `PageRequest.of(page, size)` builder.
+- `@AuthenticationPrincipal` annotation for injecting the
+  current user directly into a controller method signature; how
+  Spring resolves it against the `SecurityContextHolder`.
+- Jackson record deserialization rules: how a record with a new
+  nullable field handles old JSON shapes that lack the field
+  (`@JsonInclude` / `@JsonCreator` defaults).
+- The active/archive split: Redis holds `Game` while active,
+  Postgres `games` table holds it terminal. The auth thread (a
+  nullable `UUID userId` on `Player`) must survive the
+  serialise/deserialise cycle through Redis without breaking
+  pre-feature-19 in-flight games at deploy time.
+- Spring's standard pagination JSON envelope — what fields it
+  emits and how a TypeScript client typically consumes it.
 
-### What feature 18 does NOT do
+### What feature 19 does NOT do
 
-- No account linking (Google + email/password in the same User).
-  Email collision between paths is surfaced as an error to the
-  frontend.
-- No multi-provider OAuth (no Apple, no GitHub). Adding more
-  providers later is `.clientRegistration(...)` per provider —
-  the bundle's scope is Google only.
-- No "login with refreshable Google access token" — we use Google
-  to authenticate ONCE and then issue our own JWT. The Google
-  access token is discarded after the userinfo fetch.
+- No "claim my anonymous games" flow (out-of-scope at bundle
+  level).
+- No bulk delete / archive management.
+- No filtering / sorting beyond default `endedAt DESC`.
+- No "in-progress games" listing (those are visible via
+  `/api/games/{id}` if you know the id; not in scope here).
+- No replay endpoint changes (feature 19 of the architecture
+  doc lists this as a future candidate).
 
 ---
 
 ## Carried over from 2026-05-25 closure (operator follow-ups)
 
-These still apply:
+- **Rotate the RDS master password.**
+- **Configure branch protection on `main`.**
+- **Replace the static test-count claim** in `README.md` with a
+  dynamic count or remove it. Will need bumping again this
+  feature (200 → ~207).
 
-- **Rotate the RDS master password.** Pre-existing, increasingly
-  pressing as the auth surface grows.
-- **Configure branch protection on `main`.** Pre-existing.
-- **Replace the static test-count claim in `README.md`** with a
-  dynamic count or remove it. Partially closed by feature 17
-  (181 → 196); will need to update again to ~200 in this feature.
+These are operator actions — not feature 19 acceptance items.
 
 ---
 
 ## Leader notes for the next handoffs
 
-- Feature 18 plan needs user approval per `leader.md` before the
-  implementer handoff. The leader is waiting on the user's
-  explicit OK to delegate.
-- When feature 18 closes, this file gets replaced with feature 19's
-  detailed plan; "Bundle decomposition" + "Bundle-level technical
-  decisions" sections above get copied forward verbatim again.
-- Per [[feedback-flag-untracked-files-at-close]]: at feature 18
-  close, flag the new file `OAuth2SuccessHandler.java` and any new
-  test file. No new package this feature (re-uses `config/security/`
-  and `test/config/security/`).
+- Feature 19 plan needs user approval before delegation.
+- When feature 19 closes, the bundle has one feature left
+  (`auth-stomp-trust`). `current.md` will be rewritten with the
+  feature-20 detail; bundle decomposition + decisions are
+  copy-forwarded one last time.
+- Per [[feedback-flag-untracked-files-at-close]]: at feature 19
+  close, flag the new package `web/me/` (likely `MyGamesController.java`
+  + `MyGameSummary.java`) and the new test class.

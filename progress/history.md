@@ -2131,3 +2131,56 @@ Test count: 196 (97 unit + 99 IT). Delta +9 IT, +0 unit. All nine cases live in 
 - `progress/history.md` (this entry)
 
 **Feature note:** `notes/17-auth-jwt.md`.
+
+---
+
+## 2026-05-27 — auth-google-oauth (feature 18, third of the auth bundle)
+
+**Status:** done.
+
+**Summary:** Third feature of the auth bundle. Lands Google OAuth 2.0 sign-in alongside the email/password path from feature 17. The two paths converge on the same `User` aggregate, mint the same JWT shape via the same `JwtIssuer`, and reach the rest of the application through the same `JwtAuthenticationFilter`. From the frontend's perspective the choice is "click button A or button B" — once authenticated, everything downstream is identical.
+
+The architectural choice was Spring Security's `oauth2Login` DSL plus a single custom `AuthenticationSuccessHandler`. Spring Security's `CommonOAuth2Provider.GOOGLE` constant carries Google's OAuth endpoints (authorization, token, userinfo), the framework auto-registers `/oauth2/authorization/google` (initiates the dance) and `/login/oauth2/code/google` (handles the callback), and we wrote ~150 lines of `OAuth2SuccessHandler` to translate Google's `OAuth2User` into our `User` + `JwtIssuer.issue` + a redirect to the frontend with the token in the URL fragment. The framework owned the OAuth state, the PKCE-ish session, the code-for-token exchange, the userinfo fetch, and the principal construction; we owned the find-or-create-user, JWT mint, and redirect.
+
+Token delivery uses the URL **fragment** (`#token=<jwt>`), not a query parameter. This is the deliberate log-hygiene choice from the bundle planning: fragments are not sent to the server in subsequent requests, so even if an intermediate proxy or CDN logs the redirect URL, the token is not part of what it captures. The frontend reads `window.location.hash`, strips `#token=`, stores the JWT, and calls `history.replaceState` to clean the URL — feature scope on the `chess-frontend` repo.
+
+Email collision policy. The bundle's locked decision was "no account linking" — Google + email/password in the same User is out of scope. When an OAuth callback arrives for an email that's already registered under email/password (no `googleSub` on the existing User), the handler does not merge identities and does not throw. It redirects to `${frontend-redirect-base}/auth/callback#error=email_taken`. The frontend reads the fragment and shows a user-facing message; the backend logs a generic warning (no PII). This is feature 18's contribution to the bundle's user-enumeration / account-takeover defenses — silently merging would let a Google account take over an email/password user just by knowing the email.
+
+`User.passwordHash = null` for OAuth-only users. Not an empty string. BCrypt would happily hash an empty string and create a phantom-loginable user — the password input `""` would `matches()` against the stored empty-string hash. The IT explicitly asserts `getPasswordHash()` is null with an in-message rationale so a future implementer cannot accidentally regress this to a sentinel value.
+
+`AuthProperties` was restructured during implementation. The plan asked for a nested `OAuthProps` record alongside the existing JWT properties, but the existing bean was bound to `@ConfigurationProperties("auth.jwt")` — adding `auth.oauth.frontend-redirect-base` would have required either a separate `OAuth2Properties` class (split surface) or this restructure (single source). The implementer chose the latter: `AuthProperties` now binds to `@ConfigurationProperties("auth")` with nested records `Jwt(secret, expirySeconds)` and `OAuthProps(frontendRedirectBase)`. Convenience accessors `secret()` and `expirySeconds()` on the outer class delegate to `Jwt` so `JwtIssuer`, `JwtVerifier`, `AuthCoreIT`, and `AuthEndpointsIT` compile unchanged. Spring's relaxed binding maps the unchanged YAML keys (`auth.jwt.secret`, `auth.jwt.expiry-seconds`) onto the nested record automatically.
+
+Defensive parsing on the OAuth principal. `sub`, `email`, and `name` are all checked for null and blank. The `Authentication` itself is checked for `OAuth2AuthenticationToken` via `instanceof` so a non-OAuth principal arriving at the handler (a configuration error) produces a generic warning + error redirect rather than a NPE 500. The "missing profile" path tests this with a `DefaultOAuth2User` constructed without an email.
+
+Test count: 200 (97 unit + 103 IT). Delta +4 IT, +0 unit. All four IT cases live in `OAuth2SuccessHandlerIT`:
+- happy path with a fresh Google `sub` — round-trip asserts `#token=` value calling `/api/me` works (proves JWT interchangeability with `/api/auth/login`).
+- pre-existing User with matching `googleSub` — reuse (count unchanged, same user returned).
+- email collision with email/password user — redirect-with-error (count unchanged, no merge).
+- missing email — redirect-with-error.
+
+The IT autowires the production `OAuth2SuccessHandler` bean and invokes it with mock servlet objects, exercising the actual Spring-managed wiring rather than a unit-instantiated handler bypassing the dependency graph.
+
+**Cross-repo:** required (additive). Two new endpoints are public: `/oauth2/authorization/google` initiates the flow, `/login/oauth2/code/google` handles the callback. Neither carries a JSON body or REST contract — they are Spring-managed. The frontend's auth UI adds a "Sign in with Google" button pointing at the first; the existing `/auth/callback` route (already used for the JWT fragment) handles both feature 17 and feature 18 outputs identically.
+
+**Operator follow-ups added by this feature** (real-world steps the user must do before production works):
+- Create OAuth 2.0 Client ID in Google Cloud Console (Web application type).
+- Authorised redirect URIs: `https://chess-backend.duckdns.org/login/oauth2/code/google` AND `http://localhost:8080/login/oauth2/code/google` (for local dev).
+- Set env vars in `/opt/chess/.env` on EC2: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `AUTH_OAUTH_FRONTEND_REDIRECT_BASE=https://chess-frontend-52i.pages.dev`. Documented in `notes/18-auth-google-oauth.md` "Operator follow-ups" and `docs/architecture.md` "Operator setup".
+
+**Files touched:**
+
+- `pom.xml` (modified; adds `spring-boot-starter-oauth2-client` with inline justification — Spring Security's Google client + token exchange + userinfo fetch; NO `oauth2-resource-server` because we are a client, not a resource server)
+- `src/main/java/io/github/dariogguillen/chess/config/AuthProperties.java` (modified; restructured to `@ConfigurationProperties("auth")` with nested records `Jwt(secret, expirySeconds)` and `OAuthProps(frontendRedirectBase)`; convenience accessors `secret()` and `expirySeconds()` preserve the feature-16/17 API surface; both inner records have compact-constructor invariants — HS256 secret ≥ 32 bytes, expiry > 0, frontend-redirect-base non-blank)
+- `src/main/java/io/github/dariogguillen/chess/config/SecurityConfig.java` (modified; added `.oauth2Login(oauth -> oauth.successHandler(oAuth2SuccessHandler))` to the `SecurityFilterChain`, extended the anonymous allow-list with `/oauth2/**` and `/login/oauth2/**`, constructor-injected `OAuth2SuccessHandler`)
+- `src/main/java/io/github/dariogguillen/chess/config/security/OAuth2SuccessHandler.java` (new; implements `AuthenticationSuccessHandler`; defensive parsing of `OAuth2User`; find-or-create User by `googleSub`; email-collision redirects with `#error=email_taken`; missing-profile redirects with `#error=oauth_missing_profile`; happy path mints JWT via `JwtIssuer.issue(user)` and redirects with `#token=`; three `log.warn(...)` lines all generic, zero PII)
+- `src/main/resources/application.yml` (modified; `spring.security.oauth2.client.registration.google` block with `client-id`, `client-secret`, `scope: openid, email, profile`, `redirect-uri: '{baseUrl}/login/oauth2/code/google'` template that resolves at runtime; `auth.oauth.frontend-redirect-base: ${AUTH_OAUTH_FRONTEND_REDIRECT_BASE:http://localhost:5173}` with the dev Vite default)
+- `src/test/resources/application-test.yml` (modified; provides fake `test-client-id` / `test-client-secret` and `auth.oauth.frontend-redirect-base: http://localhost:5173` so the context loads for every IT; the actual OAuth flow is never triggered against Google in tests)
+- `src/test/java/io/github/dariogguillen/chess/config/security/OAuth2SuccessHandlerIT.java` (new; 4 IT cases per the plan — happy path, existing-sub-reuses, email-taken-redirect, missing-email-redirect; happy path asserts JWT interchangeability via round-trip to `/api/me`; direct handler invocation via autowired bean with mock servlet objects)
+- `docs/architecture.md` (modified; new "Google OAuth 2.0 sign-in (feature 18)" subsection with a Mermaid `sequenceDiagram` of the flow Frontend → Backend → Google → Backend → Frontend; "Identity-collision policy" subsection documenting the `email_taken` redirect; "URL-fragment delivery" subsection explaining why fragment not query; "Operator setup" subsection covering Google Cloud Console steps and EC2 env vars)
+- `README.md` (modified; "Authentication (optional)" subsection gains a "Sign in with Google" bullet pointing at `/oauth2/authorization/google`; static test-count claim bumped 196 → 200)
+- `notes/18-auth-google-oauth.md` (new; follows `_template.md`; cross-ecosystem section covers Scala — http4s + silhouette + pac4j-scala — and Node — passport-google-oauth20 + Auth.js; Decisions captures (a) email-taken redirect not exception, (b) `passwordHash = null` not empty, (c) IT direct invocation, (d) `AuthProperties` restructure rationale; Gotchas covers log hygiene, allow-list dance, fragment-vs-query, BCrypt-on-empty-string footgun)
+- `feature_list.json` (modified: `auth-google-oauth.status` → `done`; `auth-my-games.status` → `in_progress`)
+- `progress/current.md` (rewritten with feature-19 detail at this entry's close)
+- `progress/history.md` (this entry)
+
+**Feature note:** `notes/18-auth-google-oauth.md`.

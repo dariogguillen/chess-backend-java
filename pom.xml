@@ -77,6 +77,20 @@
 			<artifactId>spring-boot-starter-security</artifactId>
 		</dependency>
 		<!--
+			Spring Security OAuth2 client (feature 18 — auth-google-oauth). Wires the
+			full Google OAuth 2.0 authorization-code flow: the /oauth2/authorization/{provider}
+			redirect endpoint, the /login/oauth2/code/{provider} callback, the userinfo
+			fetch, and the OAuth2User principal that our AuthenticationSuccessHandler reads.
+			We are an OAuth2 *client* (we initiate sign-in against Google), NOT an OAuth2
+			resource server — bearer-token validation stays on feature 16's
+			JwtAuthenticationFilter, so spring-boot-starter-oauth2-resource-server is
+			deliberately NOT added.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-oauth2-client</artifactId>
+		</dependency>
+		<!--
 			jjwt (feature 16 — auth-core). The de-facto JWT library for Java. Split into
 			three artifacts: api is the public surface used by code, impl is the runtime
 			implementation, jackson provides JSON (de)serialization of claims. impl and
