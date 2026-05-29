@@ -10,6 +10,8 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Limit;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -80,5 +82,26 @@ public class GameHistoryService {
   @Transactional(readOnly = true)
   public List<ArchivedGamePlayerView> findByPlayer(UUID playerId) {
     return repository.findByPlayerId(playerId, Limit.of(HISTORY_HARD_CAP));
+  }
+
+  /**
+   * Returns the archived games owned by {@code userId} as either side, page-shaped, newest first.
+   * Activated by feature 19 (`auth-my-games`) to back the authenticated {@code GET /api/me/games}
+   * endpoint. The user-id-driven query is decoupled from {@link #findByPlayer(UUID)}: the per-
+   * session player UUID and the user FK are distinct concepts that travel together on every
+   * authenticated game, and the two history endpoints serve two distinct audiences (guests and
+   * authenticated users).
+   *
+   * <p>Unknown user id → empty page. No "user not found" 404 — the controller enforces that the
+   * caller IS the user by construction (Spring Security's filter chain 401s otherwise), so the only
+   * way to reach this with an unknown id is for the user to have just registered with zero games.
+   *
+   * @param userId the authenticated user's id; non-null.
+   * @param pageable page-shaped request (page index, page size).
+   * @return the user's archived games, newest first, page envelope.
+   */
+  @Transactional(readOnly = true)
+  public Page<ArchivedGamePlayerView> findByUser(UUID userId, Pageable pageable) {
+    return repository.findByUserId(userId, pageable);
   }
 }

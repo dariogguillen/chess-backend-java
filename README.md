@@ -20,7 +20,7 @@ Open the frontend in two browsers (Firefox + Chrome works well), create a room i
 - **Disconnect/reconnect lifecycle with grace period.** A STOMP session drop schedules a one-shot 60-second abandon timer; a resubscribe with the matching `playerId` native header cancels it. `PlayerDisconnectedEvent` and `PlayerReconnectedEvent` drive the opponent's "reconnecting..." banner with an absolute `gracePeriodEndsAt` deadline.
 - **Production deploy on AWS Free Tier with OIDC CI/CD.** EC2 + RDS + ECR provisioned by Terraform; Caddy terminates TLS via Let's Encrypt at `chess-backend.duckdns.org`; GitHub Actions authenticates to AWS via federated OIDC (no static keys anywhere) and gates each release on a `/api/health` smoke test.
 - **Leader/implementer/reviewer agent harness with persisted state.** Three role files in `.claude/agents/` separate planning, execution, and verification. State outlives chat: scope in `feature_list.json`, active session in `progress/current.md`, audit trail in `progress/history.md`, learning notes in `notes/`.
-- **200 tests with Testcontainers — no H2, no in-memory fakes.** Integration tests boot a real Postgres and Redis via Testcontainers and exercise the system through the REST + STOMP surfaces. Unit tests cover the domain layer (chess rules, edge cases) where a context boot would be wasted overhead.
+- **207 tests with Testcontainers — no H2, no in-memory fakes.** Integration tests boot a real Postgres and Redis via Testcontainers and exercise the system through the REST + STOMP surfaces. Unit tests cover the domain layer (chess rules, edge cases) where a context boot would be wasted overhead.
 
 ## Architecture
 
@@ -200,7 +200,12 @@ Guest play stays open on every existing surface; an account unlocks "review my p
 - `POST /api/auth/login` — `{ email, password }` → `200 { token, user }`.
 - Or sign in with Google — navigate the browser to `/oauth2/authorization/google`. The backend handles the OAuth dance, mints a JWT, and redirects to the frontend's `/auth/callback#token=<jwt>` so the frontend can read the token from the URL fragment. The Google sign-in path requires `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` / `AUTH_OAUTH_FRONTEND_REDIRECT_BASE` env vars at boot; see [`docs/architecture.md`](docs/architecture.md) → "Authentication → Google OAuth 2.0 sign-in" for the operator setup.
 
-The returned `token` is a stateless HS256 JWT (7-day lifetime). Send it back as `Authorization: Bearer <token>` on subsequent requests to authenticated endpoints (today only `GET /api/me`). Full request/response shapes live in the Swagger UI linked above.
+The returned `token` is a stateless HS256 JWT (7-day lifetime). Send it back as `Authorization: Bearer <token>` on subsequent requests to authenticated endpoints. Today the auth-required surface is:
+
+- `GET /api/me` — returns the authenticated user (`{ id, email, displayName }`).
+- `GET /api/me/games?page=&size=` — returns the authenticated user's archived games, newest first, in the standard Spring Data `Page` envelope. Pagination params are `page` (default 0, min 0) and `size` (default 20, min 1, max 100). Authenticated game creation (`POST /api/rooms` / `POST /api/rooms/{id}/join` with a Bearer token) populates `games.white_user_id` / `games.black_user_id` so this endpoint can find them.
+
+Full request/response shapes live in the Swagger UI linked above.
 
 ### WebSocket (STOMP)
 

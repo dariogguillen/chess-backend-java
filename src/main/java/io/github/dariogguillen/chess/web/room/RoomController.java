@@ -1,6 +1,7 @@
 package io.github.dariogguillen.chess.web.room;
 
 import io.github.dariogguillen.chess.domain.Room;
+import io.github.dariogguillen.chess.domain.User;
 import io.github.dariogguillen.chess.exception.ErrorResponse;
 import io.github.dariogguillen.chess.exception.RoomNotFoundException;
 import io.github.dariogguillen.chess.service.RoomService;
@@ -17,6 +18,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -72,8 +74,10 @@ public class RoomController {
               schema = @Schema(implementation = ErrorResponse.class)))
   @PostMapping
   @ResponseStatus(HttpStatus.CREATED)
-  public RoomResponse createRoom(@Valid @RequestBody CreateRoomRequest request) {
-    CreatedRoom created = roomService.createRoom(request.displayName());
+  public RoomResponse createRoom(
+      @Valid @RequestBody CreateRoomRequest request, @AuthenticationPrincipal User currentUser) {
+    UUID currentUserId = currentUser == null ? null : currentUser.getId();
+    CreatedRoom created = roomService.createRoom(request.displayName(), currentUserId);
     return new RoomResponse(created.room().id(), created.creator().id(), ROLE_WHITE, null);
   }
 
@@ -113,8 +117,12 @@ public class RoomController {
               schema = @Schema(implementation = ErrorResponse.class)))
   @PostMapping("/{id}/join")
   public RoomResponse joinRoom(
-      @PathVariable("id") String id, @Valid @RequestBody JoinRoomRequest request) {
-    JoinedRoom joined = roomService.joinRoom(id.toUpperCase(Locale.ROOT), request.displayName());
+      @PathVariable("id") String id,
+      @Valid @RequestBody JoinRoomRequest request,
+      @AuthenticationPrincipal User currentUser) {
+    UUID currentUserId = currentUser == null ? null : currentUser.getId();
+    JoinedRoom joined =
+        roomService.joinRoom(id.toUpperCase(Locale.ROOT), request.displayName(), currentUserId);
     return new RoomResponse(
         joined.room().id(), joined.joiner().id(), ROLE_BLACK, joined.game().id());
   }

@@ -70,6 +70,10 @@ public class RoomService {
    *
    * @param displayName the human-readable name of the creator; passed through to the {@link Player}
    *     record.
+   * @param currentUserId the authenticated user's id when the request carried a valid Bearer JWT,
+   *     {@code null} for anonymous guest creation. Threaded into the new {@link Player}'s {@code
+   *     userId} field so the archive path can populate {@code games.white_user_id} when the game
+   *     terminates (feature 19, `auth-my-games`).
    * @return the freshly created room with one player and status {@link
    *     RoomStatus#WAITING_FOR_PLAYER}, plus the synthesised {@link Player} so the caller can
    *     surface the assigned player id.
@@ -77,8 +81,8 @@ public class RoomService {
    *     collide with existing rooms — a system-level failure indicating either a near-full keyspace
    *     or a broken {@link RoomCodeGenerator}.
    */
-  public CreatedRoom createRoom(String displayName) {
-    Player creator = new Player(UUID.randomUUID(), displayName);
+  public CreatedRoom createRoom(String displayName, UUID currentUserId) {
+    Player creator = new Player(UUID.randomUUID(), displayName, currentUserId);
     for (int attempt = 1; attempt <= MAX_CODE_ATTEMPTS; attempt++) {
       String candidate = codeGenerator.generate();
       Room created =
@@ -152,13 +156,17 @@ public class RoomService {
    *
    * @param roomId the id of the room to join.
    * @param displayName the human-readable name of the joiner.
+   * @param currentUserId the authenticated user's id when the request carried a valid Bearer JWT,
+   *     {@code null} for anonymous guest joins. Threaded into the new {@link Player}'s {@code
+   *     userId} field so the archive path can populate {@code games.black_user_id} when the game
+   *     terminates (feature 19, `auth-my-games`).
    * @return a {@link JoinedRoom} carrying the post-join room, the synthesised joiner player, and
    *     the freshly created game so the caller can surface its id.
    * @throws RoomNotFoundException if no room exists for {@code roomId}.
    * @throws RoomFullException if the room already holds two players.
    */
-  public JoinedRoom joinRoom(String roomId, String displayName) {
-    Player joiner = new Player(UUID.randomUUID(), displayName);
+  public JoinedRoom joinRoom(String roomId, String displayName, UUID currentUserId) {
+    Player joiner = new Player(UUID.randomUUID(), displayName, currentUserId);
     // The created game is captured from inside the atomic block so the outer code can return it.
     Game[] createdGameHolder = new Game[1];
 
@@ -211,7 +219,8 @@ public class RoomService {
    * subscribers that miss the event.
    */
   private void broadcastRoomJoinedEvent(String roomId, UUID gameId, Player joiner) {
-    RoomJoinedEvent event = new RoomJoinedEvent(roomId, gameId, joiner);
+    RoomJoinedEvent event =
+        new RoomJoinedEvent(roomId, gameId, RoomJoinedEvent.PlayerView.of(joiner));
     try {
       messagingTemplate.convertAndSend("/topic/rooms/" + roomId, event);
       log.info(

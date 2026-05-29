@@ -18,12 +18,18 @@ import java.util.UUID;
  * companion of this topic, which carries the same {@code gameId} (and the rest of the room state)
  * for reconcile.
  *
+ * <p>The {@code blackPlayer} field is a {@link PlayerView} (a nested record below) rather than the
+ * domain {@link Player} directly. Feature 19 (`auth-my-games`) added a nullable {@code userId}
+ * field to {@link Player}; embedding {@link Player} raw here would have leaked the FK on the STOMP
+ * wire. {@link PlayerView} pins the wire shape to {@code (id, displayName)} — identical to the
+ * pre-feature-19 JSON — and isolates the contract from future {@link Player} field additions.
+ *
  * @param type the discriminator constant {@code "ROOM_JOINED"}; set by the convenience constructor.
  * @param roomId the room the join happened on; matches the topic's {@code {roomId}} segment.
  * @param gameId the id of the freshly created game.
  * @param blackPlayer the joiner — i.e. the second player, who became {@code BLACK}.
  */
-public record RoomJoinedEvent(String type, String roomId, UUID gameId, Player blackPlayer)
+public record RoomJoinedEvent(String type, String roomId, UUID gameId, PlayerView blackPlayer)
     implements RoomEvent {
 
   /** Stable discriminator value emitted in JSON as {@code "type":"ROOM_JOINED"}. */
@@ -38,7 +44,24 @@ public record RoomJoinedEvent(String type, String roomId, UUID gameId, Player bl
    * @param gameId the freshly created game's id.
    * @param blackPlayer the joining player (becomes BLACK).
    */
-  public RoomJoinedEvent(String roomId, UUID gameId, Player blackPlayer) {
+  public RoomJoinedEvent(String roomId, UUID gameId, PlayerView blackPlayer) {
     this(TYPE, roomId, gameId, blackPlayer);
+  }
+
+  /**
+   * Boundary-only projection of {@link Player} to the STOMP wire shape. Carries only {@code (id,
+   * displayName)} so {@link Player#userId()} cannot leak. The accessor names match the domain
+   * {@link Player} record's components so subscribers that previously consumed {@code
+   * blackPlayer.id} and {@code blackPlayer.displayName} on the JSON side see no shape change.
+   *
+   * @param id the player id.
+   * @param displayName the human-readable label.
+   */
+  public record PlayerView(UUID id, String displayName) {
+
+    /** Convenience: build a {@link PlayerView} from a domain {@link Player}, dropping userId. */
+    public static PlayerView of(Player player) {
+      return new PlayerView(player.id(), player.displayName());
+    }
   }
 }

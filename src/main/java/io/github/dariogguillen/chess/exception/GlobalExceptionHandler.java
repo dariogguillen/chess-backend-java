@@ -1,5 +1,6 @@
 package io.github.dariogguillen.chess.exception;
 
+import jakarta.validation.ConstraintViolationException;
 import java.time.Clock;
 import java.time.Instant;
 import org.slf4j.Logger;
@@ -11,6 +12,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /**
@@ -89,6 +91,44 @@ public class GlobalExceptionHandler {
             .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
             .orElse("Request validation failed.");
     log.warn("Validation failed: {}", message);
+    return build(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", message);
+  }
+
+  /**
+   * Maps Spring 6.1+ {@link HandlerMethodValidationException} to HTTP 400 / {@code
+   * VALIDATION_FAILED}. Triggered by {@code @Validated} on a controller class plus JSR-380
+   * constraints ({@code @Min}, {@code @Max}, etc.) on individual {@code @RequestParam} /
+   * {@code @PathVariable} / {@code @RequestHeader} parameters. The pre-6.1 alternative was {@code
+   * ConstraintViolationException} (still handled below for legacy paths); the new exception is more
+   * structured and reports each violation as a {@code ParameterValidationResult}.
+   */
+  @ExceptionHandler(HandlerMethodValidationException.class)
+  public ResponseEntity<ErrorResponse> handleHandlerMethodValidation(
+      HandlerMethodValidationException ex) {
+    String message =
+        ex.getValueResults().stream()
+            .flatMap(pvr -> pvr.getResolvableErrors().stream())
+            .findFirst()
+            .map(error -> error.getDefaultMessage())
+            .orElse("Request parameter validation failed.");
+    log.warn("Method validation failed: {}", message);
+    return build(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", message);
+  }
+
+  /**
+   * Maps Jakarta {@link ConstraintViolationException} to HTTP 400 / {@code VALIDATION_FAILED}.
+   * Retained as a safety-net for any code path that still surfaces the legacy exception (e.g.
+   * service-layer validation triggered from a controller). The Spring 6.1+ canonical path for
+   * controller-parameter constraints is {@link HandlerMethodValidationException} above.
+   */
+  @ExceptionHandler(ConstraintViolationException.class)
+  public ResponseEntity<ErrorResponse> handleConstraintViolation(ConstraintViolationException ex) {
+    String message =
+        ex.getConstraintViolations().stream()
+            .findFirst()
+            .map(cv -> cv.getMessage())
+            .orElse("Request parameter validation failed.");
+    log.warn("Constraint violation: {}", message);
     return build(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", message);
   }
 

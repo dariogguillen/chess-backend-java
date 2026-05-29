@@ -3,6 +3,8 @@ package io.github.dariogguillen.chess.persistence;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.Limit;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -11,10 +13,21 @@ import org.springframework.data.repository.query.Param;
  * Spring Data JPA repository for archived games.
  *
  * <p>{@link JpaRepository} provides the {@code save / findById / delete / count} surface, and the
- * JPQL-based custom one below covers the "games where the player was either white or black, newest
- * first" history query as a projection that already carries the move count — that avoids a second
- * query (or a {@code LazyInitializationException}, since the application runs with {@code
- * spring.jpa.open-in-view: false}).
+ * JPQL-based custom methods below cover the two history queries:
+ *
+ * <ul>
+ *   <li>{@link #findByPlayerId(UUID, Limit)} — the per-session player-id history (the existing
+ *       guest-friendly {@code GET /api/players/{id}/games} surface).
+ *   <li>{@link #findByUserId(UUID, Pageable)} — the per-user history added by feature 19
+ *       (`auth-my-games`) to back the authenticated {@code GET /api/me/games} endpoint. Spring Data
+ *       derives the count query for {@link Page} automatically from the JPQL above; the {@code
+ *       SIZE(g.moves)} sub-projection is excluded from the count, so the count query stays a
+ *       single-row scan of the partial indexes from V2.
+ * </ul>
+ *
+ * <p>Both queries project into {@link ArchivedGamePlayerView}, a record whose canonical constructor
+ * matches the SELECT-list order. The same projection is reused so the controller layer maps to its
+ * wire-format DTO uniformly — only the {@code WHERE} clause differs.
  *
  * <p>The id parameters are {@link UUID} end-to-end — Spring Data binds them straight to the native
  * Postgres {@code uuid} columns with no driver-level conversion.
@@ -42,9 +55,39 @@ public interface GameHistoryRepository extends JpaRepository<GameEntity, UUID> {
   @Query(
       "SELECT new io.github.dariogguillen.chess.persistence.ArchivedGamePlayerView("
           + "g.id, g.roomId, g.whitePlayerId, g.whiteDisplayName, g.blackPlayerId, "
-          + "g.blackDisplayName, g.status, g.endedAt, SIZE(g.moves)) "
+          + "g.blackDisplayName, g.whiteUserId, g.blackUserId, g.status, g.endedAt, "
+          + "SIZE(g.moves)) "
           + "FROM GameEntity g "
           + "WHERE g.whitePlayerId = :playerId OR g.blackPlayerId = :playerId "
           + "ORDER BY g.endedAt DESC")
   List<ArchivedGamePlayerView> findByPlayerId(@Param("playerId") UUID playerId, Limit limit);
+
+  /**
+   * Returns archived games where {@code userId} matched either the white or the black FK side, in
+   * descending {@code endedAt} order, paginated. Activated by feature 19 (`auth-my-games`): backs
+   * the {@code GET /api/me/games?page=&size=} endpoint. The {@code WHERE} clause hits the two
+   * partial indexes created by V2 ({@code idx_games_white_user_id} and {@code
+   * idx_games_black_user_id}, both scoped to {@code WHERE *_user_id IS NOT NULL}), so guest games
+   * are excluded by index design rather than at scan time.
+   *
+   * <p>Spring Data derives the {@code COUNT(*)} query for the {@link Page} envelope automatically:
+   * {@code SELECT COUNT(g) FROM GameEntity g WHERE g.whiteUserId = :userId OR g.blackUserId =
+   * :userId}. The {@code SIZE(g.moves)} subquery is dropped from the count query because it has no
+   * effect on row count.
+   *
+   * @param userId the authenticated user id to look up; matched against both white_user_id and
+   *     black_user_id.
+   * @param pageable the page request (page, size, sort). Sort is ignored — the query has an
+   *     explicit {@code ORDER BY g.endedAt DESC} that mirrors the existing player-history path.
+   * @return the user's archived games, newest first, page-shaped envelope.
+   */
+  @Query(
+      "SELECT new io.github.dariogguillen.chess.persistence.ArchivedGamePlayerView("
+          + "g.id, g.roomId, g.whitePlayerId, g.whiteDisplayName, g.blackPlayerId, "
+          + "g.blackDisplayName, g.whiteUserId, g.blackUserId, g.status, g.endedAt, "
+          + "SIZE(g.moves)) "
+          + "FROM GameEntity g "
+          + "WHERE g.whiteUserId = :userId OR g.blackUserId = :userId "
+          + "ORDER BY g.endedAt DESC")
+  Page<ArchivedGamePlayerView> findByUserId(@Param("userId") UUID userId, Pageable pageable);
 }

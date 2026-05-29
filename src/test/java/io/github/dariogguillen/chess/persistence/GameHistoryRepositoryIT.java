@@ -159,6 +159,11 @@ class GameHistoryRepositoryIT {
         whiteName,
         blackId,
         blackName,
+        // Feature 19 added two nullable FK columns (white_user_id, black_user_id) to GameEntity.
+        // This helper builds guest-side games for the legacy player-id history path — both stay
+        // null, mirroring "pre-feature-19 archive" semantics.
+        null,
+        null,
         STARTING_FEN,
         FINAL_FEN,
         GameStatus.CHECKMATE,

@@ -60,6 +60,23 @@ public class GameEntity {
   @Column(name = "black_display_name", nullable = false, length = 100)
   private String blackDisplayName;
 
+  /**
+   * FK to {@code users(id)} for the white side; {@code null} for guest games. Activated by feature
+   * 19 (`auth-my-games`): the column was added by feature 16's V2 migration but stayed dormant (no
+   * JPA mapping) until the read surface for "my games" landed. Populated by {@link
+   * GameEntityMapper#toEntity(io.github.dariogguillen.chess.domain.Game)} from {@code
+   * Player.userId()}.
+   */
+  @Column(name = "white_user_id")
+  private UUID whiteUserId;
+
+  /**
+   * FK to {@code users(id)} for the black side; {@code null} for guest games. Symmetric to {@link
+   * #whiteUserId}.
+   */
+  @Column(name = "black_user_id")
+  private UUID blackUserId;
+
   @Column(name = "starting_fen", nullable = false, length = 100)
   private String startingFen;
 
@@ -97,6 +114,8 @@ public class GameEntity {
       String whiteDisplayName,
       UUID blackPlayerId,
       String blackDisplayName,
+      UUID whiteUserId,
+      UUID blackUserId,
       String startingFen,
       String finalFen,
       GameStatus status,
@@ -107,6 +126,8 @@ public class GameEntity {
     this.whiteDisplayName = whiteDisplayName;
     this.blackPlayerId = blackPlayerId;
     this.blackDisplayName = blackDisplayName;
+    this.whiteUserId = whiteUserId;
+    this.blackUserId = blackUserId;
     this.startingFen = startingFen;
     this.finalFen = finalFen;
     this.status = status;
@@ -135,6 +156,14 @@ public class GameEntity {
 
   public String getBlackDisplayName() {
     return blackDisplayName;
+  }
+
+  public UUID getWhiteUserId() {
+    return whiteUserId;
+  }
+
+  public UUID getBlackUserId() {
+    return blackUserId;
   }
 
   public String getStartingFen() {
@@ -179,6 +208,14 @@ public class GameEntity {
 
   void setBlackDisplayName(String blackDisplayName) {
     this.blackDisplayName = blackDisplayName;
+  }
+
+  void setWhiteUserId(UUID whiteUserId) {
+    this.whiteUserId = whiteUserId;
+  }
+
+  void setBlackUserId(UUID blackUserId) {
+    this.blackUserId = blackUserId;
   }
 
   void setStartingFen(String startingFen) {

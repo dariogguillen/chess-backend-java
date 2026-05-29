@@ -547,9 +547,79 @@ The feature is shippable to production only after these steps are
 done. The dev/test profile provides fake values so context-load
 stays green without a real Google client.
 
+### Per-user game history (feature 19)
+
+Feature 19 (`auth-my-games`) is the user-visible payoff of the auth
+bundle. Two surfaces ship together:
+
+**Read surface — `GET /api/me/games?page=&size=`.** Authenticated
+endpoint returning the caller's archived games in the standard
+Spring Data `Page` envelope, newest first. Auth-required:
+a missing / invalid Bearer JWT returns 401 with the
+`AUTHENTICATION_REQUIRED` `ErrorResponse` envelope. Pagination params:
+`page` (default 0, min 0), `size` (default 20, min 1, max 100); out-
+of-range values surface as 400 `VALIDATION_FAILED`. JSON shape:
+
+```
+GET /api/me/games?page=0&size=20
+Authorization: Bearer <jwt>
+
+200 OK
+{
+  "content": [
+    {
+      "gameId": "0d52a8a0-aaaa-bbbb-cccc-ddddeeee0000",
+      "roomId": "K7M3X9",
+      "opponentDisplayName": "Bob",
+      "selfSide": "WHITE",
+      "status": "CHECKMATE",
+      "endedAt": "2026-05-21T10:23:11.123Z",
+      "moveCount": 4
+    }
+  ],
+  "totalElements": 12,
+  "totalPages": 1,
+  "size": 20,
+  "number": 0,
+  "first": true,
+  "last": true,
+  "numberOfElements": 1,
+  "empty": false
+}
+```
+
+The page shape is the standard Spring Data envelope, pre-known to
+the frontend's typed-client codegen via `/v3/api-docs`. The existing
+guest-friendly `GET /api/players/{id}/games` stays open and
+unchanged for anonymous play — the two endpoints serve two distinct
+audiences and the frontend switches between them based on auth
+state.
+
+**Write surface — authenticated game creation populates the FK
+columns.** When `POST /api/rooms` or `POST /api/rooms/{id}/join` is
+called with a valid Bearer JWT, `RoomController` reads the
+`@AuthenticationPrincipal User` and threads its id into a new
+nullable `Player.userId` field on the domain record. The id flows
+through Redis-active state, survives the deserialize cycle (Jackson
+fills missing properties with null on the record's canonical
+constructor, which now accepts null on `userId`), and on
+terminal-status archive `GameEntityMapper` propagates it into the
+`white_user_id` / `black_user_id` columns feature 16 created in V2
+and left dormant. For anonymous calls (no Bearer header) both
+columns stay null. The historical `games.{white,black}_player_id`
+audit snapshots are untouched.
+
+**Wire-format isolation.** The domain `Player.userId` field must not
+leak to any JSON response (REST or STOMP). `GameStateResponse`
+projects `Player` to a nested
+`GameStateResponse.PlayerView(id, displayName)` record at the
+boundary; `RoomJoinedEvent` does the same on the STOMP side with
+its own nested `PlayerView`. The two-field shape preserves the
+pre-feature-19 wire format byte-for-byte and isolates the contract
+from any future field added to `Player`.
+
 ### What's not in this feature
 
-- **Per-user game history** — feature 19 (`auth-my-games`).
 - **STOMP identity verification** — feature 20 (`auth-stomp-trust`).
 - **Refresh tokens, password reset, email verification, 2FA,
   account linking** — out of scope for the whole bundle.

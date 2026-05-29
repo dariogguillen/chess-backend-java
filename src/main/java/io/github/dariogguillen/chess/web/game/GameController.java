@@ -3,6 +3,7 @@ package io.github.dariogguillen.chess.web.game;
 import io.github.dariogguillen.chess.domain.Game;
 import io.github.dariogguillen.chess.domain.Move;
 import io.github.dariogguillen.chess.domain.Piece;
+import io.github.dariogguillen.chess.domain.Player;
 import io.github.dariogguillen.chess.domain.Side;
 import io.github.dariogguillen.chess.domain.Square;
 import io.github.dariogguillen.chess.exception.ErrorResponse;
@@ -143,12 +144,21 @@ public class GameController {
     return new GameStateResponse(
         game.id(),
         game.roomId(),
-        game.white(),
-        game.black(),
+        toPlayerView(game.white()),
+        toPlayerView(game.black()),
         game.fen(),
         game.status(),
         turn,
         game.moves().stream().map(GameController::toMoveSummary).toList());
+  }
+
+  /**
+   * Strips the auth-bearing {@code userId} field at the wire boundary: maps a domain {@link Player}
+   * to {@link GameStateResponse.PlayerView} carrying only {@code (id, displayName)}. See {@link
+   * GameStateResponse.PlayerView}'s JavaDoc for the rationale.
+   */
+  private static GameStateResponse.PlayerView toPlayerView(Player player) {
+    return new GameStateResponse.PlayerView(player.id(), player.displayName());
   }
 
   /** Maps a domain {@link Move} to the wire-format {@link GameStateResponse.MoveSummary}. */

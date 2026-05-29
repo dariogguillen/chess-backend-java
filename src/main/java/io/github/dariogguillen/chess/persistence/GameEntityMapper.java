@@ -56,6 +56,10 @@ public class GameEntityMapper {
             game.white().displayName(),
             game.black().id(),
             game.black().displayName(),
+            // Feature 19: propagate the per-side auth FK from Player.userId() — null for guests,
+            // non-null when the side was authenticated at room-create / join time.
+            game.white().userId(),
+            game.black().userId(),
             game.startingFen(),
             game.fen(),
             game.status(),
@@ -83,8 +87,12 @@ public class GameEntityMapper {
    * @return the equivalent domain game.
    */
   public Game toDomain(GameEntity entity) {
-    Player white = new Player(entity.getWhitePlayerId(), entity.getWhiteDisplayName());
-    Player black = new Player(entity.getBlackPlayerId(), entity.getBlackDisplayName());
+    Player white =
+        new Player(
+            entity.getWhitePlayerId(), entity.getWhiteDisplayName(), entity.getWhiteUserId());
+    Player black =
+        new Player(
+            entity.getBlackPlayerId(), entity.getBlackDisplayName(), entity.getBlackUserId());
     List<Move> moves = new ArrayList<>(entity.getMoves().size());
     for (MoveEntity me : entity.getMoves()) {
       Optional<Piece> promotion =

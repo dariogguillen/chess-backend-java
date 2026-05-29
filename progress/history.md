@@ -2184,3 +2184,54 @@ The IT autowires the production `OAuth2SuccessHandler` bean and invokes it with 
 - `progress/history.md` (this entry)
 
 **Feature note:** `notes/18-auth-google-oauth.md`.
+
+---
+
+## 2026-05-28 — auth-my-games (feature 19, fourth of the auth bundle)
+
+**Status:** done.
+
+**Summary:** Fourth feature of the auth bundle. Lands the actual product benefit the user named when opening the bundle ("con una cuenta se pueden revisar las partidas jugadas"): a new authenticated `GET /api/me/games?page=&size=` endpoint and the write surface that makes it meaningful — `games.white_user_id` / `games.black_user_id` (the FK columns feature 16 added) are now populated whenever the corresponding side was authenticated at game-creation time.
+
+Two surfaces moved together. The read surface is a separate controller and endpoint from the existing guest-friendly `GET /api/players/{id}/games` — guests can still inspect their own history via the X-Player-Id path, authenticated users get their own history view bound to their stable `User.id` instead. The new path is `.authenticated()` in `SecurityConfig` (no permitAll match), the old path stays open. The pagination contract follows Spring Data's standard `Page<T>` JSON envelope (`content`, `totalElements`, `totalPages`, `number`, `size`) so the frontend can consume it via standard typed-client codegen with zero custom shape work.
+
+The write surface required threading the user identity from the security context all the way through the active-state Redis representation to the eventual `GameEntity` archive write. `Player` (the domain record) gained a nullable `UUID userId` field; the compact constructor explicitly does NOT `requireNonNull` it. `RoomService.createRoom` and `joinRoom` now take an optional `currentUserId` parameter. `RoomController` reads `@AuthenticationPrincipal User currentUser` (null for guests) and threads its id; `GameController` does the same. `GameEntityMapper` propagates `Player.userId()` to the new `GameEntity` columns on archive. For guest games, both FK columns stay null and the existing flow is byte-identical to feature 5/9's behaviour.
+
+The biggest design call was wire-format isolation. `Player.userId` MUST NOT leak through REST responses or STOMP events — leaking it would expose internal identity to opponents and viewers, breaking the bundle's stated identity model. The implementer chose a `PlayerView(UUID id, String displayName)` record approach: `GameStateResponse` now embeds `PlayerView` instead of `Player`, and `RoomJoinedEvent` defines its own nested `PlayerView` for the STOMP wire. Both refactors preserved accessor-call compatibility (`view.id()` / `view.displayName()`) so existing tests like `RoomLifecycleIT` stayed green without modification. A grep across `web/` and `websocket/` confirmed no DTO/event component named `userId` is exposed to any wire format; the `OpenApiIT` spec inspection corroborated.
+
+Jackson backwards-compatibility for the new `Player.userId` field was deliberately verified. The Redis active state holds serialised `Game` records (with `Player` inside); games in-flight at deploy time have JSON without `userId`. Jackson's default behaviour selects the canonical 3-arg constructor (by component-count match) and supplies null for the missing field — but only if the canonical constructor accepts null. The 2-arg convenience constructor added for source compatibility is deliberately NOT marked `@JsonCreator` (which would override the canonical selection). The implementer documented this in the feature note's Gotchas section as a portfolio-grade lesson about Jackson record creator selection.
+
+Self-side determination in `MyGamesController` extends `ArchivedGamePlayerView` with `whiteUserId` / `blackUserId` fields so the controller can do the `view.whiteUserId().equals(currentUserId)` comparison and pick `opponentDisplayName`. Same pattern as `PlayerGamesController.toSummary` — code consistency over cleverness. The existing repository IT stayed green with a one-line constructor-signature drift (`null, null` for the new FK args on the test helper) and the existing `PlayerGamesControllerIT` stayed green unchanged thanks to projection-extension backwards compatibility.
+
+The `@Min`/`@Max` annotations on `@RequestParam` page/size triggered a new failure mode that pre-feature-19 controllers did not hit: Spring 6.1's `HandlerMethodValidationException` for parameter validation (and the legacy `ConstraintViolationException` from `@Validated`). Two new `@ExceptionHandler` methods in `GlobalExceptionHandler` map both to 400 `VALIDATION_FAILED` with the existing `ErrorResponse` shape. No new error code introduced — the 12-code allowlist from feature 17 is intact and the `OpenApiIT` drift canary stayed green.
+
+Test count: 207 (97 unit + 110 IT). Delta +7 IT, +0 unit. All cases in `MyGamesIT`: 401 without auth, empty history, A-sees-only-own, anonymous-games-not-visible-to-A, pagination (5 games × `?size=2`), invalid pagination (size=101, page=-1), and authenticated game creation populating the FK columns. The IT added an `@AfterEach cleanUpGames` so cross-IT cleanup ordering (child rows before `users.deleteAll()`) doesn't trip the FK constraint when `MyGamesIT` runs before `AuthEndpointsIT`. Spring's "Serializing PageImpl instances as-is is not supported" warning was logged during the IT run — wire shape is correct today, but a future Spring Data upgrade may change `PageImpl` serialisation; an explicit `MyGamesPage` schema record documents the OpenAPI shape and could become the runtime envelope via `@EnableSpringDataWebSupport(pageSerializationMode = VIA_DTO)` in a future tidy-up. Non-blocking observation, captured in the reviewer report.
+
+**Cross-repo:** required (additive). The `/api/me/games` endpoint is the frontend's "my games" view. The pagination JSON shape is the standard Spring envelope so the typed client codegen via `/v3/api-docs` is unsurprised. The existing `/api/players/{id}/games` stays unchanged so the frontend can switch endpoints based on auth state.
+
+**Files touched:**
+
+- `src/main/java/io/github/dariogguillen/chess/domain/Player.java` (modified; added nullable `UUID userId` + 2-arg convenience constructor; compact constructor accepts null explicitly; JavaDoc explains the field semantics)
+- `src/main/java/io/github/dariogguillen/chess/persistence/GameEntity.java` (modified; added `whiteUserId` and `blackUserId` UUID columns mapped to the V2 migration FKs)
+- `src/main/java/io/github/dariogguillen/chess/persistence/GameEntityMapper.java` (modified; propagates `Player.userId()` both directions across the archive boundary)
+- `src/main/java/io/github/dariogguillen/chess/persistence/GameHistoryRepository.java` (modified; new `findByUserId(UUID, Pageable) → Page<ArchivedGamePlayerView>` JPQL query; existing `findByPlayerId` SELECT list extended to include the two new FK fields)
+- `src/main/java/io/github/dariogguillen/chess/persistence/ArchivedGamePlayerView.java` (modified; added `whiteUserId` and `blackUserId` fields for self-side determination)
+- `src/main/java/io/github/dariogguillen/chess/service/GameHistoryService.java` (modified; new `findByUser(UUID, Pageable)` method)
+- `src/main/java/io/github/dariogguillen/chess/service/RoomService.java` (modified; `createRoom` and `joinRoom` take optional `UUID currentUserId`)
+- `src/main/java/io/github/dariogguillen/chess/web/room/RoomController.java` (modified; reads `@AuthenticationPrincipal User` and threads its id)
+- `src/main/java/io/github/dariogguillen/chess/web/game/GameStateResponse.java` (modified; refactored to embed `PlayerView(id, displayName)` records instead of raw `Player` — wire-format isolation)
+- `src/main/java/io/github/dariogguillen/chess/web/game/GameController.java` (modified; added `toPlayerView` boundary helper)
+- `src/main/java/io/github/dariogguillen/chess/websocket/RoomJoinedEvent.java` (modified; `blackPlayer` field now `RoomJoinedEvent.PlayerView` for STOMP wire-format isolation)
+- `src/main/java/io/github/dariogguillen/chess/exception/GlobalExceptionHandler.java` (modified; new `@ExceptionHandler` for `HandlerMethodValidationException` and `ConstraintViolationException`, both → 400 `VALIDATION_FAILED`)
+- `src/main/java/io/github/dariogguillen/chess/web/me/MyGamesController.java` (new; new `web/me/` package; `GET /api/me/games?page=&size=` with full springdoc, `@AuthenticationPrincipal`, `@Validated @Min/@Max`)
+- `src/main/java/io/github/dariogguillen/chess/web/me/MyGameSummary.java` (new; response item record)
+- `src/test/java/io/github/dariogguillen/chess/web/me/MyGamesIT.java` (new; new test package; 7 cases including write-surface verification via case 7)
+- `src/test/java/io/github/dariogguillen/chess/persistence/GameHistoryRepositoryIT.java` (modified; test helper `newGameEntity` passes `null, null` for the two new FK args — pure structural drift, no behavioural change)
+- `docs/architecture.md` (modified; new "Per-user game history (feature 19)" subsection under Authentication; FK columns now described as active)
+- `README.md` (modified; new endpoint bullet under Authentication; static test-count claim bumped 200 → 207)
+- `notes/19-auth-my-games.md` (new; follows `_template.md`; Decisions captures the 5 deferred decisions + GlobalExceptionHandler structural extension; Gotchas covers Spring 6.1 validation exception change, Jackson canonical-constructor selection, `GameEntity` constructor drift, FK constraint trip during cross-IT cleanup; cross-ecosystem section covers doobie pagination, http4s `AuthedRoutes` parallel for `@AuthenticationPrincipal`, `Page<T>` vs `cats.data.NonEmptyList`)
+- `feature_list.json` (modified: `auth-my-games.status` → `done`; `auth-stomp-trust.status` → `in_progress`)
+- `progress/current.md` (rewritten with feature-20 detail at this entry's close)
+- `progress/history.md` (this entry)
+
+**Feature note:** `notes/19-auth-my-games.md`.

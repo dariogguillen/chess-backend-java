@@ -6,6 +6,7 @@ import io.github.dariogguillen.chess.domain.Move;
 import io.github.dariogguillen.chess.domain.Player;
 import io.github.dariogguillen.chess.domain.Side;
 import io.github.dariogguillen.chess.domain.Square;
+import io.github.dariogguillen.chess.web.room.PlayerInRoom;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.util.List;
 import java.util.UUID;
@@ -17,6 +18,13 @@ import java.util.UUID;
  * <p>{@code turn} is derived from {@code moves.size() % 2 == 0 ? WHITE : BLACK} at the controller
  * boundary; it is not stored on the domain {@link Game} because it would denormalise the move
  * history. Exposing it spares clients from parsing the FEN.
+ *
+ * <p>The per-side player shape used inside {@code white} / {@code black} is {@link PlayerView},
+ * declared as a nested record below. Feature 19 (`auth-my-games`) introduced this wrapper: the
+ * domain {@code Player} record gained a nullable {@code userId} field and embedding {@code Player}
+ * raw in the wire DTO would have leaked it. {@link PlayerView} pins the wire-format shape to {@code
+ * (id, displayName)} regardless of future {@link Player} field additions — same isolation
+ * discipline as {@link PlayerInRoom} in the room namespace.
  *
  * <p>The per-move shape used inside {@code moves} is {@link MoveSummary}, declared as a nested
  * record below. It is intentionally nested because it has no reference site outside this response;
@@ -34,8 +42,8 @@ import java.util.UUID;
 public record GameStateResponse(
     UUID id,
     String roomId,
-    Player white,
-    Player black,
+    PlayerView white,
+    PlayerView black,
     @Schema(
             description = "Current position in Forsyth-Edwards Notation.",
             example = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1")
@@ -46,6 +54,25 @@ public record GameStateResponse(
             example = "WHITE")
         Side turn,
     @Schema(description = "Full move history in playback order.") List<MoveSummary> moves) {
+
+  /**
+   * Wire-format shape for a player inside {@link GameStateResponse#white()} and {@link
+   * GameStateResponse#black()}. Mirrors the public surface of the domain {@link Player} record on
+   * its two field-name accessors ({@code id}, {@code displayName}), so subscribers that previously
+   * consumed {@code white.id} / {@code white.displayName} see no JSON shape change.
+   *
+   * <p>The deliberate omission: {@link Player#userId()} — the feature-19 FK to {@code users(id)} —
+   * is not represented here. Even though the controller has the value at hand from the domain
+   * {@link Player}, it is stripped at the boundary so the wire-format contract stays untouched and
+   * no future field added to {@code Player} can accidentally leak.
+   *
+   * @param id the player id; UUID serialised as a JSON string.
+   * @param displayName the human-readable label provided at room-create / join time.
+   */
+  public record PlayerView(
+      @Schema(description = "Player id.", example = "8b3c1f04-1234-5678-9abc-def012345678") UUID id,
+      @Schema(description = "Display name provided at game start.", example = "Alice")
+          String displayName) {}
 
   /**
    * Wire-format shape for an individual move inside {@link GameStateResponse#moves()}.
