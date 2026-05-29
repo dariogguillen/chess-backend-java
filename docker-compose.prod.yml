@@ -64,8 +64,13 @@ services:
       AUTH_OAUTH_FRONTEND_REDIRECT_BASE: ${AUTH_OAUTH_FRONTEND_REDIRECT_BASE}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET}
-      # CORS allow-list override; if unset, application.yml's default
-      # (https://chess-frontend-52i.pages.dev,http://localhost:*) applies.
-      CHESS_CORS_ALLOWED_ORIGIN_PATTERNS: ${CHESS_CORS_ALLOWED_ORIGIN_PATTERNS:-}
+      # NOTE: CHESS_CORS_ALLOWED_ORIGIN_PATTERNS is intentionally NOT pre-wired
+      # here. application.yml ships the correct production default
+      # (https://chess-frontend-52i.pages.dev,http://localhost:*). To override at
+      # runtime, add the explicit line `CHESS_CORS_ALLOWED_ORIGIN_PATTERNS:
+      # ${CHESS_CORS_ALLOWED_ORIGIN_PATTERNS}` here (without `:-` empty default —
+      # that would pass an empty string to the container and trip the
+      # CorsProperties compact constructor at boot) AND set the value in
+      # /opt/chess/.env.
     ports:
       - "127.0.0.1:8080:8080"
