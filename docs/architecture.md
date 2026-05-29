@@ -886,7 +886,7 @@ flat.* A topic that can carry more than one event variant
 carries an explicit `type: "..."` field set by a convenience
 constructor (no `@JsonTypeInfo`). A topic that can only ever carry
 one shape (today: `ViewerCountEvent` on
-`/topic/games/{gameId}/viewers`) stays flat — the discriminator would
+`/topic/rooms/{roomId}/viewers`) stays flat — the discriminator would
 be dead weight. This rule was introduced by feature 9.5 on the rooms
 topic and lifted to a codebase-wide convention by feature 11.5 when
 the games topic gained `PlayerDisconnectedEvent` /
@@ -1259,69 +1259,120 @@ in the order they were applied. Broadcasts for **different**
 games run in parallel; `SimpMessagingTemplate.convertAndSend` is
 thread-safe.
 
-### Viewer count broadcasts
+### Viewer count broadcasts (room-keyed)
 
-Feature 6.5 (spectator mode) layers a second broadcast onto the
-same `/ws` endpoint. Every time the set of sessions subscribed to
-`/topic/games/{gameId}` changes — a new subscribe, an explicit
+Feature 6.5 introduced a spectator viewer count; **feature 22.5
+(`spectators-in-room`) re-keyed it from the game to the room.**
+The count is now tracked over **`/topic/rooms/{roomId}`** and
+published to **`/topic/rooms/{roomId}/viewers`**. The game-keyed
+`/topic/games/{gameId}/viewers` topic from feature 6.5 is
+**retired** — `ViewerCountTracker` no longer listens to
+`/topic/games/*` at all. Game state (`MoveEvent` and the rest of
+the `GameStateEvent` family) stays on `/topic/games/{gameId}`,
+untouched.
+
+**Why the room, not the game.** A `Game` is only created when the
+second player joins (`RoomService.joinRoom`); before that the
+`gameId` does not exist. The `Room`, by contrast, exists from
+`POST /api/rooms` (status `WAITING_FOR_PLAYER`) through to
+`ACTIVE`. Keying the count on the room means:
+
+- a creator can have friends watching from the lobby, **before**
+  an opponent has joined — the headline capability of this
+  feature;
+- the count is **stable across the `WAITING_FOR_PLAYER → ACTIVE`
+  transition** — the join does not reset it to zero or duplicate
+  it, because the spectator's room subscription never changes.
+
+Every time the set of sessions subscribed to
+`/topic/rooms/{roomId}` changes — a new subscribe, an explicit
 unsubscribe, or a session disconnect — the server publishes a
-`ViewerCountEvent` to **`/topic/games/{gameId}/viewers`**:
+`ViewerCountEvent` to `/topic/rooms/{roomId}/viewers`:
 
 ```json
 {
-  "gameId": "0d52a8a0-bea0-4b21-bbe3-3df7f8e83bfb",
+  "roomId": "AB3K9Z",
   "count": 3
 }
 ```
 
-- **`gameId`** — the game the count is for; matches the
-  `{gameId}` segment in the topic. Clients may subscribe to
-  several `/viewers` topics in parallel and use this field to
-  demultiplex.
+- **`roomId`** — the room the count is for; matches the
+  `{roomId}` segment in the topic. This is the **6-char short
+  code, not a UUID**. Clients may subscribe to several `/viewers`
+  topics in parallel and use this field to demultiplex.
 - **`count`** — the current number of subscribers to
-  `/topic/games/{gameId}` that are **not** players of the game
+  `/topic/rooms/{roomId}` that are **not** players of the room
   (see the `playerId` convention below).
 
-The viewer-count topic exists separately from the game topic so
-that count updates are decoupled from move cadence: a game with
-no moves but lots of joiners and leavers still produces a stream
-of count changes. The two topics are independent — clients can
-subscribe to one, the other, or both.
+The viewer-count topic exists separately from the room topic so
+that count updates are decoupled from lifecycle cadence: a room
+with lots of joiners and leavers still produces a stream of count
+changes independent of the (rare) `RoomJoinedEvent`. The two
+topics are independent — clients can subscribe to one, the other,
+or both.
 
 The viewer-count broadcast is fire-and-forget on the same
 failure-mode policy as `MoveEvent`: any `RuntimeException` from
 the broker is logged at `WARN` and not rethrown.
 
+### Spectator flow (reuses existing surfaces)
+
+There is **no new REST endpoint** for spectating. A spectator:
+
+1. obtains the `roomId` (shared by the creator);
+2. calls `GET /api/rooms/{id}` (feature 9.5) for the initial
+   snapshot — players, status, `gameId`-or-null;
+3. subscribes to `/topic/rooms/{roomId}/viewers` and then to
+   `/topic/rooms/{roomId}` (no `playerId` header) → it is counted
+   as a viewer, receives the current `ViewerCountEvent` on
+   `/viewers` and lifecycle events (`RoomJoinedEvent`) on the room
+   topic;
+4. on `RoomJoinedEvent` (which carries the `gameId`) subscribes to
+   `/topic/games/{gameId}` for the live move stream. The count
+   stays on the room — the spectator is never counted on the game
+   topic.
+
+Access control (a separate join token so a shared `roomId` cannot
+be used to grab the player slot) is **out of scope here** and
+tracked as feature 22.7 (`room-access-tokens`). This feature does
+not change the join contract.
+
 ### `playerId` header convention
 
-Clients that are one of the two players of a game declare it by
+Clients that are one of the players of a room declare it by
 sending their player id as a native STOMP header on the
-`SUBSCRIBE` frame to `/topic/games/{gameId}`:
+`SUBSCRIBE` frame to `/topic/rooms/{roomId}`:
 
 ```
 SUBSCRIBE
 id:sub-0
-destination:/topic/games/<gameId>
+destination:/topic/rooms/<roomId>
 playerId:<playerId-uuid>
 
 ^@
 ```
 
-The server compares the header value against `white.id()` and
-`black.id()` of the game. A match means "this subscriber is a
-player, not a spectator" and they are excluded from the viewer
-count for that game. No header (or no match) means "this
-subscriber is a spectator" and they are counted.
+The server looks the room up via `RoomService.findById(roomId)`
+and compares the header value against the ids of
+`room.players()`. A match means "this subscriber is a player, not
+a spectator" and they are excluded from the viewer count for that
+room. No header (or no match) means "this subscriber is a
+spectator" and they are counted. A subscribe to a room that does
+**not** exist counts the session as a viewer (tolerant — the
+client should have validated the room via `GET /api/rooms/{id}`
+first). The creator already subscribes to `/topic/rooms/{roomId}`
+to receive `RoomJoinedEvent` (feature 9.5); to self-exclude from
+the count it must send its `playerId` on that SUBSCRIBE.
 
 **Trust model:** the server takes the header at face value.
-There is no authentication today, so the claim cannot be
-verified — a malicious client could omit the header to inflate
-the count, or forge another player's id to exclude itself. This
-is a **deliberate portfolio-level trade-off**, consistent with
-the rest of the no-auth design described above. A future auth
-feature would replace "trust" with "verify" without changing the
-header name or its semantics; only the validation step on the
-server changes.
+There is no authentication wired into this path today, so the
+claim cannot be verified — a malicious client could omit the
+header to inflate the count, or forge another player's id to
+exclude itself. This is a **deliberate portfolio-level
+trade-off**, consistent with the rest of the no-auth design
+described above. A future auth feature would replace "trust" with
+"verify" without changing the header name or its semantics; only
+the validation step on the server changes.
 
 ### Cross-repo coordination
 
@@ -1329,14 +1380,16 @@ The `chess-frontend` repo mirrors this section in its own
 `docs/architecture.md` when it reaches feature 5
 (`stomp-live-updates`). Until then, the contract above is the
 single source of truth. Changes here must be reflected in the
-frontend doc the next time the two are touched. With feature 6.5
-in place, the frontend's feature 5 should additionally:
+frontend doc the next time the two are touched. The viewer-count
+UI does not exist on the frontend yet, so retiring the game-keyed
+topic breaks nothing in production; the frontend implements the
+room-keyed model directly. Its feature 5 should:
 
-- Subscribe to `/topic/games/{gameId}/viewers` to render the
-  live spectator count.
-- Optionally send the `playerId` native header on the
-  `SUBSCRIBE` to `/topic/games/{gameId}` when the current user
-  is one of the two players of the game.
+- Subscribe to `/topic/rooms/{roomId}/viewers` to render the
+  live spectator count (works from the lobby onward).
+- Send the `playerId` native header on the `SUBSCRIBE` to
+  `/topic/rooms/{roomId}` when the current user is one of the
+  players of the room, so it self-excludes from the count.
 
 ## Source of truth
 

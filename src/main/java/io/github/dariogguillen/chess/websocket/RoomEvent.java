@@ -7,7 +7,7 @@ package io.github.dariogguillen.chess.websocket;
  *
  * <p>The sealed-interface + explicit-discriminator pattern is the design rule for STOMP topics that
  * carry more than one event variant; single-event topics (today: {@code MoveEvent} on {@code
- * /topic/games/{gameId}}, {@code ViewerCountEvent} on {@code /topic/games/{gameId}/viewers}) stay
+ * /topic/games/{gameId}}, {@code ViewerCountEvent} on {@code /topic/rooms/{roomId}/viewers}) stay
  * flat without a discriminator. Adding a new variant requires extending the {@code permits} clause
  * and providing the same {@code type} + {@code roomId} fields.
  *

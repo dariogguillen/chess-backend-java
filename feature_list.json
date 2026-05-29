@@ -571,5 +571,45 @@
       "docs/architecture.md and docs/deploy-runbook.md document the yml-sync behaviour and the env-file's continued operator-managed status.",
       "./init.sh passes (no application-code changes expected)."
     ]
+  },
+  {
+    "id": "spectators-in-room",
+    "title": "Spectators join the room, not the game (viewer count from the waiting lobby)",
+    "description": "Today spectators are game-keyed: feature 6.5's ViewerCountTracker counts STOMP sessions subscribed to /topic/games/{gameId} and publishes to /topic/games/{gameId}/viewers. But the gameId does not exist until the second player joins (RoomService.joinRoom creates the Game), so a creator who wants friends watching while waiting for an opponent has nothing for them to subscribe to. This feature re-keys spectators to the ROOM: the viewer count is tracked over /topic/rooms/{roomId} and published to /topic/rooms/{roomId}/viewers, so it works from WAITING_FOR_PLAYER through ACTIVE and stays stable across the transition (no reset, no double-count). The game state (MoveEvent, etc.) stays on /topic/games/{gameId}; spectators transition to it on RoomJoinedEvent (feature 9.5) for the live board. Decision taken with the user: unified room-keyed count (not a dual game+room count); the game-keyed /viewers topic from feature 6.5 is retired. The frontend has no viewer-count UI yet, so this is a free contract change. Access control (a separate join token so spectators sharing the roomId cannot occupy the player slot) is deliberately split into feature room-access-tokens (priority 22.7); this feature does NOT change the join contract. Direct invitations to registered users are a later feature.",
+    "status": "done",
+    "priority": 22.5,
+    "acceptance": [
+      "ViewerCountTracker re-keyed from game to room: it counts STOMP sessions subscribed to /topic/rooms/{roomId} (regex anchored so /topic/rooms/{roomId}/viewers does not self-count) that are NOT players of the room, and publishes ViewerCountEvent to /topic/rooms/{roomId}/viewers on every change.",
+      "The count works in WAITING_FOR_PLAYER (no game yet): a spectator can subscribe and be counted BEFORE the opponent joins.",
+      "The count is stable across the WAITING_FOR_PLAYER -> ACTIVE transition: a spectator subscribed to the room stays counted when the game starts (no reset, no duplication).",
+      "Player exclusion is based on room.players() via the trusted playerId native STOMP header (same trust-on-declaration model as feature 6.5; a player subscribing to /topic/rooms/{roomId} sends its playerId to self-exclude). RoomService.findById is the lookup; a subscribe to a non-existent room counts the session as a viewer (tolerant, mirrors the old game behaviour).",
+      "ViewerCountEvent changes shape from (UUID gameId, int count) to (String roomId, int count); roomId is the 6-char short code, not a UUID.",
+      "The game-keyed viewer count (/topic/games/{gameId}/viewers) from feature 6.5 is retired; the tracker no longer listens to /topic/games/* . Game state (MoveEvent and the GameStateEvent family) stays on /topic/games/{gameId} unchanged.",
+      "Decrement on SessionUnsubscribeEvent and SessionDisconnectEvent preserved (the last-subscription-of-session check and disconnect cleanup carry over to the room keying).",
+      "No new REST endpoint: the spectator flow reuses GET /api/rooms/{id} (feature 9.5) for the initial snapshot and /topic/rooms/{roomId} for live lifecycle + count; on RoomJoinedEvent the spectator subscribes to /topic/games/{gameId} for moves. Documented in the feature note + architecture doc.",
+      "ViewerCountIT migrated to room keying and extended: spectator counted in WAITING_FOR_PLAYER (the headline case); count stable across the opponent's join; room creator subscribing with its playerId is NOT counted; two spectators -> 2; disconnect and unsubscribe tick the count down. Existing RoomLifecycleIT stays green.",
+      "docs/architecture.md spectator section updated to the room-keyed model: the new topic, the retirement of the game-keyed /viewers topic, player exclusion via room.players(), and the spectator subscribe/transition flow.",
+      "Feature note notes/22.5-spectators-in-room.md follows the template; Scala/Typelevel parallels included.",
+      "README out of scope (no run-procedure change); the reviewer confirms README is unchanged.",
+      "Cross-repo: STOMP contract change (viewers topic game -> room; ViewerCountEvent shape) is safe because the frontend has no viewer-count consumer yet; the frontend implements the room-keyed model directly. Players subscribing to /topic/rooms/{roomId} must send their playerId header to self-exclude (coordination note).",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "room-access-tokens",
+    "title": "Separate join token so a shared room link cannot be used to grab the player slot",
+    "description": "Surfaced while planning spectators-in-room. Today the roomId is the single shared secret: POST /api/rooms/{id}/join only needs the roomId, so anyone the creator shares the room with (e.g. spectators) could occupy the second-player slot. This feature separates the two capabilities: a secret joinToken (only the creator receives it, required by the join endpoint) vs the roomId (used to watch: GET /api/rooms/{id} + SUBSCRIBE /topic/rooms/{id}). The creator builds two links in the frontend: a 'play' link carrying the joinToken for the opponent, and a 'watch' link with just the roomId for friends. Whoever has only the watch link cannot join as a player. Direct invitations to registered users (now that accounts exist) are a separate later feature layered on top of this. Builds on spectators-in-room (22.5).",
+    "status": "pending",
+    "priority": 22.7,
+    "acceptance": [
+      "POST /api/rooms generates a secret joinToken in addition to the roomId; the create response returns it (only the creator obtains it).",
+      "POST /api/rooms/{id}/join requires a valid joinToken (header or body, decided at plan time); a missing or wrong token returns 403 (a new error code in the GlobalExceptionHandler + ErrorResponse enum).",
+      "The roomId remains the identifier for watching (GET /api/rooms/{id}, SUBSCRIBE /topic/rooms/{id}) and does NOT by itself authorise joining as a player.",
+      "Frontend coordination strategy documented: the production join flow today sends no token, so the plan states the migration approach (coordinated deploy vs temporary optional-token fallback) explicitly.",
+      "Springdoc + docs/architecture.md API contract updated for the new join requirement and the create-response field.",
+      "Integration tests: join with valid token succeeds; join with missing/invalid token returns 403; the watch path (GET + room subscribe) needs no token.",
+      "Feature note notes/22.7-room-access-tokens.md.",
+      "./init.sh passes."
+    ]
   }
 ]

@@ -2398,3 +2398,32 @@ Modified: `domain/Game.java`, `domain/GameStatus.java` (+`TIMEOUT`, `isTerminal(
 **Verification:** `./init.sh` green; 0 failures/errors/skipped. README correctly untouched (out of scope — no run-procedure change). Cross-repo change is additive/backwards-compatible.
 
 **Feature note:** [`notes/22-time-control.md`](../notes/22-time-control.md).
+
+---
+
+## 2026-05-29 — spectators-in-room (feature 22.5)
+
+**Status:** done. Full harness cycle (leader plan → implementer → reviewer → user OK), approved on the first review pass.
+
+**Summary:** Re-keyed spectators from the game to the room so the viewer count works from the waiting lobby. Before this, feature 6.5's `ViewerCountTracker` counted STOMP sessions on `/topic/games/{gameId}` and published to `/topic/games/{gameId}/viewers` — but the `gameId` does not exist until the second player joins (`RoomService.joinRoom` creates the `Game`), so a creator who wanted friends watching while waiting for an opponent had nothing for them to subscribe to. The tracker now counts sessions on `/topic/rooms/{roomId}`, excludes players via `room.players()` (matching the trusted `playerId` native header), and publishes `ViewerCountEvent` to `/topic/rooms/{roomId}/viewers`. The count therefore exists from `WAITING_FOR_PLAYER` and stays stable across the `WAITING_FOR_PLAYER → ACTIVE` transition. Game state (`MoveEvent` / the `GameStateEvent` family) stays on `/topic/games/{gameId}`; spectators transition there on `RoomJoinedEvent` (feature 9.5) for the live board.
+
+**Design decisions (taken with the user):**
+- **Unified room-keyed count, not a dual game+room count.** The game-keyed `/topic/games/{gameId}/viewers` topic from feature 6.5 was **retired**. The frontend has no viewer-count UI yet, so this was a free STOMP contract change with no production consumer.
+- **Minimum spectator surface, no new REST endpoint.** The spectator reuses `GET /api/rooms/{id}` (feature 9.5) for the initial snapshot and the room topic for live updates. The "enriched snapshot" option (adding `creatorSide`/`timeControl` to the room read) was deliberately left out.
+- **Access control split out.** Protecting the player slot (a separate join token so a shared watch link cannot be used to join as a player) was carved into a new feature `room-access-tokens` (priority 22.7, pending). This feature does NOT touch the join contract.
+
+**Player exclusion** keeps feature 6.5's trust-on-declaration model, re-pointed at the room: a session sending a `playerId` header matching a member of `room.players()` is excluded. The creator (already subscribed to `/topic/rooms/{roomId}` for `RoomJoinedEvent`) must send its `playerId` on that SUBSCRIBE to self-exclude — a frontend coordination note documented in the architecture doc and feature note.
+
+**Reviewer verdict:** approved (first pass). `./init.sh` green; 126 unit + 128 IT, 0 failures/errors/skipped; `ViewerCountIT` 7 tests. The reviewer explicitly validated three out-of-list JavaDoc-only touch-ups (`RoomEvent`, `GameStateEvent`, `PlayerSessionTracker`) that re-pointed stale `/topic/games/{gameId}/viewers` examples to the new topic — legitimate hygiene driven by the topic retirement, not scope creep.
+
+**Files touched:**
+
+New: `notes/22.5-spectators-in-room.md`.
+
+Modified: `websocket/ViewerCountTracker.java` (core refactor — room-topic regex, `String roomId` maps, exclusion via `RoomService.findById` + `room.players()`, broadcast to `/topic/rooms/{roomId}/viewers`, drops `GameService`), `websocket/ViewerCountEvent.java` (`(String roomId, int count)`), `test/.../websocket/ViewerCountIT.java` (migrated to room keying + the three new cases: counted in WAITING_FOR_PLAYER, stable across join, creator self-excluded; + `setupRoom` helper), `websocket/RoomEvent.java`/`GameStateEvent.java`/`PlayerSessionTracker.java` (JavaDoc-only stale-example fixes), `docs/architecture.md` (room-keyed spectator model), `feature_list.json` (added the `22.5` entry done + the new `22.7 room-access-tokens` pending entry).
+
+**Verification:** `./init.sh` green. README correctly untouched (out of scope). Cross-repo: STOMP contract change (viewers topic game → room; `ViewerCountEvent` shape) is safe — no current frontend consumer; the frontend implements the room-keyed model directly.
+
+**Follow-up queued:** `room-access-tokens` (feature 22.7) — the join-token / two-links (play vs watch) access control surfaced during this feature's planning.
+
+**Feature note:** [`notes/22.5-spectators-in-room.md`](../notes/22.5-spectators-in-room.md).

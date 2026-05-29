@@ -10,7 +10,7 @@ import java.util.UUID;
  * <p>The sealed-interface + explicit-discriminator pattern was first established on {@code
  * /topic/rooms/{roomId}} by feature 9.5 ({@link RoomEvent}); feature 11.5 lifts the rule to a
  * <strong>codebase-wide design</strong>: polymorphic topics get the discriminator, single-event
- * topics (today: {@code ViewerCountEvent} on {@code /topic/games/{gameId}/viewers}) stay flat.
+ * topics (today: {@code ViewerCountEvent} on {@code /topic/rooms/{roomId}/viewers}) stay flat.
  *
  * <p>Adding a new variant requires extending the {@code permits} clause and providing the same
  * {@code type} + {@code gameId} fields.

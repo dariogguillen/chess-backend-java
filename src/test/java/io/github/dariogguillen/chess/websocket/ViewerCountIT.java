@@ -35,11 +35,14 @@ import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.messaging.WebSocketStompClient;
 
 /**
- * Integration tests for the spectator-mode viewer-count tracker added in feature 6.5. Boots the
- * full Spring context on a random port, opens real STOMP sessions against {@code /ws}, and asserts
- * that {@link ViewerCountEvent} broadcasts to {@code /topic/games/{gameId}/viewers} match the
- * expected count as subscribers join, leave, or disconnect. The {@code playerId} STOMP header is
- * exercised: players are excluded from the count, non-players are counted.
+ * Integration tests for the room-keyed spectator viewer-count tracker (feature 22.5, {@code
+ * spectators-in-room}; originally feature 6.5, then re-keyed from game to room). Boots the full
+ * Spring context on a random port, opens real STOMP sessions against {@code /ws}, and asserts that
+ * {@link ViewerCountEvent} broadcasts to {@code /topic/rooms/{roomId}/viewers} match the expected
+ * count as subscribers join, leave, or disconnect. The {@code playerId} STOMP header is exercised:
+ * players of the room are excluded from the count, non-players are counted. The headline case is a
+ * spectator counted while the room is still {@code WAITING_FOR_PLAYER} (before any game exists),
+ * and the count staying stable across the opponent's join.
  */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -86,57 +89,95 @@ class ViewerCountIT {
 
   @Test
   void nonPlayerSubscribes_countTicksToOne() throws Exception {
-    GameSetup setup = setupGame("Alice", "Bob");
+    RoomSetup setup = setupGame("Alice", "Bob");
     StompSession session = connect();
-    BlockingQueue<ViewerCountEvent> viewers = subscribeViewers(session, setup.gameId());
-    subscribeGame(session, setup.gameId(), null);
+    BlockingQueue<ViewerCountEvent> viewers = subscribeViewers(session, setup.roomId());
+    subscribeRoom(session, setup.roomId(), null);
 
     ViewerCountEvent event = viewers.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     assertThat(event).isNotNull();
-    assertThat(event.gameId()).isEqualTo(setup.gameId());
+    assertThat(event.roomId()).isEqualTo(setup.roomId());
     assertThat(event.count()).isEqualTo(1);
   }
 
   @Test
-  void playerSubscribes_countStaysAtZero_thenNonPlayerJoinsAndCountIsOne() throws Exception {
-    GameSetup setup = setupGame("Alice", "Bob");
+  void spectatorSubscribesWhileWaitingForPlayer_countTicksToOne() throws Exception {
+    // Headline case: only POST /api/rooms has happened — no opponent, no game yet. The spectator
+    // subscribes to the room topic and is counted from the lobby.
+    RoomSetup setup = setupRoom("Alice");
+    StompSession session = connect();
+    BlockingQueue<ViewerCountEvent> viewers = subscribeViewers(session, setup.roomId());
+    subscribeRoom(session, setup.roomId(), null);
 
-    StompSession sessionA = connect();
-    BlockingQueue<ViewerCountEvent> viewersA = subscribeViewers(sessionA, setup.gameId());
-    subscribeGame(sessionA, setup.gameId(), setup.whitePlayerId());
+    ViewerCountEvent event = viewers.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    assertThat(event).isNotNull();
+    assertThat(event.roomId()).isEqualTo(setup.roomId());
+    assertThat(event.count()).isEqualTo(1);
+  }
 
-    // Player subscribed; no broadcast expected because the player is excluded from the count.
-    ViewerCountEvent leak = viewersA.poll(NO_RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+  @Test
+  void spectatorCountStableAcrossOpponentJoin() throws Exception {
+    // Spectator is counted while the room waits; a second player then joins (the room goes ACTIVE
+    // and the game is created). Because the count is room-keyed, it stays at 1 — the join neither
+    // resets it to 0 nor double-counts to 2.
+    RoomSetup setup = setupRoom("Alice");
+    StompSession session = connect();
+    BlockingQueue<ViewerCountEvent> viewers = subscribeViewers(session, setup.roomId());
+    subscribeRoom(session, setup.roomId(), null);
+
+    ViewerCountEvent first = viewers.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    assertThat(first).isNotNull();
+    assertThat(first.count()).isEqualTo(1);
+
+    // Opponent joins via REST — creates the game, flips the room to ACTIVE.
+    joinRoom(setup.roomId(), "Bob");
+
+    // No further ViewerCountEvent should be emitted by the join: the room's spectator set is
+    // unchanged. The count remains 1 (proven by the absence of any reset-to-0 or bump-to-2 event).
+    ViewerCountEvent afterJoin = viewers.poll(NO_RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    assertThat(afterJoin).isNull();
+  }
+
+  @Test
+  void roomCreatorSubscribesWithPlayerId_notCounted_thenSpectatorIsOne() throws Exception {
+    RoomSetup setup = setupRoom("Alice");
+
+    StompSession creator = connect();
+    BlockingQueue<ViewerCountEvent> creatorViewers = subscribeViewers(creator, setup.roomId());
+    subscribeRoom(creator, setup.roomId(), setup.creatorPlayerId());
+
+    // Creator declared its playerId — excluded from the count, so no broadcast on its subscribe.
+    ViewerCountEvent leak = creatorViewers.poll(NO_RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     assertThat(leak).isNull();
 
-    StompSession sessionB = connect();
-    BlockingQueue<ViewerCountEvent> viewersB = subscribeViewers(sessionB, setup.gameId());
-    subscribeGame(sessionB, setup.gameId(), null);
+    StompSession spectator = connect();
+    BlockingQueue<ViewerCountEvent> spectatorViewers = subscribeViewers(spectator, setup.roomId());
+    subscribeRoom(spectator, setup.roomId(), null);
 
-    ViewerCountEvent receivedB = viewersB.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-    assertThat(receivedB).isNotNull();
-    assertThat(receivedB.count()).isEqualTo(1);
+    ViewerCountEvent onSpectator = spectatorViewers.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    assertThat(onSpectator).isNotNull();
+    assertThat(onSpectator.count()).isEqualTo(1);
 
-    ViewerCountEvent receivedA = viewersA.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-    assertThat(receivedA).isNotNull();
-    assertThat(receivedA.count()).isEqualTo(1);
+    ViewerCountEvent onCreator = creatorViewers.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    assertThat(onCreator).isNotNull();
+    assertThat(onCreator.count()).isEqualTo(1);
   }
 
   @Test
   void twoNonPlayerSubscribers_countTicksToTwo() throws Exception {
-    GameSetup setup = setupGame("Alice", "Bob");
+    RoomSetup setup = setupGame("Alice", "Bob");
 
     StompSession sessionA = connect();
-    BlockingQueue<ViewerCountEvent> viewersA = subscribeViewers(sessionA, setup.gameId());
-    subscribeGame(sessionA, setup.gameId(), null);
+    BlockingQueue<ViewerCountEvent> viewersA = subscribeViewers(sessionA, setup.roomId());
+    subscribeRoom(sessionA, setup.roomId(), null);
 
     ViewerCountEvent first = viewersA.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     assertThat(first).isNotNull();
     assertThat(first.count()).isEqualTo(1);
 
     StompSession sessionB = connect();
-    BlockingQueue<ViewerCountEvent> viewersB = subscribeViewers(sessionB, setup.gameId());
-    subscribeGame(sessionB, setup.gameId(), null);
+    BlockingQueue<ViewerCountEvent> viewersB = subscribeViewers(sessionB, setup.roomId());
+    subscribeRoom(sessionB, setup.roomId(), null);
 
     ViewerCountEvent secondOnB = viewersB.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     assertThat(secondOnB).isNotNull();
@@ -149,16 +190,16 @@ class ViewerCountIT {
 
   @Test
   void subscriberDisconnects_countTicksDown() throws Exception {
-    GameSetup setup = setupGame("Alice", "Bob");
+    RoomSetup setup = setupGame("Alice", "Bob");
 
     StompSession sessionA = connect();
-    BlockingQueue<ViewerCountEvent> viewersA = subscribeViewers(sessionA, setup.gameId());
-    subscribeGame(sessionA, setup.gameId(), null);
+    BlockingQueue<ViewerCountEvent> viewersA = subscribeViewers(sessionA, setup.roomId());
+    subscribeRoom(sessionA, setup.roomId(), null);
     assertThat(viewersA.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isNotNull();
 
     StompSession sessionB = connect();
-    BlockingQueue<ViewerCountEvent> viewersB = subscribeViewers(sessionB, setup.gameId());
-    subscribeGame(sessionB, setup.gameId(), null);
+    BlockingQueue<ViewerCountEvent> viewersB = subscribeViewers(sessionB, setup.roomId());
+    subscribeRoom(sessionB, setup.roomId(), null);
     ViewerCountEvent two = viewersB.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     assertThat(two).isNotNull();
     assertThat(two.count()).isEqualTo(2);
@@ -175,24 +216,24 @@ class ViewerCountIT {
 
   @Test
   void subscriberUnsubscribes_countTicksDown() throws Exception {
-    GameSetup setup = setupGame("Alice", "Bob");
+    RoomSetup setup = setupGame("Alice", "Bob");
 
     StompSession sessionA = connect();
-    BlockingQueue<ViewerCountEvent> viewersA = subscribeViewers(sessionA, setup.gameId());
-    subscribeGame(sessionA, setup.gameId(), null);
+    BlockingQueue<ViewerCountEvent> viewersA = subscribeViewers(sessionA, setup.roomId());
+    subscribeRoom(sessionA, setup.roomId(), null);
     assertThat(viewersA.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isNotNull();
 
     StompSession sessionB = connect();
-    BlockingQueue<ViewerCountEvent> viewersB = subscribeViewers(sessionB, setup.gameId());
-    StompSession.Subscription gameSubB = subscribeGame(sessionB, setup.gameId(), null);
+    BlockingQueue<ViewerCountEvent> viewersB = subscribeViewers(sessionB, setup.roomId());
+    StompSession.Subscription roomSubB = subscribeRoom(sessionB, setup.roomId(), null);
     ViewerCountEvent two = viewersB.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     assertThat(two).isNotNull();
     assertThat(two.count()).isEqualTo(2);
     // Drain the "count: 2" event from A's queue.
     assertThat(viewersA.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isNotNull();
 
-    // B unsubscribes only from the game topic, stays connected (and still subscribed to viewers).
-    gameSubB.unsubscribe();
+    // B unsubscribes only from the room topic, stays connected (and still subscribed to viewers).
+    roomSubB.unsubscribe();
 
     ViewerCountEvent downA = viewersA.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     assertThat(downA).isNotNull();
@@ -210,15 +251,15 @@ class ViewerCountIT {
   }
 
   /**
-   * Subscribes the session to {@code /topic/games/{gameId}/viewers} so that {@link
+   * Subscribes the session to {@code /topic/rooms/{roomId}/viewers} so that {@link
    * ViewerCountEvent} broadcasts land in the returned queue. Does NOT itself bump the count — the
    * tracker's regex is anchored at {@code $} so the {@code /viewers} sub-topic does not match.
    */
-  private BlockingQueue<ViewerCountEvent> subscribeViewers(StompSession session, UUID gameId)
+  private BlockingQueue<ViewerCountEvent> subscribeViewers(StompSession session, String roomId)
       throws InterruptedException {
     BlockingQueue<ViewerCountEvent> queue = new ArrayBlockingQueue<>(8);
     session.subscribe(
-        "/topic/games/" + gameId + "/viewers",
+        "/topic/rooms/" + roomId + "/viewers",
         new StompFrameHandler() {
           @Override
           public Type getPayloadType(StompHeaders headers) {
@@ -235,15 +276,15 @@ class ViewerCountIT {
   }
 
   /**
-   * Subscribes to {@code /topic/games/{gameId}} — the trigger for the viewer-count tracker. If
+   * Subscribes to {@code /topic/rooms/{roomId}} — the trigger for the viewer-count tracker. If
    * {@code playerId} is non-null, sends it as a native STOMP header on the SUBSCRIBE frame; the
-   * server uses it to exclude the subscriber from the count if it matches white or black of the
-   * game. Discards inbound payloads (we only care about the side effect on the viewers topic).
+   * server uses it to exclude the subscriber from the count if it matches a player of the room.
+   * Discards inbound payloads (we only care about the side effect on the viewers topic).
    */
-  private StompSession.Subscription subscribeGame(StompSession session, UUID gameId, UUID playerId)
-      throws InterruptedException {
+  private StompSession.Subscription subscribeRoom(
+      StompSession session, String roomId, UUID playerId) throws InterruptedException {
     StompHeaders headers = new StompHeaders();
-    headers.setDestination("/topic/games/" + gameId);
+    headers.setDestination("/topic/rooms/" + roomId);
     if (playerId != null) {
       headers.add("playerId", playerId.toString());
     }
@@ -265,7 +306,8 @@ class ViewerCountIT {
     return sub;
   }
 
-  private GameSetup setupGame(String whiteName, String blackName) throws Exception {
+  /** Creates a room (one player, WAITING_FOR_PLAYER) and returns its short code + creator id. */
+  private RoomSetup setupRoom(String creatorName) throws Exception {
     HttpHeaders headers = new HttpHeaders();
     headers.setContentType(MediaType.APPLICATION_JSON);
 
@@ -273,28 +315,35 @@ class ViewerCountIT {
         restTemplate.exchange(
             baseUrl() + "/api/rooms",
             HttpMethod.POST,
-            new HttpEntity<>("{\"displayName\":\"" + whiteName + "\"}", headers),
+            new HttpEntity<>("{\"displayName\":\"" + creatorName + "\"}", headers),
             String.class);
     JsonNode createBody = objectMapper.readTree(createResponse.getBody());
     String roomId = createBody.get("roomId").asText();
-    UUID whitePlayerId = UUID.fromString(createBody.get("playerId").asText());
+    UUID creatorPlayerId = UUID.fromString(createBody.get("playerId").asText());
+    return new RoomSetup(roomId, creatorPlayerId);
+  }
 
-    ResponseEntity<String> joinResponse =
-        restTemplate.exchange(
-            baseUrl() + "/api/rooms/" + roomId + "/join",
-            HttpMethod.POST,
-            new HttpEntity<>("{\"displayName\":\"" + blackName + "\"}", headers),
-            String.class);
-    JsonNode joinBody = objectMapper.readTree(joinResponse.getBody());
-    UUID gameId = UUID.fromString(joinBody.get("gameId").asText());
-    UUID blackPlayerId = UUID.fromString(joinBody.get("playerId").asText());
+  /** Joins an existing room as the second player; flips it to ACTIVE and creates the game. */
+  private void joinRoom(String roomId, String joinerName) {
+    HttpHeaders headers = new HttpHeaders();
+    headers.setContentType(MediaType.APPLICATION_JSON);
+    restTemplate.exchange(
+        baseUrl() + "/api/rooms/" + roomId + "/join",
+        HttpMethod.POST,
+        new HttpEntity<>("{\"displayName\":\"" + joinerName + "\"}", headers),
+        String.class);
+  }
 
-    return new GameSetup(gameId, whitePlayerId, blackPlayerId);
+  /** Creates a room and joins it (room ACTIVE, game created). Returns the room short code. */
+  private RoomSetup setupGame(String creatorName, String joinerName) throws Exception {
+    RoomSetup setup = setupRoom(creatorName);
+    joinRoom(setup.roomId(), joinerName);
+    return setup;
   }
 
   private String baseUrl() {
     return URI.create("http://localhost:" + port).toString();
   }
 
-  private record GameSetup(UUID gameId, UUID whitePlayerId, UUID blackPlayerId) {}
+  private record RoomSetup(String roomId, UUID creatorPlayerId) {}
 }

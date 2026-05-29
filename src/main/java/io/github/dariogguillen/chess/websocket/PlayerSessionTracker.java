@@ -75,8 +75,9 @@ public class PlayerSessionTracker {
 
   /**
    * Matches game topics like {@code /topic/games/{gameId}}, anchored at start AND end so that
-   * sub-topics such as {@code /topic/games/{gameId}/viewers} do not match — same regex {@link
-   * ViewerCountTracker} uses for the same reason.
+   * sub-topics such as {@code /topic/games/{gameId}/moves} do not match — the same anchoring
+   * discipline {@link ViewerCountTracker} applies to its room-topic regex, so a {@code /viewers}
+   * sub-topic never self-counts.
    */
   private static final Pattern GAME_TOPIC_PATTERN = Pattern.compile("^/topic/games/([^/]+)$");
 
