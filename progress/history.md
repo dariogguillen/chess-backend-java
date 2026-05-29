@@ -2235,3 +2235,74 @@ Test count: 207 (97 unit + 110 IT). Delta +7 IT, +0 unit. All cases in `MyGamesI
 - `progress/history.md` (this entry)
 
 **Feature note:** `notes/19-auth-my-games.md`.
+
+---
+
+## 2026-05-29 — auth-stomp-trust (feature 20, last of the auth bundle)
+
+**Status:** done.
+
+**Summary:** Fifth and final feature of the auth bundle. Closes the last gap left by features 16–19: REST is auth-aware but the WebSocket / STOMP surface still trusts whatever `playerId` the client sends in a frame. After this feature, an authenticated session cannot claim to be another user's player and an anonymous session cannot mid-stream switch to a different player identity. Anonymous WebSocket use stays first-class — bundle decision 7 is preserved verbatim.
+
+The whole feature is a single `ChannelInterceptor` registered on `clientInboundChannel`. Two phases. **Phase 1 (CONNECT)** inspects the STOMP CONNECT frame's native `Authorization` header. Present and valid → load the User via `JwtVerifier` + `UserRepository`, attach via `StompHeaderAccessor.setUser(...)` and on `SimpAttributes`. Present and invalid (expired, malformed, wrong signature) → DEBUG log (not WARN — first-deploy day will see this for every still-old-frontend session as routine traffic), session stays anonymous. Absent → session stays anonymous. The interceptor NEVER rejects a CONNECT for identity reasons; that would deadlock guest play. **Phase 2 (SEND / SUBSCRIBE)** validates any explicit `playerId` claim against the session identity. Authenticated sessions: the claimed player must belong to a `Player` row whose `userId` equals the session's `User.id`; destination-based lookup (`/topic/games/{gameId}` or `/app/games/{gameId}/...`) pulls the game via `GameStore` to do the check. Anonymous sessions: pin-on-first-use — the first `playerId` an anonymous session uses is recorded on `SimpAttributes`, subsequent SENDs with a different `playerId` are rejected. Frames without a `playerId` claim (spectator subscriptions, pure SUBSCRIBE on broadcast topics) pass through unchanged.
+
+Spoof attempts produce an ERROR frame back through `clientOutboundChannel` and the message is dropped (`preSend` returns null). The session stays connected. A buggy client can correct itself and retry. NEVER force-disconnect — that would interact badly with feature 11's grace-period reconnect layer.
+
+The implementation surfaced a bean-graph cycle the plan did not anticipate: `WebSocketConfig` → `StompAuthInterceptor` → `GameService` → `SimpMessagingTemplate` → `WebSocketConfig`. The implementer resolved it without touching the application layer by switching the game-lookup dependency from `GameService` to `GameStore` (the lower-level seam `GameService.findById` itself reads — behaviourally identical for the read path) and `@Lazy`-injecting `@Qualifier("clientOutboundChannel") MessageChannel` for the ERROR-frame send-back (the proxy is invoked only after the broker is up, by which time the bean graph is fully wired). This is documented in `notes/20-auth-stomp-trust.md` Decisions section as the most portfolio-grade lesson of the feature: in Spring, the bean-cycle workaround is rarely about restructuring the application — usually about choosing a lower-level seam or a `@Lazy` proxy at the right injection point.
+
+A second adaptation was the pin-on-first-use fallback. The plan's anonymous spoof check referenced an "X-Player-Id session attribute" anchor, but inspection revealed the anchor doesn't exist — the X-Player-Id flow is REST-only, not propagated into STOMP sessions. Pin-on-first-use is the minimum-state delivery of the plan's case 5 ("anonymous session cannot switch player identity") without scope creep into `RoomService`, the WebSocket handshake, or feature 11.7's surface. Same per-session storage via `SimpAttributes` keeps the isolation property: one session's first-use cannot poison another.
+
+Two-cycle close. Cycle 1 landed everything correctly but reported the test counts wrong (claimed 209 = 97 + 112, actual was 212 = 97 + 115). Reviewer rejected with a single specific issue: `README.md` test count claim and the note's count-delta line both stale. Cycle 2 fixed both text edits plus a bonus cleanup the reviewer had flagged as out-of-scope (two fully-qualified Spring class names in `StompAuthIT.java` — `WebSocketHttpHeaders` and `StompCommand` — replaced with imports + bare simple names). Final test count: 212 (97 unit + 115 IT). Delta +5 IT, 0 unit.
+
+The anonymous regression is the most important checkpoint: 18 existing WebSocket-IT cases across `RoomLifecycleIT` (4), `GameWebSocketIT` (5), `ViewerCountIT` (5), `DisconnectHandlingIT` (3), `DisconnectNotificationsIT` (3) all stayed green WITHOUT MODIFICATION. The reviewer ran `git diff --name-only src/test` and confirmed only `StompAuthIT.java` (new) is the test-side delta. Bundle decision 7 holds end-to-end.
+
+**Cross-repo:** optional / additive. The frontend can OPTIONALLY start attaching `Authorization: Bearer <jwt>` to its STOMP CONNECT to identify the session. Without it, the existing X-Player-Id flow continues working. So the frontend adopts this at its own pace; the backend ships independently.
+
+**Files touched:**
+
+- `src/main/java/io/github/dariogguillen/chess/websocket/StompAuthInterceptor.java` (new; `ChannelInterceptor` implementation; constructor-injected `JwtVerifier`, `UserRepository`, `GameStore`, and `@Lazy @Qualifier("clientOutboundChannel") MessageChannel`; `GAME_DESTINATION_PATTERN` regex covers `/topic/games/{id}` and `/app/games/{id}/...`; pin-on-first-use stored on `SimpAttributes` under `SESSION_PINNED_PLAYER_ID_ATTR`; 4 generic log lines with no PII; ERROR frame sent back through outbound channel + return null from preSend to drop the message)
+- `src/main/java/io/github/dariogguillen/chess/config/WebSocketConfig.java` (modified; `configureClientInboundChannel` registers `StompAuthInterceptor` as the single interceptor on the inbound channel; existing `PlayerSessionTracker` and `ViewerCountTracker` remain as `@EventListener` beans firing after the inbound channel completes, so identity set by the interceptor is visible to them)
+- `src/test/java/io/github/dariogguillen/chess/websocket/StompAuthIT.java` (new; 5 IT cases per the plan; case 3 — `stompConnect_withInvalidJwt_succeedsButAnonymous` — is the CRITICAL pin that proves bad JWT does NOT reject CONNECT; cases 4 and 5 — spoof attempts — assert `handler.poll()` returns the ERROR frame; case 4 additionally subscribes downstream and asserts nothing leaks to the broker; cycle 2 cleanup added imports for `WebSocketHttpHeaders` and `StompCommand` replacing the two FQN sites)
+- `docs/architecture.md` (modified; new "WebSocket trust model (feature 20)" subsection under Authentication describes the two-phase interceptor, the "anonymous still works" guarantee, the "ERROR-not-disconnect" choice, the bean-cycle workaround rationale, and the pin-on-first-use fallback; the stale "STOMP identity verification → out of scope" line removed)
+- `README.md` (modified; WebSocket subsection mentions optional Authorization-on-CONNECT and identity-spoof prevention; "Out of scope → Authentication" line softened to reflect that the bundle ships and only specific extensions — refresh tokens, password reset, multi-provider OAuth, claim flow — remain deferred; cycle 2 corrected the static test-count claim from 207/209/wrong-values to 212)
+- `notes/20-auth-stomp-trust.md` (new; follows `_template.md`; Decisions covers the 5 implementer decisions — bean cycle workaround via GameStore + `@Lazy`, pin-on-first-use, destination-based lookup, interceptor-alone-on-inbound, bad-JWT-stays-anonymous; Gotchas covers native headers vs STOMP headers, `StompHeaderAccessor.setUser`, ERROR-frame mechanics, the bean-cycle discovery and resolution; cycle 2 corrected the count-delta line from 209 to 212)
+- `feature_list.json` (modified: `auth-stomp-trust.status` → `done`)
+- `progress/current.md` (replaced with a session-closed note; the bundle is complete)
+- `progress/history.md` (this entry)
+
+**Feature note:** `notes/20-auth-stomp-trust.md`.
+
+---
+
+## Auth bundle complete (features 16–20) — 2026-05-29
+
+**29 features delivered. 0 in_progress. 0 pending. The auth bundle is complete.**
+
+The five features compose end-to-end:
+- **16 `auth-core`** built the foundation — `User` entity, Flyway V2, Spring Security base, `JwtVerifier`, `GET /api/me`. The 401 entry-point was the deliberate gap closed by feature 17.
+- **17 `auth-jwt`** locked the JWT shape and added the email/password issuance endpoints `/api/auth/register` and `/api/auth/login`. The 12-code `ErrorResponse` enum was set here.
+- **18 `auth-google-oauth`** added Google OAuth 2.0 sign-in alongside email/password — same JWT shape, same `User` aggregate, same downstream filter chain. The two paths converge.
+- **19 `auth-my-games`** delivered the actual product benefit the user named when opening the bundle ("con una cuenta se pueden revisar las partidas jugadas") — `GET /api/me/games` paginated, plus the write surface that populates `games.{white,black}_user_id` whenever the corresponding side was authenticated.
+- **20 `auth-stomp-trust`** closed the WebSocket gap — identity attached to STOMP sessions, spoof attempts produce ERROR frames, anonymous play preserved end-to-end.
+
+The bundle was originally planned upfront at 5 features with 7 locked technical decisions copy-forwarded into each feature plan so reviewers cross-referenced one source. The decisions held: stateless JWT in Authorization Bearer, HS256 with 7-day lifetime, single `JwtIssuer`/`JwtVerifier`, OAuth callback redirects with URL fragment (log-hygiene choice), CORS allowCredentials stays false, identity link via two FK columns on `games` (the feature-16 cycle-2 data-model decision rather than an intermediate `players` table), anonymous STOMP keeps working never gated by JWT.
+
+**Out-of-scope confirmed at bundle close** (deferred to potential future features, none committed):
+- Refresh tokens.
+- Email verification, password reset, magic links.
+- 2FA / TOTP.
+- Account linking (same User with both Google and email/password).
+- Claim flow for pre-existing anonymous games.
+- Multi-provider OAuth (Apple, GitHub, etc.).
+- Rate-limiting on `/api/auth/login` and the move endpoint.
+- Refresh-token rotation / revocation / Redis JWT blacklist.
+
+**Operator follow-ups** for the deploy (carried over and accumulated across the bundle):
+- Set `AUTH_JWT_SECRET` env var on EC2 (≥ 32 bytes; HS256 secret; boot fails fast without it).
+- Create the Google OAuth 2.0 Client ID in Google Cloud Console; set `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` env vars on EC2 (or the OAuth flow's first invocation will fail at runtime).
+- Set `AUTH_OAUTH_FRONTEND_REDIRECT_BASE=https://chess-frontend-52i.pages.dev` on EC2.
+- Rotate the RDS master password (pre-existing carryover from 2026-05-25 closure; especially pressing before user accounts exist).
+- Configure branch protection on `main` in the GitHub UI (pre-existing carryover from feature 13).
+- Replace the static test-count claim in `README.md` with a dynamic count (now reads 212; will drift on every future feature).
+
+The repo returns to maintenance mode. Future work in this codebase enters via new `feature_list.json` entries with priority ≥ 21 — same pattern as features 15 and 16–20 (themselves maintenance reopens past the 2026-05-25 portfolio-closure milestone).

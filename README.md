@@ -20,7 +20,7 @@ Open the frontend in two browsers (Firefox + Chrome works well), create a room i
 - **Disconnect/reconnect lifecycle with grace period.** A STOMP session drop schedules a one-shot 60-second abandon timer; a resubscribe with the matching `playerId` native header cancels it. `PlayerDisconnectedEvent` and `PlayerReconnectedEvent` drive the opponent's "reconnecting..." banner with an absolute `gracePeriodEndsAt` deadline.
 - **Production deploy on AWS Free Tier with OIDC CI/CD.** EC2 + RDS + ECR provisioned by Terraform; Caddy terminates TLS via Let's Encrypt at `chess-backend.duckdns.org`; GitHub Actions authenticates to AWS via federated OIDC (no static keys anywhere) and gates each release on a `/api/health` smoke test.
 - **Leader/implementer/reviewer agent harness with persisted state.** Three role files in `.claude/agents/` separate planning, execution, and verification. State outlives chat: scope in `feature_list.json`, active session in `progress/current.md`, audit trail in `progress/history.md`, learning notes in `notes/`.
-- **207 tests with Testcontainers — no H2, no in-memory fakes.** Integration tests boot a real Postgres and Redis via Testcontainers and exercise the system through the REST + STOMP surfaces. Unit tests cover the domain layer (chess rules, edge cases) where a context boot would be wasted overhead.
+- **212 tests with Testcontainers — no H2, no in-memory fakes.** Integration tests boot a real Postgres and Redis via Testcontainers and exercise the system through the REST + STOMP surfaces. Unit tests cover the domain layer (chess rules, edge cases) where a context boot would be wasted overhead.
 
 ## Architecture
 
@@ -215,6 +215,7 @@ Live game updates are pushed over STOMP-over-WebSocket. After every successful `
 - Subscribe to `/topic/games/{gameId}` to receive `GameStateEvent` variants (`MOVE`, `GAME_ABANDONED`, `PLAYER_DISCONNECTED`, `PLAYER_RECONNECTED`) — each carries an explicit `type` discriminator field.
 - Subscribe to `/topic/rooms/{roomId}` to receive `RoomEvent` variants (today: `ROOM_JOINED`) — same discriminator pattern.
 - Subscribe to `/topic/games/{gameId}/viewers` to receive a `ViewerCountEvent` on every spectator join/leave. Players self-exclude from the count by sending a `playerId:<uuid>` native STOMP header on their `SUBSCRIBE` to `/topic/games/{gameId}`.
+- Optional: send `Authorization: Bearer <jwt>` as a native STOMP header on the CONNECT frame to identify the session. Anonymous CONNECT is still supported (guest play unchanged); a bad or missing JWT does not reject the connection. When the JWT is valid, the server blocks identity spoofing on SEND / SUBSCRIBE frames whose `playerId` does not match the authenticated user. See [`docs/architecture.md`](docs/architecture.md) → "Authentication → WebSocket trust model (feature 20)" for the two-phase interceptor contract and the "ERROR-but-no-disconnect" rejection model.
 
 See [`docs/architecture.md`](docs/architecture.md) → "STOMP API contract" for the full contract (payload shapes, allowed origins, failure mode, viewer count broadcasts, the `playerId` header convention, and the `GameStateEvent` family).
 
@@ -299,7 +300,7 @@ chess-backend-java/
 
 These items were considered and explicitly deferred. They are documented here so reviewers see the boundaries as decisions, not gaps.
 
-- **Authentication.** Players are identified by an opaque UUID set at room creation. A real product would have OAuth, OIDC, or session cookies; the `X-Player-Id` header and the STOMP `playerId` native header are deliberate placeholders for that future layer.
+- **Authentication beyond the auth bundle (features 16–20).** Email/password, Google OAuth, JWT issuance + validation, per-user game history, and JWT-validated STOMP CONNECT with identity-spoof prevention are all in place; refresh tokens, password reset, email verification, 2FA, account linking, and multi-provider OAuth (Apple, GitHub, ...) are deliberately deferred. Guests still play anonymously; an account unlocks "review my past games" and identity-strengthened STOMP sessions.
 - **Ratings (ELO).** The data model leaves room for it (the archive stores per-player UUIDs and display names); no implementation today.
 - **Tournament structure.** One game at a time per room.
 - **Move clocks / time controls.** Possible future feature; the `GameStatus` enum and the move-archive schema leave room without a migration.

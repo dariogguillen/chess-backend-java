@@ -618,15 +618,112 @@ its own nested `PlayerView`. The two-field shape preserves the
 pre-feature-19 wire format byte-for-byte and isolates the contract
 from any future field added to `Player`.
 
+### WebSocket trust model (feature 20)
+
+Feature 20 (`auth-stomp-trust`) closes the last gap of the bundle:
+the WebSocket / STOMP surface is now identity-aware without losing
+its anonymous-friendly posture. The piece is a single
+`ChannelInterceptor` — `StompAuthInterceptor` in the `websocket`
+package — registered on the client-inbound channel in
+`WebSocketConfig.configureClientInboundChannel`. Every STOMP frame
+from a client passes through it before any session listener
+(`PlayerSessionTracker`, `ViewerCountTracker`) or future
+`@MessageMapping` controller sees the frame.
+
+**Two-phase contract.**
+
+- **Phase 1 — CONNECT (identity attachment).** The interceptor
+  reads the native `Authorization` header on the CONNECT frame
+  (the same `Authorization: Bearer <jwt>` the WebSocket handshake
+  surfaced as a STOMP native header). If present and the JWT
+  verifies via the shared `JwtVerifier` bean (same instance the
+  REST `JwtAuthenticationFilter` uses, no second-source-of-truth),
+  the `sub` claim is parsed as a `UUID`, the `User` is loaded
+  through `UserRepository.findById`, and the session is identified
+  via `StompHeaderAccessor.setUser(...)` plus a session-attribute
+  (`authenticatedUserId`) for code paths that don't have a
+  `Principal` parameter. **All failure modes — missing header,
+  malformed token, expired token, wrong signature, unknown user,
+  non-UUID subject — leave the session anonymous.** The CONNECT
+  itself is never rejected. This is bundle decision 7 made
+  enforceable: anonymous STOMP must keep working forever, and a
+  bad JWT must not break guest play on first-deploy day before
+  every frontend instance has wired the header.
+
+- **Phase 2 — SEND / SUBSCRIBE (identity-spoof prevention).** When
+  a SEND or SUBSCRIBE frame carries an explicit `playerId` native
+  header, the interceptor verifies the claim against the session:
+  - **Authenticated session, claim on a game-scoped destination**
+    (`/topic/games/{gameId}` or `/app/games/{gameId}/...`): the
+    interceptor looks up the game via the lower-level `GameStore`
+    seam (NOT `GameService`, which has a `SimpMessagingTemplate`
+    dependency that would close a bean-graph cycle through
+    `WebSocketConfig`). If the claimed `playerId` matches a player
+    of that game, the player's `Player.userId` must equal the
+    session's authenticated user id. A mismatch produces a STOMP
+    ERROR frame back to the client and drops the message; the
+    session stays open.
+  - **Authenticated session, generic destination** (or claim does
+    not match any player of the looked-up game) and **anonymous
+    session:** pin-on-first-use. The first `playerId`-bearing frame
+    pins that id on the session under `pinnedPlayerId`. Subsequent
+    frames whose claim does not match the pin are rejected the
+    same way — ERROR + drop, session intact. The pin is
+    per-session, not global.
+  - **No `playerId` header:** pass-through. The interceptor only
+    validates claims; it never requires them. The existing
+    spectator and pure-subscribe paths
+    (`RoomLifecycleIT`, `GameWebSocketIT`) stay green without
+    modification.
+
+**Why ERROR-not-disconnect.** A STOMP ERROR frame sent on the
+`clientOutboundChannel` lets the client observe the rejection
+without losing the connection. Forcing a disconnect would
+interact badly with the feature-11 grace-period layer — a spoof
+attempt would inadvertently fire a grace timer on the opponent's
+side. ERROR-but-stay-connected gives a buggy client a chance to
+self-correct.
+
+**Why the JWT validator is the same `JwtVerifier`.** Bundle
+decision 2 locked the JWT shape: HS256 + `AUTH_JWT_SECRET`,
+7-day expiry, `sub` / `email` / `iat` / `exp` claims, byte-for-
+byte interchangeable between REST and WebSocket. A second
+verifier instance would invite drift; reusing the bean keeps
+the contract atomic across surfaces.
+
+**Why `GameStore` and not `GameService`.** Spring's
+`@EnableWebSocketMessageBroker` infrastructure publishes
+`SimpMessagingTemplate` from the same `WebSocketConfig` that
+registers `StompAuthInterceptor`. `GameService` depends on
+`SimpMessagingTemplate`; injecting `GameService` into the
+interceptor would close the cycle `WebSocketConfig →
+StompAuthInterceptor → GameService → SimpMessagingTemplate →
+WebSocketConfig`. The interceptor reads `GameStore.findById`
+directly — same lower-level seam `GameService` itself uses for
+reads — and the outbound `MessageChannel` used to emit ERROR
+frames is `@Lazy`-injected for the same reason: the bean is
+created by the broker infrastructure and `@Lazy` defers
+resolution to first use, after initialization has completed.
+
+**Frontend coordination.** Optional and additive. The frontend
+MAY start sending `Authorization: Bearer <jwt>` on its STOMP
+CONNECT to identify the session. Without it, the existing
+`X-Player-Id`-style anonymous flow keeps working. The contract
+change is asymmetric and back-compatible: the backend ships first,
+the frontend adopts at its own pace.
+
 ### What's not in this feature
 
-- **STOMP identity verification** — feature 20 (`auth-stomp-trust`).
 - **Refresh tokens, password reset, email verification, 2FA,
   account linking** — out of scope for the whole bundle.
 - **Multi-provider OAuth** (no Apple, no GitHub) — out of scope for
   feature 18. Adding more providers later is a
   `.clientRegistration(...)` per provider; the success handler
   is provider-agnostic by reading `sub` / `email` / `name`.
+- **STOMP rate-limiting and admin force-disconnect** — feature 20
+  validates identity but does not police frame volume or expose
+  an operator-side disconnect API; both are future-work
+  candidates.
 
 ## CORS
 

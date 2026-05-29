@@ -454,7 +454,7 @@
     "id": "auth-stomp-trust",
     "title": "WebSocket auth — JWT-validated STOMP CONNECT + ChannelInterceptor identity check",
     "description": "Fifth and final feature of the auth bundle. Closes the gap left after features 16–19: REST is auth-aware, but the WebSocket / STOMP surface still trusts whatever playerId or X-Player-Id the client sends. This feature adds a STOMP ChannelInterceptor that (a) on CONNECT, reads the Authorization header from the native STOMP headers and, if present, validates the JWT against the same JwtVerifier used by REST; (b) on SEND/SUBSCRIBE, verifies that the playerId in the frame corresponds to either the authenticated user's player rows OR a matching X-Player-Id anonymous session. Anonymous WebSocket use is preserved for guest play, but identity spoofing is blocked.",
-    "status": "in_progress",
+    "status": "done",
     "priority": 20,
     "acceptance": [
       "WebSocketConfig registers a ChannelInterceptor at io.github.dariogguillen.chess.websocket.StompAuthInterceptor.",
