@@ -325,13 +325,16 @@ class DisconnectHandlingIT {
             String.class);
     JsonNode createBody = objectMapper.readTree(createResponse.getBody());
     String roomId = createBody.get("roomId").asText();
+    String joinToken = createBody.get("joinToken").asText();
     UUID whitePlayerId = UUID.fromString(createBody.get("playerId").asText());
 
     ResponseEntity<String> joinResponse =
         restTemplate.exchange(
             baseUrl() + "/api/rooms/" + roomId + "/join",
             HttpMethod.POST,
-            new HttpEntity<>("{\"displayName\":\"" + blackName + "\"}", headers),
+            new HttpEntity<>(
+                "{\"displayName\":\"" + blackName + "\",\"joinToken\":\"" + joinToken + "\"}",
+                headers),
             String.class);
     JsonNode joinBody = objectMapper.readTree(joinResponse.getBody());
     UUID gameId = UUID.fromString(joinBody.get("gameId").asText());

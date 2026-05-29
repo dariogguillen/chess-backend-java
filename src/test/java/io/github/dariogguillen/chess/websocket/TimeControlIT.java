@@ -198,13 +198,16 @@ class TimeControlIT {
             String.class);
     JsonNode create = objectMapper.readTree(createResponse.getBody());
     String roomId = create.get("roomId").asText();
+    String joinToken = create.get("joinToken").asText();
     UUID whitePlayerId = UUID.fromString(create.get("playerId").asText());
 
     ResponseEntity<String> joinResponse =
         restTemplate.exchange(
             baseUrl() + "/api/rooms/" + roomId + "/join",
             HttpMethod.POST,
-            new HttpEntity<>("{\"displayName\":\"" + blackName + "\"}", headers),
+            new HttpEntity<>(
+                "{\"displayName\":\"" + blackName + "\",\"joinToken\":\"" + joinToken + "\"}",
+                headers),
             String.class);
     JsonNode join = objectMapper.readTree(joinResponse.getBody());
     UUID gameId = UUID.fromString(join.get("gameId").asText());

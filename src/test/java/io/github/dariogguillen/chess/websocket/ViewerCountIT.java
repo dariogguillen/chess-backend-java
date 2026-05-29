@@ -130,7 +130,7 @@ class ViewerCountIT {
     assertThat(first.count()).isEqualTo(1);
 
     // Opponent joins via REST — creates the game, flips the room to ACTIVE.
-    joinRoom(setup.roomId(), "Bob");
+    joinRoom(setup.roomId(), setup.joinToken(), "Bob");
 
     // No further ViewerCountEvent should be emitted by the join: the room's spectator set is
     // unchanged. The count remains 1 (proven by the absence of any reset-to-0 or bump-to-2 event).
@@ -319,25 +319,31 @@ class ViewerCountIT {
             String.class);
     JsonNode createBody = objectMapper.readTree(createResponse.getBody());
     String roomId = createBody.get("roomId").asText();
+    String joinToken = createBody.get("joinToken").asText();
     UUID creatorPlayerId = UUID.fromString(createBody.get("playerId").asText());
-    return new RoomSetup(roomId, creatorPlayerId);
+    return new RoomSetup(roomId, joinToken, creatorPlayerId);
   }
 
-  /** Joins an existing room as the second player; flips it to ACTIVE and creates the game. */
-  private void joinRoom(String roomId, String joinerName) {
+  /**
+   * Joins an existing room as the second player; flips it to ACTIVE and creates the game. The join
+   * token (feature 22.7) is required for the join to succeed.
+   */
+  private void joinRoom(String roomId, String joinToken, String joinerName) {
     HttpHeaders headers = new HttpHeaders();
     headers.setContentType(MediaType.APPLICATION_JSON);
     restTemplate.exchange(
         baseUrl() + "/api/rooms/" + roomId + "/join",
         HttpMethod.POST,
-        new HttpEntity<>("{\"displayName\":\"" + joinerName + "\"}", headers),
+        new HttpEntity<>(
+            "{\"displayName\":\"" + joinerName + "\",\"joinToken\":\"" + joinToken + "\"}",
+            headers),
         String.class);
   }
 
   /** Creates a room and joins it (room ACTIVE, game created). Returns the room short code. */
   private RoomSetup setupGame(String creatorName, String joinerName) throws Exception {
     RoomSetup setup = setupRoom(creatorName);
-    joinRoom(setup.roomId(), joinerName);
+    joinRoom(setup.roomId(), setup.joinToken(), joinerName);
     return setup;
   }
 
@@ -345,5 +351,5 @@ class ViewerCountIT {
     return URI.create("http://localhost:" + port).toString();
   }
 
-  private record RoomSetup(String roomId, UUID creatorPlayerId) {}
+  private record RoomSetup(String roomId, String joinToken, UUID creatorPlayerId) {}
 }

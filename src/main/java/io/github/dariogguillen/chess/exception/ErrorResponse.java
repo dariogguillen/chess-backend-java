@@ -35,7 +35,8 @@ public record ErrorResponse(
               "MISSING_HEADER",
               "AUTHENTICATION_REQUIRED",
               "EMAIL_ALREADY_TAKEN",
-              "INVALID_CREDENTIALS"
+              "INVALID_CREDENTIALS",
+              "INVALID_JOIN_TOKEN"
             },
             example = "ROOM_NOT_FOUND")
         String error,

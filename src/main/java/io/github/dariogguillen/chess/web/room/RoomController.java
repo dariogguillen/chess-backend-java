@@ -57,7 +57,9 @@ public class RoomController {
           "Creates a new room with the caller as its single player. The caller's side comes from "
               + "the optional preferredSide field (WHITE/BLACK/RANDOM; omitted defaults to WHITE; "
               + "RANDOM is coin-flipped server-side). The response role reflects the resolved "
-              + "side, alongside the assigned playerId and the freshly generated roomId.")
+              + "side, alongside the assigned playerId and the freshly generated roomId. The "
+              + "response also carries a secret joinToken (only the creator obtains it) that the "
+              + "opponent must supply to POST /api/rooms/{id}/join.")
   @ApiResponse(
       responseCode = "201",
       description = "Room created",
@@ -81,15 +83,19 @@ public class RoomController {
         roomService.createRoom(
             request.displayName(), request.preferredSide(), currentUserId, request.timeControl());
     String role = created.room().creatorSide().name();
-    return new RoomResponse(created.room().id(), created.creator().id(), role, null);
+    return new RoomResponse(
+        created.room().id(), created.creator().id(), role, null, created.room().joinToken());
   }
 
   @Operation(
       summary = "Join a room",
       description =
-          "Joins {id} as the second player and creates the game in the same atomic step. The "
-              + "joiner's role is the opposite of the side the creator chose at create time. Path "
-              + "{id} is case-insensitive; the canonical uppercase form is returned in the body.")
+          "Joins {id} as the second player and creates the game in the same atomic step. Requires "
+              + "the secret joinToken the creator obtained from the create response; a missing or "
+              + "wrong token returns 403 INVALID_JOIN_TOKEN (the roomId alone, used for watching, "
+              + "does not authorise joining). The joiner's role is the opposite of the side the "
+              + "creator chose at create time. Path {id} is case-insensitive; the canonical "
+              + "uppercase form is returned in the body.")
   @ApiResponse(
       responseCode = "200",
       description = "Joined; game created",
@@ -100,6 +106,13 @@ public class RoomController {
   @ApiResponse(
       responseCode = "400",
       description = "Invalid request (validation failure or malformed JSON)",
+      content =
+          @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = ErrorResponse.class)))
+  @ApiResponse(
+      responseCode = "403",
+      description = "Missing or invalid join token for a token-protected room",
       content =
           @Content(
               mediaType = MediaType.APPLICATION_JSON_VALUE,
@@ -125,10 +138,13 @@ public class RoomController {
       @AuthenticationPrincipal User currentUser) {
     UUID currentUserId = currentUser == null ? null : currentUser.getId();
     JoinedRoom joined =
-        roomService.joinRoom(id.toUpperCase(Locale.ROOT), request.displayName(), currentUserId);
+        roomService.joinRoom(
+            id.toUpperCase(Locale.ROOT), request.displayName(), currentUserId, request.joinToken());
     Side joinerSide = opposite(joined.room().creatorSide());
+    // The joiner is already in the room, so they never need the token: it is deliberately left
+    // null on the join response (the create response is the only place the real token surfaces).
     return new RoomResponse(
-        joined.room().id(), joined.joiner().id(), joinerSide.name(), joined.game().id());
+        joined.room().id(), joined.joiner().id(), joinerSide.name(), joined.game().id(), null);
   }
 
   private static Side opposite(Side side) {

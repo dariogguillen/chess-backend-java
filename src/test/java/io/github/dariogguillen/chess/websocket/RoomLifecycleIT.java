@@ -103,16 +103,16 @@ class RoomLifecycleIT {
 
   @Test
   void subscriberBeforeJoin_receivesRoomJoinedEvent() throws Exception {
-    String roomId = createRoom("Alice");
+    RoomHandle room = createRoom("Alice");
     StompSession session = connect();
-    BlockingQueue<RoomJoinedEvent> queue = subscribeForEvent(session, roomId);
+    BlockingQueue<RoomJoinedEvent> queue = subscribeForEvent(session, room.roomId());
 
-    JoinResult joined = joinRoom(roomId, "Bob");
+    JoinResult joined = joinRoom(room, "Bob");
 
     RoomJoinedEvent received = queue.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     assertThat(received).isNotNull();
     assertThat(received.type()).isEqualTo("ROOM_JOINED");
-    assertThat(received.roomId()).isEqualTo(roomId);
+    assertThat(received.roomId()).isEqualTo(room.roomId());
     assertThat(received.gameId()).isEqualTo(joined.gameId());
     assertThat(received.blackPlayer()).isNotNull();
     assertThat(received.blackPlayer().id()).isEqualTo(joined.joinerId());
@@ -121,10 +121,10 @@ class RoomLifecycleIT {
 
   @Test
   void subscriberAfterJoin_doesNotReceiveEvent() throws Exception {
-    String roomId = createRoom("Alice");
-    joinRoom(roomId, "Bob");
+    RoomHandle room = createRoom("Alice");
+    joinRoom(room, "Bob");
     StompSession session = connect();
-    BlockingQueue<RoomJoinedEvent> queue = subscribeForEvent(session, roomId);
+    BlockingQueue<RoomJoinedEvent> queue = subscribeForEvent(session, room.roomId());
 
     RoomJoinedEvent leak = queue.poll(NO_RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     assertThat(leak).isNull();
@@ -132,16 +132,16 @@ class RoomLifecycleIT {
 
   @Test
   void duplicateJoinOnFullRoom_returns409AndDoesNotBroadcastSecondEvent() throws Exception {
-    String roomId = createRoom("Alice");
+    RoomHandle room = createRoom("Alice");
     StompSession session = connect();
-    BlockingQueue<RoomJoinedEvent> queue = subscribeForEvent(session, roomId);
+    BlockingQueue<RoomJoinedEvent> queue = subscribeForEvent(session, room.roomId());
 
-    joinRoom(roomId, "Bob");
+    joinRoom(room, "Bob");
     // Drain the legitimate event so the next poll only sees the (absent) second broadcast.
     RoomJoinedEvent first = queue.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     assertThat(first).isNotNull();
 
-    ResponseEntity<String> rejected = joinRoomExpectingFailure(roomId, "Carol");
+    ResponseEntity<String> rejected = joinRoomExpectingFailure(room, "Carol");
     assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
     JsonNode errorBody = objectMapper.readTree(rejected.getBody());
     assertThat(errorBody.get("error").asText()).isEqualTo("ROOM_FULL");
@@ -152,18 +152,18 @@ class RoomLifecycleIT {
 
   @Test
   void wireFormat_containsTypeDiscriminatorField() throws Exception {
-    String roomId = createRoom("Alice");
+    RoomHandle room = createRoom("Alice");
     StompSession session = connect();
-    BlockingQueue<String> rawQueue = subscribeForRawJson(session, roomId);
+    BlockingQueue<String> rawQueue = subscribeForRawJson(session, room.roomId());
 
-    joinRoom(roomId, "Bob");
+    joinRoom(room, "Bob");
 
     String rawJson = rawQueue.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     assertThat(rawJson).isNotNull();
     JsonNode tree = objectMapper.readTree(rawJson);
     assertThat(tree.get("type")).isNotNull();
     assertThat(tree.get("type").asText()).isEqualTo("ROOM_JOINED");
-    assertThat(tree.get("roomId").asText()).isEqualTo(roomId);
+    assertThat(tree.get("roomId").asText()).isEqualTo(room.roomId());
     assertThat(tree.get("gameId").asText()).isNotBlank();
     assertThat(tree.get("blackPlayer")).isNotNull();
     assertThat(tree.get("blackPlayer").get("displayName").asText()).isEqualTo("Bob");
@@ -221,7 +221,7 @@ class RoomLifecycleIT {
     return queue;
   }
 
-  private String createRoom(String displayName) throws Exception {
+  private RoomHandle createRoom(String displayName) throws Exception {
     HttpHeaders headers = new HttpHeaders();
     headers.setContentType(MediaType.APPLICATION_JSON);
     ResponseEntity<String> response =
@@ -231,17 +231,23 @@ class RoomLifecycleIT {
             new HttpEntity<>("{\"displayName\":\"" + displayName + "\"}", headers),
             String.class);
     JsonNode body = objectMapper.readTree(response.getBody());
-    return body.get("roomId").asText();
+    return new RoomHandle(body.get("roomId").asText(), body.get("joinToken").asText());
   }
 
-  private JoinResult joinRoom(String roomId, String displayName) throws Exception {
+  private JoinResult joinRoom(RoomHandle room, String displayName) throws Exception {
     HttpHeaders headers = new HttpHeaders();
     headers.setContentType(MediaType.APPLICATION_JSON);
     ResponseEntity<String> response =
         restTemplate.exchange(
-            baseUrl() + "/api/rooms/" + roomId + "/join",
+            baseUrl() + "/api/rooms/" + room.roomId() + "/join",
             HttpMethod.POST,
-            new HttpEntity<>("{\"displayName\":\"" + displayName + "\"}", headers),
+            new HttpEntity<>(
+                "{\"displayName\":\""
+                    + displayName
+                    + "\",\"joinToken\":\""
+                    + room.joinToken()
+                    + "\"}",
+                headers),
             String.class);
     JsonNode body = objectMapper.readTree(response.getBody());
     return new JoinResult(
@@ -250,18 +256,25 @@ class RoomLifecycleIT {
   }
 
   /**
-   * Like {@link #joinRoom(String, String)}, but tolerates 4xx by reconstructing a {@link
+   * Like {@link #joinRoom(RoomHandle, String)}, but tolerates 4xx by reconstructing a {@link
    * ResponseEntity} from the thrown {@link HttpStatusCodeException}. Used by the
-   * full-room-rejection test which expects 409.
+   * full-room-rejection test which expects 409 — it supplies the correct token so the rejection is
+   * the room-full conflict, not a token failure.
    */
-  private ResponseEntity<String> joinRoomExpectingFailure(String roomId, String displayName) {
+  private ResponseEntity<String> joinRoomExpectingFailure(RoomHandle room, String displayName) {
     HttpHeaders headers = new HttpHeaders();
     headers.setContentType(MediaType.APPLICATION_JSON);
     try {
       return restTemplate.exchange(
-          baseUrl() + "/api/rooms/" + roomId + "/join",
+          baseUrl() + "/api/rooms/" + room.roomId() + "/join",
           HttpMethod.POST,
-          new HttpEntity<>("{\"displayName\":\"" + displayName + "\"}", headers),
+          new HttpEntity<>(
+              "{\"displayName\":\""
+                  + displayName
+                  + "\",\"joinToken\":\""
+                  + room.joinToken()
+                  + "\"}",
+              headers),
           String.class);
     } catch (HttpStatusCodeException ex) {
       HttpStatusCode status = ex.getStatusCode();
@@ -274,4 +287,7 @@ class RoomLifecycleIT {
   }
 
   private record JoinResult(UUID gameId, UUID joinerId) {}
+
+  /** A created room's short code plus the secret join token needed to join it (feature 22.7). */
+  private record RoomHandle(String roomId, String joinToken) {}
 }

@@ -256,6 +256,7 @@ class GameControllerIT {
             .andReturn();
     JsonNode createBody = objectMapper.readTree(createResult.getResponse().getContentAsString());
     String roomId = createBody.get("roomId").asText();
+    String joinToken = createBody.get("joinToken").asText();
     UUID whitePlayerId = UUID.fromString(createBody.get("playerId").asText());
 
     MvcResult joinResult =
@@ -263,7 +264,12 @@ class GameControllerIT {
             .perform(
                 post("/api/rooms/{id}/join", roomId)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .content("{\"displayName\":\"" + blackName + "\"}"))
+                    .content(
+                        "{\"displayName\":\""
+                            + blackName
+                            + "\",\"joinToken\":\""
+                            + joinToken
+                            + "\"}"))
             .andExpect(status().isOk())
             .andReturn();
     JsonNode joinBody = objectMapper.readTree(joinResult.getResponse().getContentAsString());
@@ -294,6 +300,7 @@ class GameControllerIT {
             .andReturn();
     JsonNode create = objectMapper.readTree(createResult.getResponse().getContentAsString());
     String roomId = create.get("roomId").asText();
+    String joinToken = create.get("joinToken").asText();
     UUID whitePlayerId = UUID.fromString(create.get("playerId").asText());
 
     MvcResult joinResult =
@@ -301,7 +308,12 @@ class GameControllerIT {
             .perform(
                 post("/api/rooms/{id}/join", roomId)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .content("{\"displayName\":\"" + blackName + "\"}"))
+                    .content(
+                        "{\"displayName\":\""
+                            + blackName
+                            + "\",\"joinToken\":\""
+                            + joinToken
+                            + "\"}"))
             .andExpect(status().isOk())
             .andReturn();
     JsonNode join = objectMapper.readTree(joinResult.getResponse().getContentAsString());

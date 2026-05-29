@@ -83,6 +83,19 @@ public class GlobalExceptionHandler {
     return build(HttpStatus.UNAUTHORIZED, codeOf(ex), ex.getMessage());
   }
 
+  /**
+   * Maps {@link InvalidJoinTokenException} to HTTP 403 / {@code INVALID_JOIN_TOKEN}. Like {@link
+   * InvalidCredentialsException}, this exception has no umbrella superclass in our hierarchy — the
+   * single-403 case in the codebase does not yet justify one — so the handler is narrow, targeting
+   * the concrete class. The code is derived mechanically by {@link #codeOf(ChessException)} ({@code
+   * InvalidJoinTokenException} → {@code INVALID_JOIN_TOKEN}).
+   */
+  @ExceptionHandler(InvalidJoinTokenException.class)
+  public ResponseEntity<ErrorResponse> handleInvalidJoinToken(InvalidJoinTokenException ex) {
+    log.warn("Invalid join token: {}", ex.getMessage());
+    return build(HttpStatus.FORBIDDEN, codeOf(ex), ex.getMessage());
+  }
+
   @ExceptionHandler(MethodArgumentNotValidException.class)
   public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException ex) {
     String message =

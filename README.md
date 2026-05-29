@@ -71,10 +71,10 @@ sequenceDiagram
 
     PlayerA->>Backend: POST /api/rooms {displayName}
     Backend->>Redis: SET room:{roomId} (WAITING_FOR_PLAYER)
-    Backend-->>PlayerA: 200 {roomId, playerId}
+    Backend-->>PlayerA: 200 {roomId, playerId, joinToken}
     PlayerA->>Backend: STOMP SUBSCRIBE /topic/rooms/{roomId}
 
-    PlayerB->>Backend: POST /api/rooms/{roomId}/join {displayName}
+    PlayerB->>Backend: POST /api/rooms/{roomId}/join {displayName, joinToken}
     Backend->>Redis: compute room:{roomId} (ACTIVE) + SET game:{gameId}
     Backend-->>PlayerB: 200 {gameId, playerId, role: BLACK}
     Backend-->>PlayerA: /topic/rooms/{roomId} ROOM_JOINED {gameId, blackPlayer}
@@ -168,15 +168,19 @@ Room IDs are case-insensitive in URLs; responses always return the canonical upp
 # Health probe.
 curl http://localhost:8080/api/health
 
-# Create a room (caller becomes WHITE).
+# Create a room (caller becomes WHITE). The response carries a secret
+# joinToken — only the creator obtains it; share it with the opponent.
 curl -X POST http://localhost:8080/api/rooms \
   -H 'Content-Type: application/json' \
   -d '{"displayName":"Alice"}'
 
-# Join an existing room (caller becomes BLACK; game is created).
+# Join an existing room (caller becomes BLACK; game is created). The
+# joinToken from the create response is required — the roomId alone (used
+# for watching) does not authorise joining. A missing or wrong token
+# returns 403 INVALID_JOIN_TOKEN.
 curl -X POST http://localhost:8080/api/rooms/K7M3X9/join \
   -H 'Content-Type: application/json' \
-  -d '{"displayName":"Bob"}'
+  -d '{"displayName":"Bob","joinToken":"<joinToken-from-create-response>"}'
 ```
 
 ### Games

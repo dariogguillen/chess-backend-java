@@ -8,6 +8,7 @@ import io.github.dariogguillen.chess.domain.RoomStatus;
 import io.github.dariogguillen.chess.domain.Side;
 import io.github.dariogguillen.chess.domain.SidePreference;
 import io.github.dariogguillen.chess.domain.TimeControl;
+import io.github.dariogguillen.chess.exception.InvalidJoinTokenException;
 import io.github.dariogguillen.chess.exception.RoomFullException;
 import io.github.dariogguillen.chess.exception.RoomNotFoundException;
 import io.github.dariogguillen.chess.websocket.RoomJoinedEvent;
@@ -30,12 +31,13 @@ import org.springframework.stereotype.Service;
  *
  * <p>The cross-store invariant — "a game exists if its room is {@link RoomStatus#ACTIVE}" — is
  * preserved by performing the room mutation and the game write inside the same {@link
- * RoomStore#compute} block, which is atomic per room id. See {@link #joinRoom(String, String)} for
- * the detail.
+ * RoomStore#compute} block, which is atomic per room id. See {@link #joinRoom(String, String, UUID,
+ * String)} for the detail.
  *
  * <p>On a successful join the service also broadcasts a {@link RoomJoinedEvent} on {@code
  * /topic/rooms/{roomId}} so the creator (Player A) can learn the {@code gameId} the same instant
- * Player B does. The broadcast is best-effort — see {@link #joinRoom(String, String)}.
+ * Player B does. The broadcast is best-effort — see {@link #joinRoom(String, String, UUID,
+ * String)}.
  *
  * <p>Each successful broadcast emits a single INFO log line carrying the destination and the key
  * payload identifiers ({@code gameId}, {@code joinerId}); the failure path stays on WARN.
@@ -100,8 +102,9 @@ public class RoomService {
    *     an untimed room whose game carries no clock. Stored on the {@link Room} and read at join
    *     time to initialise the game clock.
    * @return the freshly created room with one player, the resolved {@code creatorSide}, the
-   *     declared {@code timeControl}, and status {@link RoomStatus#WAITING_FOR_PLAYER}, plus the
-   *     synthesised {@link Player} so the caller can surface the assigned player id.
+   *     declared {@code timeControl}, a freshly generated {@code joinToken} (feature 22.7), and
+   *     status {@link RoomStatus#WAITING_FOR_PLAYER}, plus the synthesised {@link Player} so the
+   *     caller can surface the assigned player id and the token the creator must keep.
    * @throws IllegalStateException if {@value #MAX_CODE_ATTEMPTS} consecutive generated codes all
    *     collide with existing rooms — a system-level failure indicating either a near-full keyspace
    *     or a broken {@link RoomCodeGenerator}.
@@ -113,6 +116,10 @@ public class RoomService {
       TimeControl timeControl) {
     Player creator = new Player(UUID.randomUUID(), displayName, currentUserId);
     Side creatorSide = resolveCreatorSide(preferredSide);
+    // The join token is the secret capability the join endpoint requires (feature 22.7). A
+    // 122-bit random UUID is not guessable, so possession of the public-ish six-char roomId (used
+    // for watching) does not let a spectator take the second-player slot.
+    String joinToken = UUID.randomUUID().toString();
     for (int attempt = 1; attempt <= MAX_CODE_ATTEMPTS; attempt++) {
       String candidate = codeGenerator.generate();
       Room created =
@@ -123,7 +130,12 @@ public class RoomService {
                   return existing;
                 }
                 return new Room(
-                    id, List.of(creator), RoomStatus.WAITING_FOR_PLAYER, creatorSide, timeControl);
+                    id,
+                    List.of(creator),
+                    RoomStatus.WAITING_FOR_PLAYER,
+                    creatorSide,
+                    timeControl,
+                    joinToken);
               });
       // If compute returned the existing room, our candidate collided and `created`
       // is not the room we built. Retry with a fresh code.
@@ -210,12 +222,20 @@ public class RoomService {
    *     {@code null} for anonymous guest joins. Threaded into the new {@link Player}'s {@code
    *     userId} field so the archive path can populate {@code games.black_user_id} when the game
    *     terminates (feature 19, `auth-my-games`).
+   * @param providedToken the join token supplied by the caller (feature 22.7). It must equal the
+   *     room's stored {@link Room#joinToken()} when that token is non-{@code null}; for a legacy /
+   *     unprotected room (stored token {@code null}) the check is skipped and a token-less join is
+   *     accepted. Validated <em>after</em> the room-exists check and <em>before</em> the room-full
+   *     check, so a caller without the token cannot probe whether a room is full.
    * @return a {@link JoinedRoom} carrying the post-join room, the synthesised joiner player, and
    *     the freshly created game so the caller can surface its id.
    * @throws RoomNotFoundException if no room exists for {@code roomId}.
+   * @throws InvalidJoinTokenException if the room is token-protected and {@code providedToken} is
+   *     missing or does not match.
    * @throws RoomFullException if the room already holds two players.
    */
-  public JoinedRoom joinRoom(String roomId, String displayName, UUID currentUserId) {
+  public JoinedRoom joinRoom(
+      String roomId, String displayName, UUID currentUserId, String providedToken) {
     Player joiner = new Player(UUID.randomUUID(), displayName, currentUserId);
     // The created game is captured from inside the atomic block so the outer code can return it.
     Game[] createdGameHolder = new Game[1];
@@ -227,6 +247,14 @@ public class RoomService {
               if (existing == null) {
                 throw new RoomNotFoundException(id);
               }
+              // Token check (feature 22.7) sits between existence and capacity: a caller without
+              // the token gets 403 even on a full room, so we never leak room state to someone who
+              // cannot join. A null stored token marks a legacy / unprotected room and short-
+              // circuits the check, accepting a token-less join (deploy-safety for in-flight
+              // rooms).
+              if (existing.joinToken() != null && !existing.joinToken().equals(providedToken)) {
+                throw new InvalidJoinTokenException(id);
+              }
               if (existing.players().size() >= 2) {
                 throw new RoomFullException(id);
               }
@@ -237,7 +265,13 @@ public class RoomService {
               Side creatorSide = existing.creatorSide();
               TimeControl timeControl = existing.timeControl();
               Room nextRoom =
-                  new Room(id, bothPlayers, RoomStatus.ACTIVE, creatorSide, timeControl);
+                  new Room(
+                      id,
+                      bothPlayers,
+                      RoomStatus.ACTIVE,
+                      creatorSide,
+                      timeControl,
+                      existing.joinToken());
               // Assign white/black from the stored creator side rather than from join order.
               Player white = creatorSide == Side.WHITE ? creator : joiner;
               Player black = creatorSide == Side.WHITE ? joiner : creator;
@@ -317,9 +351,10 @@ public class RoomService {
   public record CreatedRoom(Room room, Player creator) {}
 
   /**
-   * Carrier returned from {@link #joinRoom(String, String)}. The room is post-join (two players,
-   * {@link RoomStatus#ACTIVE}); the {@code joiner} is the player just synthesised; the {@code game}
-   * is the freshly created in-progress game whose id the controller surfaces in the response.
+   * Carrier returned from {@link #joinRoom(String, String, UUID, String)}. The room is post-join
+   * (two players, {@link RoomStatus#ACTIVE}); the {@code joiner} is the player just synthesised;
+   * the {@code game} is the freshly created in-progress game whose id the controller surfaces in
+   * the response.
    */
   public record JoinedRoom(Room room, Player joiner, Game game) {}
 }

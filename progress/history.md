@@ -2427,3 +2427,36 @@ Modified: `websocket/ViewerCountTracker.java` (core refactor — room-topic rege
 **Follow-up queued:** `room-access-tokens` (feature 22.7) — the join-token / two-links (play vs watch) access control surfaced during this feature's planning.
 
 **Feature note:** [`notes/22.5-spectators-in-room.md`](../notes/22.5-spectators-in-room.md).
+
+---
+
+## 2026-05-29 — room-access-tokens (feature 22.7)
+
+**Status:** done. Full harness cycle (leader plan → implementer → reviewer → user OK), approved on the first review pass.
+
+**Summary:** Separated the capability to *join as a player* from the capability to *watch*. Until now the `roomId` was the single shared secret — `POST /api/rooms/{id}/join` needed only the `roomId`, so anyone the creator shared the room with (especially spectators after feature 22.5 made the `roomId` the watch handle) could occupy the second-player slot. This feature mints a secret `joinToken` at room creation, returned ONLY in the create response; `POST /api/rooms/{id}/join` now requires it, and a missing or wrong token returns the new **403 `INVALID_JOIN_TOKEN`**. The `roomId` stays the token-less watch handle (`GET /api/rooms/{id}` + `SUBSCRIBE /topic/rooms/{roomId}`). The creator builds two frontend links: a "play" link carrying the token for the opponent, and a "watch" link with just the `roomId` for friends.
+
+**Design decisions:**
+- **Token on the `Room`** (nullable `String joinToken`), persisted in Redis, added with the same backwards-compatible record-evolution pattern as `creatorSide` (21) / `timeControl` (22): field last in the canonical constructor, convenience constructors delegate with null, compact constructor tolerates null.
+- **`joinToken == null` = legacy/unprotected room ⇒ token-less join accepted.** The deploy-safety hinge: rooms already in Redis (serialised before this deploy, no token field) deserialise with a null token and keep accepting token-less joins until they TTL out (24h), so the deploy doesn't break in-flight games. Rooms created after the deploy always carry a token and are protected.
+- **Token in the request body** (`JoinRoomRequest.joinToken`, not `@NotBlank` — business logic decides), value `UUID.randomUUID()`.
+- **403 via `InvalidJoinTokenException extends ChessException`** with a narrow `@ExceptionHandler` (mirrors `InvalidCredentialsException`'s 401); the mechanical `codeOf` yields `INVALID_JOIN_TOKEN`. Validation order inside `RoomService.joinRoom`'s compute block: room-exists (404) → token-valid (403) → not-full (409). The post-join room preserves the token.
+- **No leak**: `RoomDetailsResponse`/`RoomDetailsMapper` never expose the token; the join response returns `joinToken == null`; only the create response carries it.
+
+**The mechanical sweep (bulk of the diff):** every existing IT helper that did `create`+`join` would now 403, so the implementer threaded the create-response token through all of them — `RoomControllerIT`, `RoomDetailsControllerIT`, `GameControllerIT`, `MyGamesIT`, `ViewerCountIT`, `RoomLifecycleIT`, `TimeControlIT`, `DisconnectHandlingIT`, `DisconnectNotificationsIT`, `GameWebSocketIT`, `StompAuthIT`. The only remaining token-less joins are the three deliberate negatives in `RoomControllerIT` (no-token 403, unknown-room 404, blank-displayName 400). The OpenApiIT canary moved from 12 → 13 error codes (`INVALID_JOIN_TOKEN` inserted in sorted position).
+
+**Reviewer verdict:** approved (first pass). `./init.sh` green; 262 tests (unit + IT), 0 failures/errors/skipped. The reviewer validated the implementer's judgement that README was in-scope (a join curl + sequence diagram had gone stale and got a minimal token-threading fix, not a rewrite) and confirmed the token never serialises outside the create response.
+
+**Files touched:**
+
+New: `exception/InvalidJoinTokenException.java`, `notes/22.7-room-access-tokens.md`.
+
+Modified (main): `domain/Room.java`, `exception/GlobalExceptionHandler.java`, `exception/ErrorResponse.java` (+`INVALID_JOIN_TOKEN`, 13 codes), `service/RoomService.java`, `web/room/JoinRoomRequest.java`, `web/room/RoomResponse.java`, `web/room/RoomController.java`. Modified (tests/docs): `RoomTest`, `RoomServiceTest` (legacy null-token case), `OpenApiIT` (canary 12→13), `RoomControllerIT`, `RoomDetailsControllerIT`, `GameControllerIT`, `MyGamesIT`, `ViewerCountIT`, `RoomLifecycleIT`, `TimeControlIT`, `DisconnectHandlingIT`, `DisconnectNotificationsIT`, `GameWebSocketIT`, `StompAuthIT`, `docs/architecture.md`, `README.md`, `feature_list.json` (status → done).
+
+**Verification:** `./init.sh` green.
+
+**Deploy note (IMPORTANT — coordinated deploy required):** this is the first feature in the project that is NOT silently backwards-compatible for the live frontend. The backend is deploy-safe for in-flight rooms (null-as-legacy), but the production frontend joins token-less — once a room is created post-deploy, a token-less join 403s. The frontend must ship in the same window to read the token from the create response, send it on join, and build the play-link vs watch-link. Sequence the two deploys deliberately.
+
+**Follow-up still queued:** direct invitations to registered users (layered on top of this token model) — not yet a `feature_list.json` entry.
+
+**Feature note:** [`notes/22.7-room-access-tokens.md`](../notes/22.7-room-access-tokens.md).

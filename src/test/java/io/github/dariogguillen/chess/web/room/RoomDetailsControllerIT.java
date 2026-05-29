@@ -41,7 +41,7 @@ class RoomDetailsControllerIT {
 
   @Test
   void getRoom_waitingForPlayer_returnsExpectedShape() throws Exception {
-    String roomId = createRoomAndReturnId("Alice");
+    String roomId = createRoom("Alice").roomId();
 
     mockMvc
         .perform(get("/api/rooms/{id}", roomId))
@@ -49,6 +49,8 @@ class RoomDetailsControllerIT {
         .andExpect(jsonPath("$.roomId", equalTo(roomId)))
         .andExpect(jsonPath("$.status", equalTo("WAITING_FOR_PLAYER")))
         .andExpect(jsonPath("$.gameId", nullValue()))
+        // Feature 22.7: the watch path must never leak the secret join token.
+        .andExpect(jsonPath("$.joinToken").doesNotExist())
         .andExpect(jsonPath("$.players", hasSize(1)))
         .andExpect(jsonPath("$.players[0].id", matchesPattern(UUID_PATTERN)))
         .andExpect(jsonPath("$.players[0].displayName", equalTo("Alice")))
@@ -57,16 +59,18 @@ class RoomDetailsControllerIT {
 
   @Test
   void getRoom_active_returnsExpectedShapeWithBothPlayers() throws Exception {
-    String roomId = createRoomAndReturnId("Alice");
-    joinRoom(roomId, "Bob");
+    CreatedRoom room = createRoom("Alice");
+    joinRoom(room.roomId(), "Bob", room.joinToken());
 
     mockMvc
-        .perform(get("/api/rooms/{id}", roomId))
+        .perform(get("/api/rooms/{id}", room.roomId()))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.roomId", equalTo(roomId)))
+        .andExpect(jsonPath("$.roomId", equalTo(room.roomId())))
         .andExpect(jsonPath("$.status", equalTo("ACTIVE")))
         .andExpect(jsonPath("$.gameId", matchesPattern(UUID_PATTERN)))
         .andExpect(jsonPath("$.gameId", not(nullValue())))
+        // Feature 22.7: still no token leak once the room is ACTIVE.
+        .andExpect(jsonPath("$.joinToken").doesNotExist())
         .andExpect(jsonPath("$.players", hasSize(2)))
         .andExpect(jsonPath("$.players[0].displayName", equalTo("Alice")))
         .andExpect(jsonPath("$.players[0].role", equalTo("WHITE")))
@@ -76,7 +80,7 @@ class RoomDetailsControllerIT {
 
   @Test
   void getRoom_blackCreator_waitingForPlayer_reflectsChosenSide() throws Exception {
-    String roomId = createRoomAndReturnId("Alice", "BLACK");
+    String roomId = createRoom("Alice", "BLACK").roomId();
 
     mockMvc
         .perform(get("/api/rooms/{id}", roomId))
@@ -89,11 +93,11 @@ class RoomDetailsControllerIT {
 
   @Test
   void getRoom_blackCreator_active_reflectsChosenSideForBothPlayers() throws Exception {
-    String roomId = createRoomAndReturnId("Alice", "BLACK");
-    joinRoom(roomId, "Bob");
+    CreatedRoom room = createRoom("Alice", "BLACK");
+    joinRoom(room.roomId(), "Bob", room.joinToken());
 
     mockMvc
-        .perform(get("/api/rooms/{id}", roomId))
+        .perform(get("/api/rooms/{id}", room.roomId()))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.status", equalTo("ACTIVE")))
         .andExpect(jsonPath("$.players", hasSize(2)))
@@ -113,43 +117,40 @@ class RoomDetailsControllerIT {
         .andExpect(jsonPath("$.timestamp").exists());
   }
 
-  private String createRoomAndReturnId(String displayName) throws Exception {
+  private CreatedRoom createRoom(String displayName) throws Exception {
+    return createRoomFromBody("{\"displayName\":\"" + displayName + "\"}");
+  }
+
+  private CreatedRoom createRoom(String displayName, String preferredSide) throws Exception {
+    return createRoomFromBody(
+        "{\"displayName\":\"" + displayName + "\",\"preferredSide\":\"" + preferredSide + "\"}");
+  }
+
+  private CreatedRoom createRoomFromBody(String requestBody) throws Exception {
     MvcResult result =
         mockMvc
             .perform(
-                post("/api/rooms")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content("{\"displayName\":\"" + displayName + "\"}"))
+                post("/api/rooms").contentType(MediaType.APPLICATION_JSON).content(requestBody))
             .andExpect(status().isCreated())
             .andReturn();
     JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
-    return body.get("roomId").asText();
+    return new CreatedRoom(body.get("roomId").asText(), body.get("joinToken").asText());
   }
 
-  private String createRoomAndReturnId(String displayName, String preferredSide) throws Exception {
-    MvcResult result =
-        mockMvc
-            .perform(
-                post("/api/rooms")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(
-                        "{\"displayName\":\""
-                            + displayName
-                            + "\",\"preferredSide\":\""
-                            + preferredSide
-                            + "\"}"))
-            .andExpect(status().isCreated())
-            .andReturn();
-    JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
-    return body.get("roomId").asText();
-  }
-
-  private void joinRoom(String roomId, String displayName) throws Exception {
+  private void joinRoom(String roomId, String displayName, String joinToken) throws Exception {
     mockMvc
         .perform(
             post("/api/rooms/{id}/join", roomId)
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"displayName\":\"" + displayName + "\"}"))
+                .content(
+                    "{\"displayName\":\""
+                        + displayName
+                        + "\",\"joinToken\":\""
+                        + joinToken
+                        + "\"}"))
         .andExpect(status().isOk());
   }
+
+  /** The roomId + secret joinToken a create call returns; the token is needed to join. */
+  private record CreatedRoom(String roomId, String joinToken) {}
 }

@@ -224,15 +224,16 @@ class MyGamesIT {
             .andReturn();
     JsonNode createBody = objectMapper.readTree(createResult.getResponse().getContentAsString());
     String roomId = createBody.get("roomId").asText();
+    String joinToken = createBody.get("joinToken").asText();
     UUID whitePlayerId = UUID.fromString(createBody.get("playerId").asText());
 
-    // Anonymous guest joins as black.
+    // Anonymous guest joins as black, supplying the join token Alice shared.
     MvcResult joinResult =
         mockMvc
             .perform(
                 post("/api/rooms/{id}/join", roomId)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .content("{\"displayName\":\"Guest\"}"))
+                    .content("{\"displayName\":\"Guest\",\"joinToken\":\"" + joinToken + "\"}"))
             .andExpect(status().isOk())
             .andReturn();
     JsonNode joinBody = objectMapper.readTree(joinResult.getResponse().getContentAsString());

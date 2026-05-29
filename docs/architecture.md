@@ -172,6 +172,7 @@ list on the client side.
 | `AUTHENTICATION_REQUIRED` | 401 | `AuthEntryPoint` (Spring Security 401 entry point) |
 | `EMAIL_ALREADY_TAKEN` | 409 | `EmailAlreadyTakenException` |
 | `INVALID_CREDENTIALS` | 401 | `InvalidCredentialsException` |
+| `INVALID_JOIN_TOKEN` | 403 | `InvalidJoinTokenException` |
 
 The first six codes are produced mechanically by `GlobalExceptionHandler`'s
 `codeOf(ChessException)` derivation — simple class name minus the
@@ -179,11 +180,15 @@ trailing `Exception` suffix, converted from camelCase to
 UPPER_SNAKE_CASE. The next three (`VALIDATION_FAILED`,
 `MALFORMED_REQUEST`, `MISSING_HEADER`) are hardcoded literals in the
 framework-exception handlers because Spring's own exception types do
-not follow our naming. The last three landed with feature 17 — the
+not follow our naming. Three more landed with feature 17 — the
 two `*Exception` subclasses follow the mechanical derivation,
 `AUTHENTICATION_REQUIRED` is emitted by `AuthEntryPoint` rather than
 `GlobalExceptionHandler` (it is the only 401-from-security-filter case
 today), but they share the same `ErrorResponse` envelope.
+`INVALID_JOIN_TOKEN` (feature 22.7, `room-access-tokens`) is the
+thirteenth: `InvalidJoinTokenException` follows the mechanical
+derivation and is mapped to 403 by a narrow `@ExceptionHandler` (like
+`InvalidCredentialsException`'s 401, it has no umbrella superclass).
 
 Adding a new code requires updating both `GlobalExceptionHandler` and
 `ErrorResponse.error`'s `@Schema(allowableValues = {...})`. The
@@ -260,6 +265,65 @@ POST /api/rooms
 The full clock model, the no-polling flag-detection design, and the
 grace/clock coexistence are documented under "Server-authoritative clock
 (time control)" in the STOMP section below.
+
+#### Join token — separating "can join" from "can watch"
+
+Feature 22.7 (`room-access-tokens`) splits the capability to **join** a
+room from the capability to **watch** it. Before it, the six-char
+`roomId` was the single shared secret, so anyone the creator shared the
+room with for spectating could `POST /api/rooms/{id}/join` and grab the
+second-player slot.
+
+- **`joinToken`** — a `UUID.randomUUID()` (122 bits, not guessable)
+  minted by `RoomService.createRoom`, stored on the `Room`, and returned
+  **only on the create response**:
+
+  ```
+  POST /api/rooms
+  { "displayName": "Alice" }
+
+  201 Created
+  { "roomId": "K7M3X9", "playerId": "<uuid>", "role": "WHITE",
+    "gameId": null, "joinToken": "<uuid>" }
+  ```
+
+- **Join requires it.** `POST /api/rooms/{id}/join` reads an optional
+  `joinToken` from the request body. The validation order inside the
+  atomic `RoomStore.compute` block is **room-exists (404) → token-valid
+  (403) → not-full (409)**: a caller without the token gets `403
+  INVALID_JOIN_TOKEN` even against a full room, so room state is never
+  leaked to someone who cannot join.
+
+  ```
+  POST /api/rooms/K7M3X9/join
+  { "displayName": "Bob", "joinToken": "<uuid>" }
+
+  200 OK
+  { "roomId": "K7M3X9", "playerId": "<uuid>", "role": "BLACK",
+    "gameId": "<uuid>", "joinToken": null }
+  ```
+
+- **The token never leaks on the watch path.** `GET /api/rooms/{id}`
+  (`RoomDetailsResponse`) has no token field, and the join response sets
+  `joinToken: null` (the joiner is already in). The `roomId` alone, used
+  for `GET /api/rooms/{id}` and `SUBSCRIBE /topic/rooms/{roomId}`, does
+  **not** authorise joining. The frontend builds two links: a *play*
+  link carrying the `joinToken` for the opponent, and a *watch* link with
+  just the `roomId` for friends.
+
+- **`null joinToken` = legacy / unprotected room (deploy safety).** The
+  field is added with the same backwards-compatible record-evolution
+  pattern as `creatorSide` / `timeControl`, but `null` carries a
+  *security* meaning: a room serialised into Redis **before** this deploy
+  deserialises with `joinToken == null`, and the token check deliberately
+  short-circuits for such a room (`existing.joinToken() != null &&
+  !existing.joinToken().equals(provided)`), accepting a token-less join.
+  In-flight rooms keep working until they TTL out (24h); every room
+  created after the deploy carries a token and is protected. This is the
+  one feature in the project that is **not** silently
+  backwards-compatible for the live frontend — a brand-new room created
+  by the old token-unaware frontend cannot be joined — so it requires a
+  coordinated backend + frontend deploy.
 
 #### Room read endpoint
 

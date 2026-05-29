@@ -100,60 +100,104 @@ class RoomControllerIT {
   }
 
   @Test
+  void createRoom_returnsNonNullJoinToken() throws Exception {
+    // Feature 22.7: the create response is the only place the secret join token surfaces.
+    mockMvc
+        .perform(
+            post("/api/rooms")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"Alice\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.joinToken", not(nullValue())))
+        .andExpect(jsonPath("$.joinToken", matchesPattern(UUID_PATTERN)));
+  }
+
+  @Test
   void joinRoom_whiteCreator_joinerGetsBlack() throws Exception {
-    String roomId = createRoomAndReturnId("Alice", "WHITE");
+    CreatedRoom room = createRoom("Alice", "WHITE");
 
     mockMvc
         .perform(
-            post("/api/rooms/{id}/join", roomId)
+            post("/api/rooms/{id}/join", room.roomId())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"displayName\":\"Bob\"}"))
+                .content(joinBody("Bob", room.joinToken())))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.role", equalTo("BLACK")));
   }
 
   @Test
   void joinRoom_blackCreator_joinerGetsWhite() throws Exception {
-    String roomId = createRoomAndReturnId("Alice", "BLACK");
+    CreatedRoom room = createRoom("Alice", "BLACK");
 
     mockMvc
         .perform(
-            post("/api/rooms/{id}/join", roomId)
+            post("/api/rooms/{id}/join", room.roomId())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"displayName\":\"Bob\"}"))
+                .content(joinBody("Bob", room.joinToken())))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.role", equalTo("WHITE")));
   }
 
   @Test
-  void joinRoom_returns200WithGameId() throws Exception {
-    String roomId = createRoomAndReturnId("Alice");
+  void joinRoom_returns200WithGameIdAndNullJoinToken() throws Exception {
+    CreatedRoom room = createRoom("Alice");
 
     mockMvc
         .perform(
-            post("/api/rooms/{id}/join", roomId)
+            post("/api/rooms/{id}/join", room.roomId())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"displayName\":\"Bob\"}"))
+                .content(joinBody("Bob", room.joinToken())))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.roomId", equalTo(roomId)))
+        .andExpect(jsonPath("$.roomId", equalTo(room.roomId())))
         .andExpect(jsonPath("$.playerId", matchesPattern(UUID_PATTERN)))
         .andExpect(jsonPath("$.role", equalTo("BLACK")))
         .andExpect(jsonPath("$.gameId", matchesPattern(UUID_PATTERN)))
-        .andExpect(jsonPath("$.gameId", not(nullValue())));
+        .andExpect(jsonPath("$.gameId", not(nullValue())))
+        // The joiner is already in; the token is never echoed on the join response.
+        .andExpect(jsonPath("$.joinToken", nullValue()));
+  }
+
+  @Test
+  void joinRoom_wrongToken_returns403() throws Exception {
+    CreatedRoom room = createRoom("Alice");
+
+    mockMvc
+        .perform(
+            post("/api/rooms/{id}/join", room.roomId())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(joinBody("Bob", "not-the-real-token")))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.error", equalTo("INVALID_JOIN_TOKEN")))
+        .andExpect(jsonPath("$.message").exists())
+        .andExpect(jsonPath("$.timestamp").exists());
+  }
+
+  @Test
+  void joinRoom_noToken_returns403() throws Exception {
+    // A spectator who only holds the roomId (no token) cannot grab the player slot.
+    CreatedRoom room = createRoom("Alice");
+
+    mockMvc
+        .perform(
+            post("/api/rooms/{id}/join", room.roomId())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"Bob\"}"))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.error", equalTo("INVALID_JOIN_TOKEN")));
   }
 
   @Test
   void joinRoom_lowercaseRoomId_returns200WithCanonicalUppercaseInBody() throws Exception {
-    String roomId = createRoomAndReturnId("Alice");
-    String lowercaseId = roomId.toLowerCase(Locale.ROOT);
+    CreatedRoom room = createRoom("Alice");
+    String lowercaseId = room.roomId().toLowerCase(Locale.ROOT);
 
     mockMvc
         .perform(
             post("/api/rooms/{id}/join", lowercaseId)
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"displayName\":\"Bob\"}"))
+                .content(joinBody("Bob", room.joinToken())))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.roomId", equalTo(roomId)))
+        .andExpect(jsonPath("$.roomId", equalTo(room.roomId())))
         .andExpect(jsonPath("$.roomId", not(equalTo(lowercaseId))))
         .andExpect(jsonPath("$.gameId", matchesPattern(UUID_PATTERN)))
         .andExpect(jsonPath("$.gameId", not(nullValue())));
@@ -177,20 +221,21 @@ class RoomControllerIT {
     // From the public HTTP API, "full" and "already started" are the same transition: the join
     // that takes the room to 2 players also flips it from WAITING_FOR_PLAYER to ACTIVE. The
     // service's compute lambda checks the size invariant first, so a third joiner hits
-    // RoomFullException (HTTP 409 / ROOM_FULL) — not RoomAlreadyStarted.
-    String roomId = createRoomAndReturnId("Alice");
+    // RoomFullException (HTTP 409 / ROOM_FULL) — not RoomAlreadyStarted. The third joiner supplies
+    // the correct token so the 409 (not a 403) is the assertion under test.
+    CreatedRoom room = createRoom("Alice");
     mockMvc
         .perform(
-            post("/api/rooms/{id}/join", roomId)
+            post("/api/rooms/{id}/join", room.roomId())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"displayName\":\"Bob\"}"))
+                .content(joinBody("Bob", room.joinToken())))
         .andExpect(status().isOk());
 
     mockMvc
         .perform(
-            post("/api/rooms/{id}/join", roomId)
+            post("/api/rooms/{id}/join", room.roomId())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"displayName\":\"Carol\"}"))
+                .content(joinBody("Carol", room.joinToken())))
         .andExpect(status().isConflict())
         .andExpect(jsonPath("$.error", equalTo("ROOM_FULL")))
         .andExpect(jsonPath("$.message").exists())
@@ -217,34 +262,31 @@ class RoomControllerIT {
         .andExpect(jsonPath("$.error", equalTo("MALFORMED_REQUEST")));
   }
 
-  private String createRoomAndReturnId(String displayName) throws Exception {
-    MvcResult result =
-        mockMvc
-            .perform(
-                post("/api/rooms")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content("{\"displayName\":\"" + displayName + "\"}"))
-            .andExpect(status().isCreated())
-            .andReturn();
-    JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
-    return body.get("roomId").asText();
+  private CreatedRoom createRoom(String displayName) throws Exception {
+    return createRoomFromBody("{\"displayName\":\"" + displayName + "\"}");
   }
 
-  private String createRoomAndReturnId(String displayName, String preferredSide) throws Exception {
+  private CreatedRoom createRoom(String displayName, String preferredSide) throws Exception {
+    return createRoomFromBody(
+        "{\"displayName\":\"" + displayName + "\",\"preferredSide\":\"" + preferredSide + "\"}");
+  }
+
+  private CreatedRoom createRoomFromBody(String requestBody) throws Exception {
     MvcResult result =
         mockMvc
             .perform(
-                post("/api/rooms")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(
-                        "{\"displayName\":\""
-                            + displayName
-                            + "\",\"preferredSide\":\""
-                            + preferredSide
-                            + "\"}"))
+                post("/api/rooms").contentType(MediaType.APPLICATION_JSON).content(requestBody))
             .andExpect(status().isCreated())
             .andReturn();
     JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
-    return body.get("roomId").asText();
+    return new CreatedRoom(body.get("roomId").asText(), body.get("joinToken").asText());
   }
+
+  /** Builds a join request body carrying the display name and the secret join token. */
+  private static String joinBody(String displayName, String joinToken) {
+    return "{\"displayName\":\"" + displayName + "\",\"joinToken\":\"" + joinToken + "\"}";
+  }
+
+  /** The roomId + secret joinToken a create call returns; the token is needed to join. */
+  private record CreatedRoom(String roomId, String joinToken) {}
 }

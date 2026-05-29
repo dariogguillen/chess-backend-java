@@ -102,7 +102,7 @@ class OpenApiIT {
   }
 
   @Test
-  void errorResponseSchema_listsExactlyTheTwelveKnownErrorCodes() throws Exception {
+  void errorResponseSchema_listsExactlyTheThirteenKnownErrorCodes() throws Exception {
     MvcResult result = mockMvc.perform(get("/v3/api-docs")).andExpect(status().isOk()).andReturn();
 
     JsonNode spec = objectMapper.readTree(result.getResponse().getContentAsString());
@@ -122,6 +122,7 @@ class OpenApiIT {
         StreamSupport.stream(enumNode.spliterator(), false).map(JsonNode::asText).sorted().toList();
     // Feature 17 added the three auth codes (AUTHENTICATION_REQUIRED, EMAIL_ALREADY_TAKEN,
     // INVALID_CREDENTIALS) on top of the 9-code allowlist that feature 6.6 established.
+    // Feature 22.7 added INVALID_JOIN_TOKEN for the 403 on a missing or wrong room join token.
     List<String> expected =
         List.of(
             "AUTHENTICATION_REQUIRED",
@@ -130,6 +131,7 @@ class OpenApiIT {
             "GAME_NOT_FOUND",
             "ILLEGAL_MOVE",
             "INVALID_CREDENTIALS",
+            "INVALID_JOIN_TOKEN",
             "MALFORMED_REQUEST",
             "MISSING_HEADER",
             "NOT_YOUR_TURN",

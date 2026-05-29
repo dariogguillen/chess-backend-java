@@ -599,7 +599,7 @@
     "id": "room-access-tokens",
     "title": "Separate join token so a shared room link cannot be used to grab the player slot",
     "description": "Surfaced while planning spectators-in-room. Today the roomId is the single shared secret: POST /api/rooms/{id}/join only needs the roomId, so anyone the creator shares the room with (e.g. spectators) could occupy the second-player slot. This feature separates the two capabilities: a secret joinToken (only the creator receives it, required by the join endpoint) vs the roomId (used to watch: GET /api/rooms/{id} + SUBSCRIBE /topic/rooms/{id}). The creator builds two links in the frontend: a 'play' link carrying the joinToken for the opponent, and a 'watch' link with just the roomId for friends. Whoever has only the watch link cannot join as a player. Direct invitations to registered users (now that accounts exist) are a separate later feature layered on top of this. Builds on spectators-in-room (22.5).",
-    "status": "pending",
+    "status": "done",
     "priority": 22.7,
     "acceptance": [
       "POST /api/rooms generates a secret joinToken in addition to the roomId; the create response returns it (only the creator obtains it).",

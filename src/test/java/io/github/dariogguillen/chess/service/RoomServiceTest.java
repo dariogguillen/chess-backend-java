@@ -99,11 +99,28 @@ class RoomServiceTest {
     Room waiting = new Room("ABC234", List.of(creator), RoomStatus.WAITING_FOR_PLAYER, Side.BLACK);
     when(roomStore.compute(anyString(), any())).thenAnswer(applyOnExisting(waiting));
 
-    JoinedRoom joined = roomService.joinRoom("ABC234", "Bob", null);
+    JoinedRoom joined = roomService.joinRoom("ABC234", "Bob", null, null);
 
     assertThat(joined.room().creatorSide()).isEqualTo(Side.BLACK);
     assertThat(joined.game().white().id()).isEqualTo(joined.joiner().id());
     assertThat(joined.game().black().id()).isEqualTo(creator.id());
+  }
+
+  @Test
+  void joinRoom_legacyRoomWithNullToken_acceptsTokenLessJoin() {
+    // Deploy-safety hinge (feature 22.7): a room serialised into Redis before this deploy
+    // deserialises with joinToken == null. The new REST API always stamps a token, so this legacy
+    // shape cannot be produced through the controller — it is proven here at the service layer.
+    // Built via the 4-arg convenience constructor, so joinToken defaults to null.
+    Player creator = new Player(UUID.randomUUID(), "Alice");
+    Room legacy = new Room("ABC234", List.of(creator), RoomStatus.WAITING_FOR_PLAYER, Side.WHITE);
+    when(roomStore.compute(anyString(), any())).thenAnswer(applyOnExisting(legacy));
+
+    JoinedRoom joined = roomService.joinRoom("ABC234", "Bob", null, null);
+
+    assertThat(joined.room().status()).isEqualTo(RoomStatus.ACTIVE);
+    assertThat(joined.room().players()).hasSize(2);
+    assertThat(joined.game().black().id()).isEqualTo(joined.joiner().id());
   }
 
   @Test
@@ -114,7 +131,7 @@ class RoomServiceTest {
         new Room("ABC234", List.of(creator), RoomStatus.WAITING_FOR_PLAYER, Side.WHITE, tc);
     when(roomStore.compute(anyString(), any())).thenAnswer(applyOnExisting(waiting));
 
-    JoinedRoom joined = roomService.joinRoom("ABC234", "Bob", null);
+    JoinedRoom joined = roomService.joinRoom("ABC234", "Bob", null, null);
 
     Game game = joined.game();
     assertThat(game.isTimed()).isTrue();
@@ -132,7 +149,7 @@ class RoomServiceTest {
     Room waiting = new Room("ABC234", List.of(creator), RoomStatus.WAITING_FOR_PLAYER, Side.WHITE);
     when(roomStore.compute(anyString(), any())).thenAnswer(applyOnExisting(waiting));
 
-    JoinedRoom joined = roomService.joinRoom("ABC234", "Bob", null);
+    JoinedRoom joined = roomService.joinRoom("ABC234", "Bob", null, null);
 
     Game game = joined.game();
     assertThat(game.isTimed()).isFalse();

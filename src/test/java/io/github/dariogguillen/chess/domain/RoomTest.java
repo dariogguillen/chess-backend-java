@@ -140,6 +140,39 @@ class RoomTest {
     assertThat(room.timeControl()).isEqualTo(tc);
   }
 
+  // ---- Feature 22.7 (room-access-tokens): nullable joinToken + convenience-constructor defaults
+  // ----
+
+  @Test
+  void shouldDefaultJoinTokenToNull_whenBuiltWithTheThreeArgConstructor() {
+    Room room = new Room("r-1", List.of(ALICE), RoomStatus.WAITING_FOR_PLAYER);
+
+    assertThat(room.joinToken()).isNull();
+  }
+
+  @Test
+  void shouldDefaultJoinTokenToNull_whenBuiltWithTheFourArgConstructor() {
+    Room room = new Room("r-1", List.of(ALICE), RoomStatus.WAITING_FOR_PLAYER, Side.BLACK);
+
+    assertThat(room.joinToken()).isNull();
+  }
+
+  @Test
+  void shouldDefaultJoinTokenToNull_whenBuiltWithTheFiveArgConstructor() {
+    TimeControl tc = new TimeControl(300_000L, 3_000L);
+    Room room = new Room("r-1", List.of(ALICE), RoomStatus.WAITING_FOR_PLAYER, Side.WHITE, tc);
+
+    assertThat(room.joinToken()).isNull();
+  }
+
+  @Test
+  void shouldStoreJoinToken_whenBuiltWithTheSixArgConstructor() {
+    Room room =
+        new Room("r-1", List.of(ALICE), RoomStatus.WAITING_FOR_PLAYER, Side.WHITE, null, "tok-123");
+
+    assertThat(room.joinToken()).isEqualTo("tok-123");
+  }
+
   @Test
   void shouldDefensivelyCopy_whenCallerMutatesInputList() {
     List<Player> mutable = new ArrayList<>();

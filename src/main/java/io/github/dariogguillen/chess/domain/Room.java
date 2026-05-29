@@ -55,15 +55,35 @@ import java.util.UUID;
  * creatorSide} was in feature 21, and {@code null} is a legitimate value (untimed) rather than a
  * defaulted one.
  *
+ * <p>{@code joinToken} (added by feature 22.7, `room-access-tokens`) is the secret capability that
+ * {@code POST /api/rooms/{id}/join} requires to take the second-player slot. It is generated at
+ * create time (a {@link java.util.UUID}) and returned <em>only</em> in the create response — never
+ * by {@code GET /api/rooms/{id}} nor by the STOMP topic — so possession of the {@code roomId}
+ * (needed to watch) does not by itself authorise joining as a player. It follows the same
+ * backwards-compatible record-evolution pattern as {@code creatorSide} / {@code timeControl}, but
+ * with a <em>security</em> meaning attached to {@code null}: a {@code null joinToken} marks a
+ * <strong>legacy / unprotected room</strong> — one serialised into Redis before this deploy (which
+ * lacks the field and deserialises with {@code null}) — and the join validation deliberately
+ * accepts a token-less join against such a room. This is the deploy-safety hinge: in-flight rooms
+ * keep working until they TTL out (24h), while every room created after the deploy carries a token
+ * and is protected. {@code null} is therefore a meaningful value, not a defaulted one.
+ *
  * @param id the room identifier; not null, not blank.
  * @param players the players in the room; defensively copied; 0..2 entries; ids unique.
  * @param status the lifecycle status; not null.
  * @param creatorSide the concrete side the creator plays; a {@code null} (legacy / omitted) value
  *     defaults to {@link Side#WHITE}.
  * @param timeControl the optional declared clock; {@code null} means an untimed room.
+ * @param joinToken the secret required to join as the second player; {@code null} marks a legacy /
+ *     unprotected room that accepts a token-less join.
  */
 public record Room(
-    String id, List<Player> players, RoomStatus status, Side creatorSide, TimeControl timeControl) {
+    String id,
+    List<Player> players,
+    RoomStatus status,
+    Side creatorSide,
+    TimeControl timeControl,
+    String joinToken) {
 
   private static final int MAX_PLAYERS = 2;
 
@@ -93,23 +113,23 @@ public record Room(
   }
 
   /**
-   * Convenience constructor for the pre-feature-21 call shape, where the creator was always white
-   * and rooms were untimed. Equivalent to {@code new Room(id, players, status, Side.WHITE, null)}.
+   * Convenience constructor for the pre-feature-21 call shape, where the creator was always white,
+   * rooms were untimed, and no join token existed. Equivalent to {@code new Room(id, players,
+   * status, Side.WHITE, null, null)}.
    *
    * @param id the room identifier; not null, not blank.
    * @param players the players in the room; defensively copied; 0..2 entries; ids unique.
    * @param status the lifecycle status; not null.
    */
   public Room(String id, List<Player> players, RoomStatus status) {
-    this(id, players, status, Side.WHITE, null);
+    this(id, players, status, Side.WHITE, null, null);
   }
 
   /**
    * Convenience constructor for the pre-feature-22 call shape (feature 21's 4-arg form), where the
-   * room carried a creator side but no declared clock. Equivalent to {@code new Room(id, players,
-   * status, creatorSide, null)}. Keeps every feature-21-era {@code new Room(...)} call site and the
-   * Jackson deserialisation of rooms serialised before feature 22 (which lack the {@code
-   * timeControl} component) compiling and behaving as untimed.
+   * room carried a creator side but no declared clock and no join token. Equivalent to {@code new
+   * Room(id, players, status, creatorSide, null, null)}. Keeps every feature-21-era {@code new
+   * Room(...)} call site compiling.
    *
    * @param id the room identifier; not null, not blank.
    * @param players the players in the room; defensively copied; 0..2 entries; ids unique.
@@ -118,6 +138,30 @@ public record Room(
    *     Side#WHITE}.
    */
   public Room(String id, List<Player> players, RoomStatus status, Side creatorSide) {
-    this(id, players, status, creatorSide, null);
+    this(id, players, status, creatorSide, null, null);
+  }
+
+  /**
+   * Convenience constructor for the pre-feature-22.7 call shape (feature 22's 5-arg form), where
+   * the room carried a creator side and an optional clock but no join token. Equivalent to {@code
+   * new Room(id, players, status, creatorSide, timeControl, null)}. Keeps every feature-22-era
+   * {@code new Room(...)} call site and the Jackson deserialisation of rooms serialised before
+   * feature 22.7 (which lack the {@code joinToken} component, so they deserialise as legacy /
+   * unprotected rooms) compiling and behaving as before.
+   *
+   * @param id the room identifier; not null, not blank.
+   * @param players the players in the room; defensively copied; 0..2 entries; ids unique.
+   * @param status the lifecycle status; not null.
+   * @param creatorSide the concrete side the creator plays; {@code null} defaults to {@link
+   *     Side#WHITE}.
+   * @param timeControl the optional declared clock; {@code null} means an untimed room.
+   */
+  public Room(
+      String id,
+      List<Player> players,
+      RoomStatus status,
+      Side creatorSide,
+      TimeControl timeControl) {
+    this(id, players, status, creatorSide, timeControl, null);
   }
 }

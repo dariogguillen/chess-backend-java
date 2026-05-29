@@ -286,13 +286,16 @@ class StompAuthIT {
             String.class);
     JsonNode createBody = objectMapper.readTree(createResponse.getBody());
     String roomId = createBody.get("roomId").asText();
+    String joinToken = createBody.get("joinToken").asText();
     UUID whitePlayerId = UUID.fromString(createBody.get("playerId").asText());
 
     ResponseEntity<String> joinResponse =
         restTemplate.exchange(
             baseUrl() + "/api/rooms/" + roomId + "/join",
             HttpMethod.POST,
-            new HttpEntity<>("{\"displayName\":\"" + blackName + "\"}", headers),
+            new HttpEntity<>(
+                "{\"displayName\":\"" + blackName + "\",\"joinToken\":\"" + joinToken + "\"}",
+                headers),
             String.class);
     JsonNode joinBody = objectMapper.readTree(joinResponse.getBody());
     UUID gameId = UUID.fromString(joinBody.get("gameId").asText());
@@ -316,6 +319,7 @@ class StompAuthIT {
     assertThat(createResponse.getStatusCode().is2xxSuccessful()).isTrue();
     JsonNode createBody = objectMapper.readTree(createResponse.getBody());
     String roomId = createBody.get("roomId").asText();
+    String joinToken = createBody.get("joinToken").asText();
     UUID whitePlayerId = UUID.fromString(createBody.get("playerId").asText());
 
     HttpHeaders joinHeaders = new HttpHeaders();
@@ -325,7 +329,9 @@ class StompAuthIT {
         restTemplate.exchange(
             baseUrl() + "/api/rooms/" + roomId + "/join",
             HttpMethod.POST,
-            new HttpEntity<>("{\"displayName\":\"" + blackName + "\"}", joinHeaders),
+            new HttpEntity<>(
+                "{\"displayName\":\"" + blackName + "\",\"joinToken\":\"" + joinToken + "\"}",
+                joinHeaders),
             String.class);
     JsonNode joinBody = objectMapper.readTree(joinResponse.getBody());
     UUID gameId = UUID.fromString(joinBody.get("gameId").asText());
@@ -348,6 +354,7 @@ class StompAuthIT {
             String.class);
     JsonNode createBody = objectMapper.readTree(createResponse.getBody());
     String roomId = createBody.get("roomId").asText();
+    String joinToken = createBody.get("joinToken").asText();
     UUID whitePlayerId = UUID.fromString(createBody.get("playerId").asText());
 
     HttpHeaders blackHeaders = new HttpHeaders();
@@ -358,7 +365,9 @@ class StompAuthIT {
         restTemplate.exchange(
             baseUrl() + "/api/rooms/" + roomId + "/join",
             HttpMethod.POST,
-            new HttpEntity<>("{\"displayName\":\"" + blackName + "\"}", blackHeaders),
+            new HttpEntity<>(
+                "{\"displayName\":\"" + blackName + "\",\"joinToken\":\"" + joinToken + "\"}",
+                blackHeaders),
             String.class);
     JsonNode joinBody = objectMapper.readTree(joinResponse.getBody());
     UUID gameId = UUID.fromString(joinBody.get("gameId").asText());
