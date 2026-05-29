@@ -51,5 +51,21 @@ services:
       SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
+      # Auth bundle (features 16-20) env vars. AUTH_JWT_SECRET is mandatory —
+      # boot fails fast without it via AuthProperties.Jwt compact constructor
+      # (the HS256 256-bit minimum is enforced there). The OAuth values can be
+      # placeholders until Google Cloud Console is set up; the OAuth flow only
+      # fails at runtime if /oauth2/authorization/google is actually invoked.
+      # AUTH_OAUTH_FRONTEND_REDIRECT_BASE has a localhost default in
+      # application.yml but production should override it via .env so the OAuth
+      # success handler redirects to the Cloudflare Pages frontend. All four are
+      # read from /opt/chess/.env on the EC2 host.
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET}
+      AUTH_OAUTH_FRONTEND_REDIRECT_BASE: ${AUTH_OAUTH_FRONTEND_REDIRECT_BASE}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET}
+      # CORS allow-list override; if unset, application.yml's default
+      # (https://chess-frontend-52i.pages.dev,http://localhost:*) applies.
+      CHESS_CORS_ALLOWED_ORIGIN_PATTERNS: ${CHESS_CORS_ALLOWED_ORIGIN_PATTERNS:-}
     ports:
       - "127.0.0.1:8080:8080"
