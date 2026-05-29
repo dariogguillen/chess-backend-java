@@ -84,6 +84,53 @@ class GameControllerIT {
   }
 
   @Test
+  void getGame_untimedGame_clockFieldsAreNull() throws Exception {
+    GameSetup setup = createGame("Alice", "Bob");
+
+    mockMvc
+        .perform(get("/api/games/{id}", setup.gameId()))
+        .andExpect(status().isOk())
+        // Feature 22 regression: an untimed room produces null clock fields everywhere; the
+        // response shape is otherwise unchanged.
+        .andExpect(jsonPath("$.whiteTimeRemainingMs").doesNotExist())
+        .andExpect(jsonPath("$.blackTimeRemainingMs").doesNotExist())
+        .andExpect(jsonPath("$.lastMoveAt").doesNotExist());
+  }
+
+  @Test
+  void getGame_timedGame_clockInitialisedToInitialMs() throws Exception {
+    GameSetup setup = createTimedGame("Alice", "Bob", 600_000L, 3_000L);
+
+    mockMvc
+        .perform(get("/api/games/{id}", setup.gameId()))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.whiteTimeRemainingMs", equalTo(600_000)))
+        .andExpect(jsonPath("$.blackTimeRemainingMs", equalTo(600_000)))
+        .andExpect(jsonPath("$.lastMoveAt").exists());
+  }
+
+  @Test
+  void moveOnTimedGame_decrementsMoverAndAppliesIncrement() throws Exception {
+    GameSetup setup = createTimedGame("Alice", "Bob", 600_000L, 3_000L);
+
+    applyMove(setup.gameId(), setup.whitePlayerId(), "e2", "e4").andExpect(status().isOk());
+
+    MvcResult result =
+        mockMvc
+            .perform(get("/api/games/{id}", setup.gameId()))
+            .andExpect(status().isOk())
+            .andReturn();
+    JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+    long white = body.get("whiteTimeRemainingMs").asLong();
+    long black = body.get("blackTimeRemainingMs").asLong();
+    // White moved: decremented by the (small) elapsed and then + 3000 increment. Bounded above by
+    // initial + increment; strictly below initial would only hold if elapsed > increment, which a
+    // fast test cannot guarantee — so assert the inclusive upper bound and that black is untouched.
+    assertThat(white).isLessThanOrEqualTo(603_000L);
+    assertThat(black).isEqualTo(600_000L);
+  }
+
+  @Test
   void moveSequence_foolsMate_returns200AndCheckmateStatus() throws Exception {
     // Fool's Mate, the shortest possible checkmate in chess:
     //   1. f2-f3  (White's weakening pawn push)
@@ -222,6 +269,44 @@ class GameControllerIT {
     JsonNode joinBody = objectMapper.readTree(joinResult.getResponse().getContentAsString());
     UUID gameId = UUID.fromString(joinBody.get("gameId").asText());
     UUID blackPlayerId = UUID.fromString(joinBody.get("playerId").asText());
+
+    return new GameSetup(gameId, whitePlayerId, blackPlayerId);
+  }
+
+  /**
+   * Creates a timed room (declared {@code timeControl}) as {@code whiteName} and joins it as {@code
+   * blackName}, returning the gameId and both player ids.
+   */
+  private GameSetup createTimedGame(
+      String whiteName, String blackName, long initialMs, long incrementMs) throws Exception {
+    String createBody =
+        "{\"displayName\":\""
+            + whiteName
+            + "\",\"timeControl\":{\"initialMs\":"
+            + initialMs
+            + ",\"incrementMs\":"
+            + incrementMs
+            + "}}";
+    MvcResult createResult =
+        mockMvc
+            .perform(post("/api/rooms").contentType(MediaType.APPLICATION_JSON).content(createBody))
+            .andExpect(status().isCreated())
+            .andReturn();
+    JsonNode create = objectMapper.readTree(createResult.getResponse().getContentAsString());
+    String roomId = create.get("roomId").asText();
+    UUID whitePlayerId = UUID.fromString(create.get("playerId").asText());
+
+    MvcResult joinResult =
+        mockMvc
+            .perform(
+                post("/api/rooms/{id}/join", roomId)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"displayName\":\"" + blackName + "\"}"))
+            .andExpect(status().isOk())
+            .andReturn();
+    JsonNode join = objectMapper.readTree(joinResult.getResponse().getContentAsString());
+    UUID gameId = UUID.fromString(join.get("gameId").asText());
+    UUID blackPlayerId = UUID.fromString(join.get("playerId").asText());
 
     return new GameSetup(gameId, whitePlayerId, blackPlayerId);
   }

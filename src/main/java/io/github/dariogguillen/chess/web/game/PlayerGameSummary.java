@@ -21,7 +21,7 @@ import java.util.UUID;
  * @param selfRole {@link Side#WHITE} or {@link Side#BLACK}, depending on which side the queried
  *     player sat on.
  * @param status the terminal status of the game ({@code CHECKMATE}, {@code STALEMATE}, {@code
- *     DRAW}, or {@code ABANDONED}).
+ *     DRAW}, {@code ABANDONED}, or {@code TIMEOUT}).
  * @param endedAt the timestamp the game was archived; serialised as ISO-8601 by Jackson.
  * @param moveCount the number of moves played in the game.
  */
@@ -33,7 +33,7 @@ public record PlayerGameSummary(
     @Schema(
             description = "Terminal status of the game.",
             example = "CHECKMATE",
-            allowableValues = {"CHECKMATE", "STALEMATE", "DRAW", "ABANDONED"})
+            allowableValues = {"CHECKMATE", "STALEMATE", "DRAW", "ABANDONED", "TIMEOUT"})
         GameStatus status,
     @Schema(description = "Instant the game was archived.", example = "2026-05-19T10:23:11.123Z")
         Instant endedAt,

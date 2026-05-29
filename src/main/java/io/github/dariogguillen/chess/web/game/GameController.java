@@ -149,7 +149,10 @@ public class GameController {
         game.fen(),
         game.status(),
         turn,
-        game.moves().stream().map(GameController::toMoveSummary).toList());
+        game.moves().stream().map(GameController::toMoveSummary).toList(),
+        game.whiteTimeRemainingMs(),
+        game.blackTimeRemainingMs(),
+        game.lastMoveAt());
   }
 
   /**

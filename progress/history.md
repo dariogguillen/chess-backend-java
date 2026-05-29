@@ -2369,3 +2369,32 @@ The repo returns to maintenance mode. Future work in this codebase enters via ne
 - `feature_list.json` (`color-selection` status → done)
 
 **Feature note:** [`notes/21-color-selection.md`](../notes/21-color-selection.md).
+
+---
+
+## 2026-05-29 — time-control (feature 22)
+
+**Status:** done. Full harness cycle (leader plan → implementer → reviewer → user OK). One implementer↔reviewer iteration: the reviewer rejected on a single OpenAPI contract-drift issue, the implementer fixed it, the reviewer approved on the second pass.
+
+**Summary:** Added an optional server-authoritative per-player clock with auto-flagging. A room may declare a `TimeControl { initialMs, incrementMs }`; the resulting game tracks remaining time per side, decrements the mover's clock on every move (Fischer increment supported, `incrementMs = 0` = sudden-death), and auto-terminates with the new `GameStatus.TIMEOUT` when the side-to-move runs out — **even if that player is offline**. Clock state is broadcast on every move (`MoveEvent`) and on termination (new `GameTimedOutEvent`, STOMP type `GAME_TIMED_OUT`). The clock is opt-in: a room with no `TimeControl` produces an untimed game whose behaviour is byte-for-byte the pre-feature one (frontend-lag safety, same discipline as feature 21's `preferredSide` default).
+
+**Design decisions (locked in the planning discussion with the user):**
+- **Flag detection = per-game scheduled timer, not polling.** `ClockTimerManager` (scheduling over the shared `TaskScheduler`/`Clock`) + `GameTimeoutService` (idempotent terminal flip + archive + broadcast) are the spiritual twins of feature 11's `GracePeriodManager` + `GameAbandonService`. Precise to the ms, no Redis keyspace scan, and the grace (`ABANDONED`) and clock (`TIMEOUT`) terminal paths coexist cleanly through the same `isTerminal()` + `gameStore.compute` idempotency guard — the first to fire wins, the second is a no-op.
+- **The clock runs during disconnect, only for the side-to-move.** When the opponent moves while a player is offline, that player's turn begins and `applyMove` reschedules the flag timer for them regardless of connection state. The server cannot reliably distinguish an intentional from an accidental disconnect (same STOMP signal), so the 60s grace period is the only mitigation; pausing the clock would be the exact cheat a server-authoritative clock exists to prevent.
+- **Increment supported** with `incrementMs = 0` default.
+
+**Record evolution (backwards-compatible):** `Game` gained nullable clock fields where `null` is a *meaningful* domain state (untimed) — so the compact constructor permits null and enforces an **all-or-nothing invariant** rather than defaulting (contrast feature 21's `creatorSide`, where null defaults to WHITE). A convenience constructor keeps existing `new Game(...)` call sites and Jackson deserialisation of pre-deploy Redis games valid. `Room` gained a nullable `TimeControl`, threaded Request → Room → Game exactly as feature 21 threaded `creatorSide`.
+
+**Two implementer deviations from the literal plan, both reviewer-validated as sound:** (1) a fourth `Game.incrementMs` field (the plan named three) — required because `GameService` has no `RoomStore` to recover the increment from `Room.timeControl`; written once at `joinRoom` from the same immutable source, so no drift is possible. (2) `TimeControlIT` uses `initialMs = 2000ms` (not ~300ms) so the STOMP subscriber registers before white's flag fires at join time — same subscribe-before-timer idiom as `DisconnectHandlingIT`.
+
+**Reviewer's caught regression (fixed before approval):** the new `TIMEOUT` status is archived and surfaced through `GET /api/me/games` and `GET /api/players/{id}/games`, whose `@Schema(allowableValues=...)` did not list it — OpenAPI contract drift, the same discipline feature 6.6 established. Fixed in `MyGameSummary` + `PlayerGameSummary` (+ JavaDoc), plus the `MoveEvent` JavaDoc "four → five variants" correction.
+
+**Files touched:**
+
+New: `domain/TimeControl.java`, `service/ClockTimerManager.java`, `service/GameTimeoutService.java`, `websocket/GameTimedOutEvent.java`, `notes/22-time-control.md`, and tests `domain/TimeControlTest.java`, `domain/GameStatusTest.java`, `service/GameServiceClockTest.java`, `websocket/TimeControlIT.java`.
+
+Modified: `domain/Game.java`, `domain/GameStatus.java` (+`TIMEOUT`, `isTerminal()`), `domain/Room.java`, `service/GameService.java` (`applyMove` clock decrement + reschedule), `service/RoomService.java` (clock init + first timer), `web/game/GameController.java`, `web/game/GameStateResponse.java`, `web/game/PlayerGameSummary.java`, `web/me/MyGameSummary.java`, `web/room/CreateRoomRequest.java`, `web/room/RoomController.java`, `websocket/GameStateEvent.java` (permits), `websocket/MoveEvent.java` (clock fields), tests `domain/GameTest.java`, `domain/RoomTest.java`, `service/RoomServiceTest.java`, `web/game/GameControllerIT.java`, `websocket/GameWebSocketIT.java`, `docs/architecture.md`, `feature_list.json` (status → done).
+
+**Verification:** `./init.sh` green; 0 failures/errors/skipped. README correctly untouched (out of scope — no run-procedure change). Cross-repo change is additive/backwards-compatible.
+
+**Feature note:** [`notes/22-time-control.md`](../notes/22-time-control.md).

@@ -115,6 +115,31 @@ class RoomTest {
         .isInstanceOf(UnsupportedOperationException.class);
   }
 
+  // ---- Feature 22 (time-control): nullable timeControl + convenience constructors ----
+
+  @Test
+  void shouldDefaultTimeControlToNull_whenBuiltWithTheFourArgConstructor() {
+    Room room = new Room("r-1", List.of(ALICE), RoomStatus.WAITING_FOR_PLAYER, Side.BLACK);
+
+    assertThat(room.creatorSide()).isEqualTo(Side.BLACK);
+    assertThat(room.timeControl()).isNull();
+  }
+
+  @Test
+  void shouldDefaultTimeControlToNull_whenBuiltWithTheThreeArgConstructor() {
+    Room room = new Room("r-1", List.of(ALICE), RoomStatus.WAITING_FOR_PLAYER);
+
+    assertThat(room.timeControl()).isNull();
+  }
+
+  @Test
+  void shouldStoreTimeControl_whenBuiltWithTheFiveArgConstructor() {
+    TimeControl tc = new TimeControl(300_000L, 3_000L);
+    Room room = new Room("r-1", List.of(ALICE), RoomStatus.WAITING_FOR_PLAYER, Side.WHITE, tc);
+
+    assertThat(room.timeControl()).isEqualTo(tc);
+  }
+
   @Test
   void shouldDefensivelyCopy_whenCallerMutatesInputList() {
     List<Player> mutable = new ArrayList<>();

@@ -43,18 +43,21 @@ public class GameService {
   private final SimpMessagingTemplate messagingTemplate;
   private final Clock clock;
   private final GameHistoryService gameHistoryService;
+  private final ClockTimerManager clockTimerManager;
 
   public GameService(
       GameStore gameStore,
       ChessRules chessRules,
       SimpMessagingTemplate messagingTemplate,
       Clock clock,
-      GameHistoryService gameHistoryService) {
+      GameHistoryService gameHistoryService,
+      ClockTimerManager clockTimerManager) {
     this.gameStore = gameStore;
     this.chessRules = chessRules;
     this.messagingTemplate = messagingTemplate;
     this.clock = clock;
     this.gameHistoryService = gameHistoryService;
+    this.clockTimerManager = clockTimerManager;
   }
 
   /**
@@ -122,6 +125,26 @@ public class GameService {
           if (!outcome.legal()) {
             throw new IllegalMoveException(id, move);
           }
+          // Clock advance (timed games only). The mover S just spent (now - lastMoveAt); decrement
+          // S's remaining time, clamp at 0, then add the Fischer increment back. The clock anchor
+          // (lastMoveAt) moves to now so the next side's elapsed counts from this instant. Untimed
+          // games leave all four clock fields null — the all-or-nothing invariant holds.
+          Long newWhiteMs = existing.whiteTimeRemainingMs();
+          Long newBlackMs = existing.blackTimeRemainingMs();
+          Instant newLastMoveAt = existing.lastMoveAt();
+          if (existing.isTimed()) {
+            Instant now = Instant.now(clock);
+            long elapsed = now.toEpochMilli() - existing.lastMoveAt().toEpochMilli();
+            long moverRemaining = whiteToMove ? newWhiteMs : newBlackMs;
+            long afterDecrement = Math.max(0L, moverRemaining - elapsed);
+            long afterIncrement = afterDecrement + existing.incrementMs();
+            if (whiteToMove) {
+              newWhiteMs = afterIncrement;
+            } else {
+              newBlackMs = afterIncrement;
+            }
+            newLastMoveAt = now;
+          }
           Game updated =
               new Game(
                   existing.id(),
@@ -131,7 +154,11 @@ public class GameService {
                   existing.startingFen(),
                   outcome.state().currentFen(),
                   outcome.state().currentStatus(),
-                  outcome.state().history());
+                  outcome.state().history(),
+                  newWhiteMs,
+                  newBlackMs,
+                  newLastMoveAt,
+                  existing.incrementMs());
           // Archive to Postgres BEFORE the GameStore.compute write completes (the store writes
           // the lambda's return value). If archive throws, the compute lambda throws, the move
           // request fails with 500, and Redis still holds the previous state — strictly better
@@ -146,8 +173,32 @@ public class GameService {
     Game updated = holder[0];
     log.info(
         "Move applied: gameId={}, move={}, newStatus={}", updated.id(), move, updated.status());
+    rescheduleFlagTimer(updated);
     broadcastMoveEvent(updated, playerId, move);
     return updated;
+  }
+
+  /**
+   * Re-arms (or cancels) the per-game flag timer after a move, outside the {@code compute} block.
+   * For an untimed game this is a no-op. For a timed game: if the move ended the game (terminal
+   * status), the now-irrelevant flag is cancelled; otherwise the flag is rescheduled for the new
+   * side-to-move at {@code lastMoveAt + remaining[newSide]}. The new side-to-move is whoever is to
+   * move after the just-applied move — an even half-move count means white is to move, odd means
+   * black.
+   */
+  private void rescheduleFlagTimer(Game updated) {
+    if (!updated.isTimed()) {
+      return;
+    }
+    if (updated.status().isTerminal()) {
+      clockTimerManager.cancel(updated.id());
+      return;
+    }
+    boolean whiteToMoveNext = updated.moves().size() % 2 == 0;
+    long remaining =
+        whiteToMoveNext ? updated.whiteTimeRemainingMs() : updated.blackTimeRemainingMs();
+    Instant deadline = updated.lastMoveAt().plusMillis(remaining);
+    clockTimerManager.scheduleFlag(updated.id(), deadline);
   }
 
   /**
@@ -176,7 +227,9 @@ public class GameService {
             updated.status(),
             turn,
             moveNumber,
-            Instant.now(clock));
+            Instant.now(clock),
+            updated.whiteTimeRemainingMs(),
+            updated.blackTimeRemainingMs());
 
     try {
       messagingTemplate.convertAndSend("/topic/games/" + updated.id(), event);

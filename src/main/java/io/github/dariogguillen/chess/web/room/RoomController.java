@@ -78,7 +78,8 @@ public class RoomController {
       @Valid @RequestBody CreateRoomRequest request, @AuthenticationPrincipal User currentUser) {
     UUID currentUserId = currentUser == null ? null : currentUser.getId();
     CreatedRoom created =
-        roomService.createRoom(request.displayName(), request.preferredSide(), currentUserId);
+        roomService.createRoom(
+            request.displayName(), request.preferredSide(), currentUserId, request.timeControl());
     String role = created.room().creatorSide().name();
     return new RoomResponse(created.room().id(), created.creator().id(), role, null);
   }

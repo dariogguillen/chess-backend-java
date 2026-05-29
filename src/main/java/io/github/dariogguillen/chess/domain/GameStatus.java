@@ -13,6 +13,8 @@ package io.github.dariogguillen.chess.domain;
  *       insufficient material, agreement).
  *   <li>{@link #ABANDONED} — a player left and the grace period elapsed; the opponent wins by
  *       abandonment.
+ *   <li>{@link #TIMEOUT} — the side to move ran out of time on a timed game (feature 22, {@code
+ *       time-control}); the opponent wins on time, even if the flagged player is offline.
  * </ul>
  */
 public enum GameStatus {
@@ -21,10 +23,15 @@ public enum GameStatus {
   CHECKMATE,
   STALEMATE,
   DRAW,
-  ABANDONED;
+  ABANDONED,
+  TIMEOUT;
 
   /** Whether this status means the game has ended (no further moves allowed). */
   public boolean isTerminal() {
-    return this == CHECKMATE || this == STALEMATE || this == DRAW || this == ABANDONED;
+    return this == CHECKMATE
+        || this == STALEMATE
+        || this == DRAW
+        || this == ABANDONED
+        || this == TIMEOUT;
   }
 }

@@ -488,7 +488,7 @@
     "id": "time-control",
     "title": "Server-authoritative clock (time control + auto-flagging)",
     "description": "Introduce per-player remaining-time tracking on the active Game state, server-side flag detection (when a player runs out of time, the game terminates automatically), and STOMP broadcasts of clock state on every move and termination event. The backend is the canonical clock source — the frontend renders it. Four reasons this MUST live in the backend: (1) anti-cheating — clients cannot lie about remaining time; (2) source of truth — both players and spectators see the same synchronised clock; (3) auto-flagging — when a side hits zero the game terminates authoritatively even if the flagged player is offline; (4) disconnect/reconnect — the clock keeps running while the client is down and the reconnect reads canonical state. MVP supports a single declared time control per room (e.g. 5 minutes per side, no increment); the request shape allows future formats without an API break.",
-    "status": "pending",
+    "status": "done",
     "priority": 22,
     "acceptance": [
       "Active Game state (Redis) gains whiteTimeRemainingMs, blackTimeRemainingMs, and lastMoveAt (Instant); fields are null when the room has no time control declared (backwards compatibility with the no-clock flow).",

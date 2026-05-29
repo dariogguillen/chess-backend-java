@@ -24,10 +24,16 @@ import java.util.UUID;
  *       disconnect for a non-terminal game; opens the mid-grace UX window.
  *   <li>{@link PlayerReconnectedEvent} — {@code type = "PLAYER_RECONNECTED"} — emitted when a
  *       reconnect cancels a pending grace timer; closes the mid-grace UX window.
+ *   <li>{@link GameTimedOutEvent} — {@code type = "GAME_TIMED_OUT"} — terminal-by-clock-flag on a
+ *       timed game (feature 22, {@code time-control}).
  * </ul>
  */
 public sealed interface GameStateEvent
-    permits MoveEvent, GameAbandonedEvent, PlayerDisconnectedEvent, PlayerReconnectedEvent {
+    permits MoveEvent,
+        GameAbandonedEvent,
+        PlayerDisconnectedEvent,
+        PlayerReconnectedEvent,
+        GameTimedOutEvent {
 
   /**
    * The discriminator string. Each variant returns its own stable, upper-snake-case constant (e.g.

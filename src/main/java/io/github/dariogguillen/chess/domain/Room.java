@@ -48,13 +48,22 @@ import java.util.UUID;
  *       in-flight rooms were created with.
  * </ul>
  *
+ * <p>{@code timeControl} (added by feature 22, `time-control`) is the optional server-authoritative
+ * clock the room declared at create time. {@code null} means an untimed room — the historical
+ * behaviour — so the {@link Game} the room spawns carries no clock. A non-null value initialises
+ * the game's clock at join time. It is threaded Request → Room → Game exactly as {@code
+ * creatorSide} was in feature 21, and {@code null} is a legitimate value (untimed) rather than a
+ * defaulted one.
+ *
  * @param id the room identifier; not null, not blank.
  * @param players the players in the room; defensively copied; 0..2 entries; ids unique.
  * @param status the lifecycle status; not null.
  * @param creatorSide the concrete side the creator plays; a {@code null} (legacy / omitted) value
  *     defaults to {@link Side#WHITE}.
+ * @param timeControl the optional declared clock; {@code null} means an untimed room.
  */
-public record Room(String id, List<Player> players, RoomStatus status, Side creatorSide) {
+public record Room(
+    String id, List<Player> players, RoomStatus status, Side creatorSide, TimeControl timeControl) {
 
   private static final int MAX_PLAYERS = 2;
 
@@ -84,14 +93,31 @@ public record Room(String id, List<Player> players, RoomStatus status, Side crea
   }
 
   /**
-   * Convenience constructor for the pre-feature-21 call shape, where the creator was always white.
-   * Equivalent to {@code new Room(id, players, status, Side.WHITE)}.
+   * Convenience constructor for the pre-feature-21 call shape, where the creator was always white
+   * and rooms were untimed. Equivalent to {@code new Room(id, players, status, Side.WHITE, null)}.
    *
    * @param id the room identifier; not null, not blank.
    * @param players the players in the room; defensively copied; 0..2 entries; ids unique.
    * @param status the lifecycle status; not null.
    */
   public Room(String id, List<Player> players, RoomStatus status) {
-    this(id, players, status, Side.WHITE);
+    this(id, players, status, Side.WHITE, null);
+  }
+
+  /**
+   * Convenience constructor for the pre-feature-22 call shape (feature 21's 4-arg form), where the
+   * room carried a creator side but no declared clock. Equivalent to {@code new Room(id, players,
+   * status, creatorSide, null)}. Keeps every feature-21-era {@code new Room(...)} call site and the
+   * Jackson deserialisation of rooms serialised before feature 22 (which lack the {@code
+   * timeControl} component) compiling and behaving as untimed.
+   *
+   * @param id the room identifier; not null, not blank.
+   * @param players the players in the room; defensively copied; 0..2 entries; ids unique.
+   * @param status the lifecycle status; not null.
+   * @param creatorSide the concrete side the creator plays; {@code null} defaults to {@link
+   *     Side#WHITE}.
+   */
+  public Room(String id, List<Player> players, RoomStatus status, Side creatorSide) {
+    this(id, players, status, creatorSide, null);
   }
 }

@@ -230,6 +230,37 @@ POST /api/rooms
   defaulting to `WHITE`, so rooms serialised into Redis before this
   deploy deserialise as white-creator rooms.
 
+#### Time control on room create
+
+`POST /api/rooms` accepts an optional `timeControl` on
+`CreateRoomRequest` (feature 22, `time-control`):
+
+```
+POST /api/rooms
+{ "displayName": "Alice", "timeControl": { "initialMs": 300000, "incrementMs": 3000 } }
+```
+
+- **`timeControl`** — `{ initialMs (>0), incrementMs (>=0) }`, or
+  **omitted/null** for an untimed game (the historical behaviour; old
+  frontends that never send the field keep creating untimed rooms). It
+  is stored on the `Room` and read at join time to initialise the
+  game's clock.
+- **`GameStateResponse`** and the STOMP `MoveEvent` gain three /
+  two nullable clock fields respectively — `whiteTimeRemainingMs`,
+  `blackTimeRemainingMs` (both), and `lastMoveAt` (response only). They
+  are `null` for an untimed game, so the wire shape is additive: a
+  consumer that ignores them sees the pre-feature-22 contract.
+- **New terminal status `TIMEOUT`** joins the `GameStatus` enum and
+  `isTerminal()`. It is produced only server-side (the clock flag), so
+  it never appears on a `MoveEvent.status` (those carry chesslib-reached
+  statuses) — it surfaces on `GameStateResponse.status` and the
+  `GAME_TIMED_OUT` STOMP event. No new `ErrorResponse` code: a flag is a
+  terminal outcome, not a request error.
+
+The full clock model, the no-polling flag-detection design, and the
+grace/clock coexistence are documented under "Server-authoritative clock
+(time control)" in the STOMP section below.
+
 #### Room read endpoint
 
 `GET /api/rooms/{id}` returns the current state of a room, used by
@@ -949,15 +980,15 @@ in the "API contract" section above), which carries the same
 
 `/topic/games/{gameId}` is a polymorphic topic. The Java model is a
 `sealed interface GameStateEvent permits MoveEvent,
-GameAbandonedEvent, PlayerDisconnectedEvent, PlayerReconnectedEvent`
-with the discriminator set explicitly in each variant's convenience
-constructor (no `@JsonTypeInfo`). Every variant carries `type:
-"..."` and `gameId: <UUID>` as its first two fields; subscribers
-branch on `event.type` and parse the rest accordingly. Feature 11.5
-established this family by retrofitting `MoveEvent` and
+GameAbandonedEvent, PlayerDisconnectedEvent, PlayerReconnectedEvent,
+GameTimedOutEvent` with the discriminator set explicitly in each
+variant's convenience constructor (no `@JsonTypeInfo`). Every variant
+carries `type: "..."` and `gameId: <UUID>` as its first two fields;
+subscribers branch on `event.type` and parse the rest accordingly.
+Feature 11.5 established this family by retrofitting `MoveEvent` and
 `GameAbandonedEvent` (both already on the topic from features 6 and
-11) with the discriminator field and adding the two new mid-grace
-variants.
+11) with the discriminator field and adding the two mid-grace
+variants; feature 22 (`time-control`) added `GameTimedOutEvent`.
 
 The retrofit is **backward-compatible** for the deployed frontend:
 the new `type` field is an additive change. Jackson's
@@ -1091,6 +1122,88 @@ disconnect, or a reconnect that arrives after the timer has already
 fired (the timer-just-fired race) both produce no broadcast — the
 `GAME_ABANDONED` event is the authoritative outcome in the latter
 case.
+
+**`GAME_TIMED_OUT`** — published from `GameTimeoutService.timeout`
+(feature 22, `time-control`) when the per-game flag timer fires on a
+timed game whose side-to-move ran out of clock. Terminal broadcast; no
+follow-up on this topic. Fires even when the timed-out player is
+offline — the clock is server-authoritative.
+
+```json
+{
+  "type": "GAME_TIMED_OUT",
+  "gameId": "0d52a8a0-bea0-4b21-bbe3-3df7f8e83bfb",
+  "timedOutSide": "WHITE",
+  "winnerId": "550e8400-e29b-41d4-a716-446655440000",
+  "finalFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+  "whiteTimeRemainingMs": 0,
+  "blackTimeRemainingMs": 300000,
+  "timedOutAt": "2026-05-29T10:28:11.123Z"
+}
+```
+
+- **`timedOutSide`** — `WHITE` or `BLACK`, the side whose clock hit
+  zero (the loser). Derived server-side from the side-to-move when the
+  flag fired.
+- **`winnerId`** — the opponent — derived server-side.
+- **`finalFen`** — the position frozen on the board at the flag; the
+  game is terminal and the FEN does not change again.
+- **`whiteTimeRemainingMs` / `blackTimeRemainingMs`** — the clocks at
+  the flag; the timed-out side reads `0`.
+- **`timedOutAt`** — ISO-8601 instant in UTC, from the service's
+  injected `Clock`.
+
+### Server-authoritative clock (time control)
+
+Feature 22 (`time-control`) adds an **optional** per-player clock to the
+active `Game`. The backend is the canonical clock source: it decrements
+the moving player's time on every move, auto-flags (terminates with
+`TIMEOUT`) when the side-to-move runs out — even if that player is
+offline — and broadcasts clock state on every move and on termination.
+The frontend only renders.
+
+**Opt-in per room.** `CreateRoomRequest.timeControl` is nullable; a room
+created without it produces an untimed game whose behaviour is
+byte-for-byte the pre-feature-22 one. This is the same backwards-compat
+discipline as feature 21's `preferredSide` default, except here `null`
+is a *legitimate domain state* (untimed), not a value defaulted to a
+concrete one.
+
+**Clock model.** A timed `Game` carries four nullable fields under an
+**all-or-nothing invariant** (all four null = untimed, or all four
+non-null = timed): `whiteTimeRemainingMs`, `blackTimeRemainingMs`,
+`lastMoveAt` (the live state), and `incrementMs` (the per-move Fischer
+increment, configuration lifted onto the game so `applyMove` does not
+need a cross-aggregate `Room` lookup). At join time both remaining-times
+= `TimeControl.initialMs` and `lastMoveAt` = the game-creation instant,
+so the time before white's first move counts against white. On each
+move by side S: `elapsed = now - lastMoveAt`; `remaining[S] = max(0,
+remaining[S] - elapsed) + incrementMs`; `lastMoveAt = now`. A
+reconnecting client reads the frozen `remaining*` + `lastMoveAt` from
+`GET /api/games/{id}` and computes the live side-to-move value as
+`remaining[turn] - (now - lastMoveAt)`.
+
+**No-polling flag detection.** Flag detection is a **per-game scheduled
+timer**, not a polling `@Scheduled` tick. A `ClockTimerManager`
+(scheduling) + a `GameTimeoutService` (terminal action + broadcast) are
+the spiritual twins of feature 11's `GracePeriodManager` +
+`GameAbandonService`, sharing the existing `TaskScheduler` and `Clock`
+beans. `RoomService.joinRoom` arms the first flag for white at
+`lastMoveAt + initialMs`; `GameService.applyMove` reschedules the flag
+for the new side-to-move on every move (and cancels it on a terminal
+move outcome). Precise to the millisecond, no Redis keyspace scan. This
+choice and its rationale mirror the feature-11 scheduling decision.
+
+**Disconnect-resilience invariant.** The clock runs during disconnect,
+and only for the side-to-move. The server cannot distinguish an
+intentional from an accidental disconnect (same STOMP signal), so the
+60s grace period (feature 11) is the only forgiveness; the clock itself
+never pauses (pausing would be the exact cheat a server-authoritative
+clock exists to prevent). The grace timer (→ `ABANDONED`) and the clock
+timer (→ `TIMEOUT`) **race**; whichever terminal mutation enters
+`GameStore.compute` first wins, the second observes the already-terminal
+status and is a no-op. The two terminal paths converge cleanly through
+the same `isTerminal()` idempotency guard.
 
 ### No STOMP-level authentication
 

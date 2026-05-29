@@ -8,6 +8,7 @@ import io.github.dariogguillen.chess.domain.Side;
 import io.github.dariogguillen.chess.domain.Square;
 import io.github.dariogguillen.chess.web.room.PlayerInRoom;
 import io.swagger.v3.oas.annotations.media.Schema;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -38,6 +39,13 @@ import java.util.UUID;
  * @param status the current status of the game.
  * @param turn the side whose turn it is to move.
  * @param moves the move history in playback order, each entry as a {@link MoveSummary}.
+ * @param whiteTimeRemainingMs white's frozen remaining clock at the last move, or {@code null} for
+ *     an untimed game (feature 22, {@code time-control}).
+ * @param blackTimeRemainingMs black's frozen remaining clock at the last move, or {@code null} for
+ *     an untimed game.
+ * @param lastMoveAt the instant the side-to-move's clock started counting, or {@code null} for an
+ *     untimed game. A reconnecting client computes the live value of the side-to-move as {@code
+ *     remaining[turn] - (now - lastMoveAt)}.
  */
 public record GameStateResponse(
     UUID id,
@@ -53,7 +61,29 @@ public record GameStateResponse(
             description = "Side whose turn it is. WHITE if move count is even, BLACK if odd.",
             example = "WHITE")
         Side turn,
-    @Schema(description = "Full move history in playback order.") List<MoveSummary> moves) {
+    @Schema(description = "Full move history in playback order.") List<MoveSummary> moves,
+    @Schema(
+            description =
+                "White's remaining clock in milliseconds, frozen at the last move. Null for an "
+                    + "untimed game. The live value of the side to move is "
+                    + "remaining - (now - lastMoveAt).",
+            example = "298500",
+            nullable = true)
+        Long whiteTimeRemainingMs,
+    @Schema(
+            description =
+                "Black's remaining clock in milliseconds, frozen at the last move. Null for an "
+                    + "untimed game.",
+            example = "300000",
+            nullable = true)
+        Long blackTimeRemainingMs,
+    @Schema(
+            description =
+                "Instant the side-to-move's clock started counting, ISO-8601 UTC. Null for an "
+                    + "untimed game.",
+            example = "2026-05-29T10:23:11.123Z",
+            nullable = true)
+        Instant lastMoveAt) {
 
   /**
    * Wire-format shape for a player inside {@link GameStateResponse#white()} and {@link

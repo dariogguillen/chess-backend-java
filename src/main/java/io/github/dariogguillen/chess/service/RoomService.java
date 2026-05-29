@@ -7,9 +7,12 @@ import io.github.dariogguillen.chess.domain.Room;
 import io.github.dariogguillen.chess.domain.RoomStatus;
 import io.github.dariogguillen.chess.domain.Side;
 import io.github.dariogguillen.chess.domain.SidePreference;
+import io.github.dariogguillen.chess.domain.TimeControl;
 import io.github.dariogguillen.chess.exception.RoomFullException;
 import io.github.dariogguillen.chess.exception.RoomNotFoundException;
 import io.github.dariogguillen.chess.websocket.RoomJoinedEvent;
+import java.time.Clock;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -51,6 +54,8 @@ public class RoomService {
   private final ChessRules chessRules;
   private final SimpMessagingTemplate messagingTemplate;
   private final RandomSideChooser randomSideChooser;
+  private final Clock clock;
+  private final ClockTimerManager clockTimerManager;
 
   public RoomService(
       RoomStore roomStore,
@@ -58,13 +63,17 @@ public class RoomService {
       RoomCodeGenerator codeGenerator,
       ChessRules chessRules,
       SimpMessagingTemplate messagingTemplate,
-      RandomSideChooser randomSideChooser) {
+      RandomSideChooser randomSideChooser,
+      Clock clock,
+      ClockTimerManager clockTimerManager) {
     this.roomStore = roomStore;
     this.gameStore = gameStore;
     this.codeGenerator = codeGenerator;
     this.chessRules = chessRules;
     this.messagingTemplate = messagingTemplate;
     this.randomSideChooser = randomSideChooser;
+    this.clock = clock;
+    this.clockTimerManager = clockTimerManager;
   }
 
   /**
@@ -87,15 +96,21 @@ public class RoomService {
    *     {@code null} for anonymous guest creation. Threaded into the new {@link Player}'s {@code
    *     userId} field so the archive path can populate {@code games.white_user_id} when the game
    *     terminates (feature 19, `auth-my-games`).
-   * @return the freshly created room with one player, the resolved {@code creatorSide}, and status
-   *     {@link RoomStatus#WAITING_FOR_PLAYER}, plus the synthesised {@link Player} so the caller
-   *     can surface the assigned player id.
+   * @param timeControl the optional declared clock (feature 22, `time-control`); {@code null} means
+   *     an untimed room whose game carries no clock. Stored on the {@link Room} and read at join
+   *     time to initialise the game clock.
+   * @return the freshly created room with one player, the resolved {@code creatorSide}, the
+   *     declared {@code timeControl}, and status {@link RoomStatus#WAITING_FOR_PLAYER}, plus the
+   *     synthesised {@link Player} so the caller can surface the assigned player id.
    * @throws IllegalStateException if {@value #MAX_CODE_ATTEMPTS} consecutive generated codes all
    *     collide with existing rooms — a system-level failure indicating either a near-full keyspace
    *     or a broken {@link RoomCodeGenerator}.
    */
   public CreatedRoom createRoom(
-      String displayName, SidePreference preferredSide, UUID currentUserId) {
+      String displayName,
+      SidePreference preferredSide,
+      UUID currentUserId,
+      TimeControl timeControl) {
     Player creator = new Player(UUID.randomUUID(), displayName, currentUserId);
     Side creatorSide = resolveCreatorSide(preferredSide);
     for (int attempt = 1; attempt <= MAX_CODE_ATTEMPTS; attempt++) {
@@ -107,7 +122,8 @@ public class RoomService {
                 if (existing != null) {
                   return existing;
                 }
-                return new Room(id, List.of(creator), RoomStatus.WAITING_FOR_PLAYER, creatorSide);
+                return new Room(
+                    id, List.of(creator), RoomStatus.WAITING_FOR_PLAYER, creatorSide, timeControl);
               });
       // If compute returned the existing room, our candidate collided and `created`
       // is not the room we built. Retry with a fresh code.
@@ -219,11 +235,20 @@ public class RoomService {
               bothPlayers.add(creator);
               bothPlayers.add(joiner);
               Side creatorSide = existing.creatorSide();
-              Room nextRoom = new Room(id, bothPlayers, RoomStatus.ACTIVE, creatorSide);
+              TimeControl timeControl = existing.timeControl();
+              Room nextRoom =
+                  new Room(id, bothPlayers, RoomStatus.ACTIVE, creatorSide, timeControl);
               // Assign white/black from the stored creator side rather than from join order.
               Player white = creatorSide == Side.WHITE ? creator : joiner;
               Player black = creatorSide == Side.WHITE ? joiner : creator;
               String initialFen = chessRules.standardInitialState().currentFen();
+              // Timed game: both sides start at initialMs and the clock anchor (lastMoveAt) is the
+              // game-creation instant, so the elapsed time before white's first move counts against
+              // white (per the acceptance). Untimed game: all three clock fields stay null.
+              Long whiteMs = timeControl == null ? null : timeControl.initialMs();
+              Long blackMs = timeControl == null ? null : timeControl.initialMs();
+              Instant lastMoveAt = timeControl == null ? null : Instant.now(clock);
+              Long incrementMs = timeControl == null ? null : timeControl.incrementMs();
               Game game =
                   new Game(
                       UUID.randomUUID(),
@@ -233,7 +258,11 @@ public class RoomService {
                       initialFen,
                       initialFen,
                       GameStatus.ONGOING,
-                      List.of());
+                      List.of(),
+                      whiteMs,
+                      blackMs,
+                      lastMoveAt,
+                      incrementMs);
               gameStore.save(game);
               createdGameHolder[0] = game;
               return nextRoom;
@@ -245,6 +274,14 @@ public class RoomService {
         updated.id(),
         joiner.id(),
         createdGame.id());
+    // Arm the first flag timer for white outside the atomic block (the game write is durable). For
+    // an untimed game this is a no-op. White's deadline is the clock anchor + white's remaining
+    // time; if white never moves, the flag fires and GameTimeoutService flags the game on time.
+    if (createdGame.isTimed()) {
+      Instant whiteDeadline =
+          createdGame.lastMoveAt().plusMillis(createdGame.whiteTimeRemainingMs());
+      clockTimerManager.scheduleFlag(createdGame.id(), whiteDeadline);
+    }
     broadcastRoomJoinedEvent(updated.id(), createdGame.id(), joiner);
     return new JoinedRoom(updated, joiner, createdGame);
   }
@@ -272,10 +309,10 @@ public class RoomService {
   }
 
   /**
-   * Carrier returned from {@link #createRoom(String, SidePreference, UUID)}. The room exposes the
-   * assigned id, the resolved {@code creatorSide}, and the single-element player list; {@code
-   * creator} is the player just synthesised, kept separately so the controller does not have to
-   * pick it out of the list.
+   * Carrier returned from {@link #createRoom(String, SidePreference, UUID, TimeControl)}. The room
+   * exposes the assigned id, the resolved {@code creatorSide}, and the single-element player list;
+   * {@code creator} is the player just synthesised, kept separately so the controller does not have
+   * to pick it out of the list.
    */
   public record CreatedRoom(Room room, Player creator) {}
 

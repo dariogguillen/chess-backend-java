@@ -42,7 +42,7 @@ public record MyGameSummary(
     @Schema(
             description = "Terminal status of the game.",
             example = "CHECKMATE",
-            allowableValues = {"CHECKMATE", "STALEMATE", "DRAW", "ABANDONED"})
+            allowableValues = {"CHECKMATE", "STALEMATE", "DRAW", "ABANDONED", "TIMEOUT"})
         GameStatus status,
     @Schema(description = "Instant the game was archived.", example = "2026-05-19T10:23:11.123Z")
         Instant endedAt,

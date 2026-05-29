@@ -13,7 +13,7 @@ import java.util.UUID;
  * the wire matches order of move application thanks to the per-game serialization done by {@code
  * GameStore.compute}.
  *
- * <p>{@code MoveEvent} is one of the four variants of the {@link GameStateEvent} sealed family that
+ * <p>{@code MoveEvent} is one of the five variants of the {@link GameStateEvent} sealed family that
  * share {@code /topic/games/{gameId}}; subscribers discriminate by the leading {@code type} field
  * (constant {@code "MOVE"} here). The field is set automatically by the convenience constructor so
  * existing call sites do not need to know about the discriminator — they keep calling {@code new
@@ -46,6 +46,11 @@ import java.util.UUID;
  *     played in the game).
  * @param playedAt the instant this broadcast was produced, sourced from the service's {@code
  *     Clock}, in UTC.
+ * @param whiteTimeRemainingMs white's remaining clock in milliseconds after this move, or {@code
+ *     null} when the game is untimed (feature 22, {@code time-control}). Lets the frontend render a
+ *     synchronised clock without polling.
+ * @param blackTimeRemainingMs black's remaining clock in milliseconds after this move, or {@code
+ *     null} when the game is untimed.
  */
 public record MoveEvent(
     String type,
@@ -59,7 +64,9 @@ public record MoveEvent(
     GameStatus status,
     Side turn,
     int moveNumber,
-    Instant playedAt)
+    Instant playedAt,
+    Long whiteTimeRemainingMs,
+    Long blackTimeRemainingMs)
     implements GameStateEvent {
 
   /** Stable discriminator value emitted in JSON as {@code "type":"MOVE"}. */
@@ -69,7 +76,7 @@ public record MoveEvent(
    * Convenience constructor used by every current call site (today: {@code
    * GameService.broadcastMoveEvent}). The {@link #type} field is always {@link #TYPE}; making it
    * explicit in the record (rather than computing it via {@code @JsonTypeInfo}) keeps the
-   * discriminator visible at the source.
+   * discriminator visible at the source. The two clock fields are {@code null} for untimed games.
    */
   public MoveEvent(
       UUID gameId,
@@ -82,7 +89,23 @@ public record MoveEvent(
       GameStatus status,
       Side turn,
       int moveNumber,
-      Instant playedAt) {
-    this(TYPE, gameId, movedBy, side, from, to, promotion, fen, status, turn, moveNumber, playedAt);
+      Instant playedAt,
+      Long whiteTimeRemainingMs,
+      Long blackTimeRemainingMs) {
+    this(
+        TYPE,
+        gameId,
+        movedBy,
+        side,
+        from,
+        to,
+        promotion,
+        fen,
+        status,
+        turn,
+        moveNumber,
+        playedAt,
+        whiteTimeRemainingMs,
+        blackTimeRemainingMs);
   }
 }

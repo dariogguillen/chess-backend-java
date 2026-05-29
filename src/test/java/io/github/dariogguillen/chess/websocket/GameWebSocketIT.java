@@ -119,6 +119,28 @@ class GameWebSocketIT {
     assertThat(received.turn()).isEqualTo(Side.BLACK);
     assertThat(received.moveNumber()).isEqualTo(1);
     assertThat(received.playedAt()).isNotNull();
+    // Feature 22: an untimed game carries null clock fields on the MoveEvent.
+    assertThat(received.whiteTimeRemainingMs()).isNull();
+    assertThat(received.blackTimeRemainingMs()).isNull();
+  }
+
+  @Test
+  void timedGame_moveEventCarriesClockFields() throws Exception {
+    // A generous 10-minute initial so the flag timer does not fire during the test.
+    GameSetup setup = setupTimedGame("Alice", "Bob", 600_000L, 3_000L);
+    StompSession session = connect();
+    BlockingQueue<MoveEvent> queue = subscribe(session, setup.gameId());
+
+    applyMove(setup.gameId(), setup.whitePlayerId(), "e2", "e4");
+
+    MoveEvent received = queue.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    assertThat(received).isNotNull();
+    assertThat(received.whiteTimeRemainingMs()).isNotNull();
+    assertThat(received.blackTimeRemainingMs()).isNotNull();
+    // White just moved: their clock decreased from the 600000ms initial (minus elapsed, plus
+    // the 3000ms increment); the upper bound is initial + increment. Black is untouched.
+    assertThat(received.whiteTimeRemainingMs()).isLessThanOrEqualTo(603_000L);
+    assertThat(received.blackTimeRemainingMs()).isEqualTo(600_000L);
   }
 
   @Test
@@ -259,6 +281,47 @@ class GameWebSocketIT {
     JsonNode joinBody = objectMapper.readTree(joinResponse.getBody());
     UUID gameId = UUID.fromString(joinBody.get("gameId").asText());
     UUID blackPlayerId = UUID.fromString(joinBody.get("playerId").asText());
+
+    return new GameSetup(gameId, whitePlayerId, blackPlayerId);
+  }
+
+  /**
+   * Creates a timed room (declared {@code timeControl}) and joins it, returning the game/player
+   * ids. Mirrors {@link #setupGame(String, String)} but threads a {@code timeControl} object into
+   * the create body.
+   */
+  private GameSetup setupTimedGame(
+      String whiteName, String blackName, long initialMs, long incrementMs) throws Exception {
+    HttpHeaders headers = new HttpHeaders();
+    headers.setContentType(MediaType.APPLICATION_JSON);
+
+    String createBody =
+        "{\"displayName\":\""
+            + whiteName
+            + "\",\"timeControl\":{\"initialMs\":"
+            + initialMs
+            + ",\"incrementMs\":"
+            + incrementMs
+            + "}}";
+    ResponseEntity<String> createResponse =
+        restTemplate.exchange(
+            baseUrl() + "/api/rooms",
+            HttpMethod.POST,
+            new HttpEntity<>(createBody, headers),
+            String.class);
+    JsonNode create = objectMapper.readTree(createResponse.getBody());
+    String roomId = create.get("roomId").asText();
+    UUID whitePlayerId = UUID.fromString(create.get("playerId").asText());
+
+    ResponseEntity<String> joinResponse =
+        restTemplate.exchange(
+            baseUrl() + "/api/rooms/" + roomId + "/join",
+            HttpMethod.POST,
+            new HttpEntity<>("{\"displayName\":\"" + blackName + "\"}", headers),
+            String.class);
+    JsonNode join = objectMapper.readTree(joinResponse.getBody());
+    UUID gameId = UUID.fromString(join.get("gameId").asText());
+    UUID blackPlayerId = UUID.fromString(join.get("playerId").asText());
 
     return new GameSetup(gameId, whitePlayerId, blackPlayerId);
   }
