@@ -1,6 +1,7 @@
 package io.github.dariogguillen.chess.web.room;
 
 import io.github.dariogguillen.chess.domain.Room;
+import io.github.dariogguillen.chess.domain.Side;
 import io.github.dariogguillen.chess.domain.User;
 import io.github.dariogguillen.chess.exception.ErrorResponse;
 import io.github.dariogguillen.chess.exception.RoomNotFoundException;
@@ -42,9 +43,6 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/rooms")
 public class RoomController {
 
-  private static final String ROLE_WHITE = "WHITE";
-  private static final String ROLE_BLACK = "BLACK";
-
   private final RoomService roomService;
   private final RoomDetailsMapper roomDetailsMapper;
 
@@ -56,8 +54,10 @@ public class RoomController {
   @Operation(
       summary = "Create a room",
       description =
-          "Creates a new room with the caller as White. The response includes the assigned "
-              + "playerId and the freshly generated roomId.")
+          "Creates a new room with the caller as its single player. The caller's side comes from "
+              + "the optional preferredSide field (WHITE/BLACK/RANDOM; omitted defaults to WHITE; "
+              + "RANDOM is coin-flipped server-side). The response role reflects the resolved "
+              + "side, alongside the assigned playerId and the freshly generated roomId.")
   @ApiResponse(
       responseCode = "201",
       description = "Room created",
@@ -77,16 +77,18 @@ public class RoomController {
   public RoomResponse createRoom(
       @Valid @RequestBody CreateRoomRequest request, @AuthenticationPrincipal User currentUser) {
     UUID currentUserId = currentUser == null ? null : currentUser.getId();
-    CreatedRoom created = roomService.createRoom(request.displayName(), currentUserId);
-    return new RoomResponse(created.room().id(), created.creator().id(), ROLE_WHITE, null);
+    CreatedRoom created =
+        roomService.createRoom(request.displayName(), request.preferredSide(), currentUserId);
+    String role = created.room().creatorSide().name();
+    return new RoomResponse(created.room().id(), created.creator().id(), role, null);
   }
 
   @Operation(
       summary = "Join a room",
       description =
-          "Joins {id} as the second player (Black) and creates the game in the same atomic "
-              + "step. Path {id} is case-insensitive; the canonical uppercase form is returned "
-              + "in the body.")
+          "Joins {id} as the second player and creates the game in the same atomic step. The "
+              + "joiner's role is the opposite of the side the creator chose at create time. Path "
+              + "{id} is case-insensitive; the canonical uppercase form is returned in the body.")
   @ApiResponse(
       responseCode = "200",
       description = "Joined; game created",
@@ -123,14 +125,20 @@ public class RoomController {
     UUID currentUserId = currentUser == null ? null : currentUser.getId();
     JoinedRoom joined =
         roomService.joinRoom(id.toUpperCase(Locale.ROOT), request.displayName(), currentUserId);
+    Side joinerSide = opposite(joined.room().creatorSide());
     return new RoomResponse(
-        joined.room().id(), joined.joiner().id(), ROLE_BLACK, joined.game().id());
+        joined.room().id(), joined.joiner().id(), joinerSide.name(), joined.game().id());
+  }
+
+  private static Side opposite(Side side) {
+    return side == Side.WHITE ? Side.BLACK : Side.WHITE;
   }
 
   @Operation(
       summary = "Get room state by id",
       description =
-          "Reads the current state of a room: the players (with roles derived from join order), "
+          "Reads the current state of a room: the players (with roles derived from the creator's "
+              + "chosen side), "
               + "the associated gameId if the room is ACTIVE, and the lifecycle status. The "
               + "frontend uses this either as the primary discovery mechanism for Player A "
               + "(poll until gameId is non-null) or as a fallback to STOMP "

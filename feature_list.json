@@ -466,5 +466,110 @@
       "README.md WebSocket subsection mentions the JWT auth option.",
       "./init.sh passes."
     ]
+  },
+  {
+    "id": "color-selection",
+    "title": "Let the room creator choose their side (WHITE/BLACK/RANDOM)",
+    "description": "Today RoomService.createRoom assigns the creator to white by convention; the joiner takes black (no way to override at room creation time). The frontend's 'Configure Room' view shows a WHITE/BLACK toggle but the backend ignores it. This feature wires that toggle through: CreateRoomRequest gains an optional Side preference, RoomService.createRoom honours it, the joiner gets the opposite side automatically. RANDOM uses a server-side coin flip (anti-cheat: clients cannot bias the result). Backwards-compatible: null/missing field defaults to WHITE so existing frontend without the field works unchanged.",
+    "status": "done",
+    "priority": 21,
+    "acceptance": [
+      "CreateRoomRequest record gains a nullable Side preferredSide field (null → WHITE for backwards compatibility) with allowable values WHITE, BLACK, RANDOM.",
+      "RoomService.createRoom signature accepts the preferredSide parameter; WHITE → creator is white; BLACK → creator is black; RANDOM → backend coin flip via SecureRandom or ThreadLocalRandom.",
+      "Joiner receives the opposite side automatically (existing behaviour preserved when the creator chose WHITE).",
+      "Integration test covers: explicit WHITE preference, explicit BLACK preference, RANDOM preference asserts both sides are reachable over multiple invocations (or asserts the field populates either side via a seeded random), null preference yields WHITE (regression for the existing frontend version).",
+      "Springdoc schema documents the new field with @Schema(allowableValues = {\"WHITE\", \"BLACK\", \"RANDOM\"}) so the typed client codegen produces a literal union.",
+      "Frontend coordination: the existing WHITE/BLACK toggle in chess-frontend's Configure Room view maps to this field. Cross-repo additive change — old frontends keep working without the field.",
+      "docs/architecture.md API contract section documents the new field.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "time-control",
+    "title": "Server-authoritative clock (time control + auto-flagging)",
+    "description": "Introduce per-player remaining-time tracking on the active Game state, server-side flag detection (when a player runs out of time, the game terminates automatically), and STOMP broadcasts of clock state on every move and termination event. The backend is the canonical clock source — the frontend renders it. Four reasons this MUST live in the backend: (1) anti-cheating — clients cannot lie about remaining time; (2) source of truth — both players and spectators see the same synchronised clock; (3) auto-flagging — when a side hits zero the game terminates authoritatively even if the flagged player is offline; (4) disconnect/reconnect — the clock keeps running while the client is down and the reconnect reads canonical state. MVP supports a single declared time control per room (e.g. 5 minutes per side, no increment); the request shape allows future formats without an API break.",
+    "status": "pending",
+    "priority": 22,
+    "acceptance": [
+      "Active Game state (Redis) gains whiteTimeRemainingMs, blackTimeRemainingMs, and lastMoveAt (Instant); fields are null when the room has no time control declared (backwards compatibility with the no-clock flow).",
+      "CreateRoomRequest gains an optional TimeControl record (e.g. { initialMs, incrementMs }); null = no clock (existing untimed behaviour).",
+      "On each successful move, the moving player's remaining time decreases by (now - lastMoveAt), and lastMoveAt is updated to now. The first move's elapsed time counts against the white player.",
+      "Scheduled task (Spring @Scheduled at e.g. 1s tick, OR a per-game timer) checks whether the side-to-move has run out: when their projected remaining time hits 0 with the game still active, terminate with status TIMEOUT and broadcast a TerminationEvent.",
+      "MoveEvent payload extended with whiteTimeRemainingMs and blackTimeRemainingMs so the frontend renders a synchronised clock without polling.",
+      "GameStateResponse exposes the same remaining-time fields so a reconnecting client sees the canonical clock state.",
+      "Integration test covers: clock initialised to TimeControl.initialMs, decrement on move, MoveEvent carries clock state, scheduled flag-detection terminates a game even with no further moves, untimed rooms (TimeControl = null) bypass the clock surface entirely (regression).",
+      "docs/architecture.md documents the clock as server-authoritative; mentions disconnect-resilience invariant and the scheduled-flag-detection model.",
+      "Cross-repo: frontend adds a clock UI; additive (older frontends without TimeControl still create untimed rooms).",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "bot-opponent",
+    "title": "Play against a bot (Stockfish via subprocess)",
+    "description": "Add a 'Play against the bot' room creation path. When the creator selects BOT as the opponent kind, the backend creates a Game with the creator as one side and a bot (Stockfish) as the other and, on the bot's turn, invokes a chess engine to compute and play a move via the same move-validation + broadcast pipeline a human move uses. Recommendation: Stockfish bundled into the Docker image and driven via subprocess + UCI protocol. Single difficulty in MVP (e.g. skill level 5 or depth 10); difficulty selection is a follow-up. Selected over Java-only minimax because portfolio signal is significantly higher (Stockfish integration is a real-world recruiter signal) and the bot is actually strong enough to be interesting.",
+    "status": "pending",
+    "priority": 23,
+    "acceptance": [
+      "CreateRoomRequest gains an opponentKind field: FRIEND | BOT | RANDOM (null = FRIEND for backwards compatibility). Today only FRIEND exists implicitly.",
+      "When BOT is chosen, RoomService creates a complete two-side Game immediately (no waiting on a joiner). The bot side carries a fixed display name (e.g. 'Stockfish') and a sentinel Player.userId pattern that future features can recognise.",
+      "Dockerfile updated to install the Stockfish binary (multi-stage build or Alpine package). The image size cost and the deploy.yml impact are documented in the feature note.",
+      "BotEngineService at io.github.dariogguillen.chess.service.bot wraps the subprocess: lifecycle (start per game / pool / start-on-demand — implementer's call documented), sends UCI position + go commands, parses bestmove response, handles process death.",
+      "After a human move is validated, if the opponent is the bot, the bot's move is computed (synchronously or on a separate executor) and broadcast as a MoveEvent indistinguishable on the wire from a two-human-game move.",
+      "Engine timeout / process death is handled gracefully: log + abandon the game with a structured TerminationEvent reason BOT_ENGINE_FAILURE; the JVM does not deadlock or leak processes.",
+      "Single difficulty in MVP. Difficulty selection is explicitly out-of-scope and tracked as a follow-up.",
+      "Integration test covers: a vs-bot game completes a known short forced-mate sequence, bot moves are legal, engine process is reaped on game termination. (Testcontainers or Maven-managed Stockfish binary on CI.)",
+      "docs/architecture.md documents the bot integration (UCI protocol, subprocess lifecycle, deploy implications).",
+      "./init.sh passes (Stockfish must be available to the test runner; the IT either spawns the production binary or uses a pinned test binary)."
+    ]
+  },
+  {
+    "id": "random-matchmaking",
+    "title": "Play against a random opponent (online matchmaking queue)",
+    "description": "Add a 'Play random' room creation path. The creator joins a Redis-backed waiting queue; when another player also requests random, they are matched into a room together. Players in the queue see a 'waiting for opponent' state via STOMP; when matched, the existing room/game flow takes over. MVP uses a single global queue; once feature 22 (time-control) lands, the queue partitions by declared time control. Anonymous and authenticated players both eligible — matchmaking does NOT gate on auth.",
+    "status": "pending",
+    "priority": 24,
+    "acceptance": [
+      "CreateRoomRequest.opponentKind = RANDOM enqueues the player rather than creating a room immediately. The endpoint returns a queue-ticket response (e.g. a queue id + a STOMP topic to subscribe to for the match notification).",
+      "Redis-backed queue: single global key in MVP (e.g. a Redis list or sorted set under random-queue:*). Operation is atomic — two simultaneous requests cannot both match the same waiting player.",
+      "When the queue has two players, the backend creates a room with both, assigns sides (random coin flip OR creator-first WHITE — implementer's call, documented in the feature note), and notifies BOTH players via a STOMP RoomMatchedEvent (or the existing RoomJoinedEvent shape, additive).",
+      "Abandonment handling: if a queued player disconnects, explicitly cancels, or times out after N seconds (e.g. 60s), they are removed from the queue cleanly. Leaked queue entries would break future matches.",
+      "Concurrency: two simultaneous queue-joins from the same player do not double-enqueue.",
+      "Integration test covers: two players join the queue → matched into the same room, abandonment removes the entry, simultaneous joins do not double-match, anonymous (X-Player-Id) and authenticated (JWT) eligibility.",
+      "Once feature 22 (time-control) is shipped, the queue partitions by TimeControl (a 5+0 player only matches another 5+0 player). MVP can ship without partitioning.",
+      "docs/architecture.md documents the queue model, abandonment policy, and the time-control partition consideration.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "hotfix-deploy-cors",
+    "title": "Hotfix: auth env vars in docker-compose + CorsConfigurationSource bean for Spring Security 6 filter chain",
+    "description": "Retroactive entry for a same-day production hotfix on 2026-05-29. After the auth bundle (16-20) deployed, three latent issues surfaced together and broke production cross-origin requests from the Cloudflare Pages frontend. (1) docker-compose.prod.yml's `environment:` block declared each env var explicitly and never listed the four auth-bundle vars (AUTH_JWT_SECRET, AUTH_OAUTH_FRONTEND_REDIRECT_BASE, GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET) — docker compose reads .env for variable substitution in the yml but does NOT pass .env entries to the container by default, so Spring saw `auth.jwt.secret` as blank and AuthProperties.Jwt's compact constructor failed boot fast. (2) CorsConfig.java relied on WebMvcConfigurer.addCorsMappings, which operates at the DispatcherServlet level — AFTER the security filter chain. Feature 16's SecurityConfig.cors(Customizer.withDefaults()) requires a CorsConfigurationSource bean to handle preflights at the filter-chain level; without it, OPTIONS preflights returned 200 but with no CORS headers, browsers blocked the cross-origin POST. (3) An initial fix attempt for (1) included `CHESS_CORS_ALLOWED_ORIGIN_PATTERNS: ${CHESS_CORS_ALLOWED_ORIGIN_PATTERNS:-}` — the empty-default substitution passed an empty string to the container, overriding application.yml's correct production default (https://chess-frontend-52i.pages.dev,http://localhost:*), tripping the CorsProperties compact constructor. The fix removed the line entirely; if a future operator wants to override CORS at runtime they wire `${CHESS_CORS_ALLOWED_ORIGIN_PATTERNS}` (no `:-` default) and set the value in .env. Skipped the full harness cycle because the bugs were independently obvious and production was broken — leader applied edits directly, ./init.sh verified green locally, user committed and deployed. Documented retroactively here and in progress/history.md to preserve the rastro the harness usually provides.",
+    "status": "done",
+    "priority": 25,
+    "acceptance": [
+      "docker-compose.prod.yml `environment:` block on the app service now passes AUTH_JWT_SECRET, AUTH_OAUTH_FRONTEND_REDIRECT_BASE, GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET to the container via `${VAR}` substitution from /opt/chess/.env.",
+      "CorsConfig.java exposes a CorsConfigurationSource bean built from the same CorsProperties as the WebMvcConfigurer.addCorsMappings path, so Spring Security's filter-chain CORS handling and the dispatcher-level CORS handling stay in sync (single source of truth preserved from feature 10).",
+      "CHESS_CORS_ALLOWED_ORIGIN_PATTERNS is deliberately NOT in the docker-compose.prod.yml environment block; application.yml's production default applies unless an operator wires it explicitly.",
+      "Post-deploy smoke test: OPTIONS preflight to /api/rooms with Origin https://chess-frontend-52i.pages.dev returns 200 with access-control-allow-origin matching the origin; frontend successfully creates a room via cross-origin POST.",
+      "./init.sh passes (verified before user push).",
+      "Documented in progress/history.md as a retroactive entry with the operational lesson about docker-compose.prod.yml drift between repo and EC2 (the immediate predecessor of feature 26)."
+    ]
+  },
+  {
+    "id": "deploy-config-sync",
+    "title": "Sync docker-compose.prod.yml to EC2 on every deploy (eliminate manual drift)",
+    "description": "Operational hardening surfaced by feature 25. The deploy.yml workflow currently does `docker compose pull && up -d` against the docker-compose.prod.yml that already lives on the EC2 host. The yml on EC2 is independent of the yml in the repo — any edit to the repo's yml does NOT reach production. Feature 25's same-day hotfix required manual SSH edits to /opt/chess/docker-compose.prod.yml because of this; without that, the env-var fix in the repo would have shipped to a host that ignored it. Solution: add an `scp` step (or rsync with --checksum) to deploy.yml that copies the repo's docker-compose.prod.yml to /opt/chess/ on the EC2 host BEFORE `docker compose pull && up -d` runs. The /opt/chess/.env stays manually managed on EC2 (credentials must not be in the repo); only the yml syncs.",
+    "status": "pending",
+    "priority": 26,
+    "acceptance": [
+      "deploy.yml gains an `scp` (or equivalent) step that copies docker-compose.prod.yml from the workflow runner to /opt/chess/docker-compose.prod.yml on EC2, preserving the existing file mode and owner.",
+      "The new step runs BEFORE the `docker compose pull && up -d` step so the new yml is the one compose reads.",
+      "The /opt/chess/.env file is NEVER touched by the workflow — it stays operator-managed on the EC2 host (credentials live there).",
+      "If the yml has not changed since the last deploy, the sync is a no-op (or at worst a redundant write — acceptable).",
+      "After this feature ships, a future change to docker-compose.prod.yml in the repo lands on EC2 with the next push to main; no manual SSH edit required.",
+      "Smoke test: edit docker-compose.prod.yml (e.g. add a harmless comment), push, confirm the file on EC2 reflects the change after the deploy completes.",
+      "docs/architecture.md and docs/deploy-runbook.md document the yml-sync behaviour and the env-file's continued operator-managed status.",
+      "./init.sh passes (no application-code changes expected)."
+    ]
   }
 ]

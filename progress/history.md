@@ -2306,3 +2306,66 @@ The bundle was originally planned upfront at 5 features with 7 locked technical 
 - Replace the static test-count claim in `README.md` with a dynamic count (now reads 212; will drift on every future feature).
 
 The repo returns to maintenance mode. Future work in this codebase enters via new `feature_list.json` entries with priority ≥ 21 — same pattern as features 15 and 16–20 (themselves maintenance reopens past the 2026-05-25 portfolio-closure milestone).
+
+---
+
+## 2026-05-29 — hotfix-deploy-cors (feature 25, retroactive)
+
+**Status:** done. **Retroactive entry — bypassed the full harness cycle because production was broken and the bugs were independently obvious.**
+
+**Summary:** Same-day production hotfix after the auth bundle (16–20) deployed and three latent issues surfaced together. The deploy initially succeeded (Swagger loaded after the user manually added `AUTH_JWT_SECRET` to `/opt/chess/.env`), but the frontend's first cross-origin POST to `/api/rooms` was blocked by CORS. A re-run of the GitHub Actions deploy then failed at the smoke test with the container in a crash loop. Three distinct bugs, in the order they surfaced:
+
+**Bug 1 — `docker-compose.prod.yml environment:` block missed the bundle's env vars.** The yml explicitly declared which env vars to pass to the container (`SPRING_DATASOURCE_*`, `SPRING_DATA_REDIS_*`) and never listed `AUTH_JWT_SECRET`, `AUTH_OAUTH_FRONTEND_REDIRECT_BASE`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`. Docker Compose reads `.env` for substitution inside the yml (`${VAR}` placeholders), but it does NOT pass `.env` entries to the container by default. So even with the four vars correctly set in `/opt/chess/.env`, the recreated container never received them — Spring saw `auth.jwt.secret` as blank and `AuthProperties.Jwt`'s compact constructor failed boot fast with `auth.jwt.secret must be set`. The user's first manual fix (`docker compose restart app`) worked because `restart` reuses the existing container's previously-injected environment — the bundle's first boot must have been built before the bundle code shipped. The CI deploy's `docker compose up -d` recreates the container and exposes the gap. Fix: added the four vars to `docker-compose.prod.yml` `environment:` block as `${VAR}` references so substitution flows from `.env` into the container.
+
+**Bug 2 — `CorsConfig.java` didn't expose a `CorsConfigurationSource` bean.** Pre-bundle, `CorsConfig implements WebMvcConfigurer` and overrode `addCorsMappings(CorsRegistry)`. That API operates at the `DispatcherServlet` level (AFTER the security filter chain). Feature 16's `SecurityConfig.cors(Customizer.withDefaults())` requires a `CorsConfigurationSource` bean to handle preflights at the filter-chain level. Without it, OPTIONS preflights handled by Spring Security returned 200 but with no CORS headers — the browser blocked the cross-origin POST. The reviewer-approved `BearerCorsIT` covered the header echo path via `MockMvc`, but `MockMvc`'s CORS handling differs subtly from the real filter-chain behaviour and did not catch this gap. Fix: added a `@Bean public CorsConfigurationSource corsConfigurationSource()` that reads from the same `CorsProperties` as the existing `addCorsMappings` path, preserving the single-source-of-truth principle from feature 10. Both the filter-chain layer and the dispatcher-level layer now agree on policy.
+
+**Bug 3 — self-inflicted `CHESS_CORS_ALLOWED_ORIGIN_PATTERNS: ${...:-}` empty default overrode application.yml.** The first patch attempt for bug 1 also added `CHESS_CORS_ALLOWED_ORIGIN_PATTERNS: ${CHESS_CORS_ALLOWED_ORIGIN_PATTERNS:-}` to the `environment:` block to keep the CORS allow-list overrideable. The `:-` empty default meant docker compose substituted an empty string when the env var was absent (which it was — no `CHESS_CORS_*` in `/opt/chess/.env`), and the container received `CHESS_CORS_ALLOWED_ORIGIN_PATTERNS=""`. Spring saw the env var as SET-BUT-EMPTY, which overrode `application.yml`'s production default (`https://chess-frontend-52i.pages.dev,http://localhost:*`), and `CorsProperties`'s compact constructor rejected the empty list with `chess.cors.allowed-origin-patterns must be set`. Boot failed again. Fix: removed the line entirely. If a future operator wants to override CORS at runtime, they wire `${CHESS_CORS_ALLOWED_ORIGIN_PATTERNS}` (no `:-` default) and set the value in `.env`. The yml comment documents this explicitly so the next operator doesn't reintroduce the trap.
+
+**Why no full harness cycle:** the bugs were independently confirmed via logs (Spring's boot failure message names the bound property and reason), the patches were small and self-contained (5 lines in the yml, ~25 lines in `CorsConfig.java`), and production was visibly broken — the leader's call was to apply the edits directly and verify locally with `./init.sh` before user push, rather than plan + implementer + reviewer round-trips. The retroactive feature entry plus this history entry document the rastro the harness usually provides.
+
+**Operational lesson surfaced (becomes feature 26):** the `docker-compose.prod.yml` on EC2 is independent of the file in the repo. The `deploy.yml` workflow runs `docker compose pull && up -d` against the yml that already lives on the host — any edit to the yml in the repo never reaches production. The user had to SSH twice during this hotfix to edit `/opt/chess/docker-compose.prod.yml` manually (once for bug 1's fix, once for bug 3's fix), even though both fixes were also committed to the repo. The proper resolution is feature 26 (`deploy-config-sync`), which adds an `scp` step to `deploy.yml` that copies the repo's yml to EC2 on every deploy. This entry stays as a marker that the drift was the underlying enabler of the multi-cycle hotfix.
+
+**Verification at close:** `OPTIONS /api/rooms` from origin `https://chess-frontend-52i.pages.dev` returns 200 with `access-control-allow-origin: https://chess-frontend-52i.pages.dev`, `access-control-allow-methods: GET,POST,PUT,DELETE,OPTIONS`, `access-control-allow-headers: Content-Type` (and the rest of the allow-list on demand), `via: 1.1 Caddy`. Frontend confirmed end-to-end: cross-origin POST creates the room, second player joins, game starts. The full auth bundle is live in production at last.
+
+**Files touched:**
+
+- `docker-compose.prod.yml` (modified; four `AUTH_*` / `GOOGLE_*` env vars added to the app service `environment:` block via `${VAR}` substitution; `CHESS_CORS_ALLOWED_ORIGIN_PATTERNS` line was added then removed in two cycles, with a final comment block explaining why the env-var override is not pre-wired and how to add it safely if ever needed)
+- `src/main/java/io/github/dariogguillen/chess/config/CorsConfig.java` (modified; new `@Bean public CorsConfigurationSource corsConfigurationSource()` reading from the same `CorsProperties` as `addCorsMappings`; the original `WebMvcConfigurer.addCorsMappings` path is preserved untouched so the dispatcher-level CORS handling continues to apply to non-Spring-Security request paths)
+- `feature_list.json` (new entries `hotfix-deploy-cors` priority 25 status done and `deploy-config-sync` priority 26 status pending)
+- `progress/history.md` (this entry)
+
+**No new tests added.** `./init.sh` verified green locally before user push (Spotless auto-format ran on `CorsConfig.java`; no other code changes). Adding an IT that would catch this regression would require a `MockMvc`-without-shortcut test path that exercises the actual filter chain ordering — feasible but out of scope for the hotfix; tracked as a future tightening of `BearerCorsIT` / `CorsConfigIT` if the same shape ever recurs.
+
+**Feature note:** none (the retroactive nature of this entry and the history paragraph here cover the documentation the harness usually places in `notes/NN-*.md`).
+
+---
+
+## 2026-05-29 — color-selection (feature 21)
+
+**Status:** done. Full harness cycle (leader plan → implementer → reviewer → user OK).
+
+**Summary:** Wired the room creator's side preference (WHITE / BLACK / RANDOM) through the create flow. Until now the side was *positional and implicit* — `Room.players[0]` was always the creator and always WHITE, the joiner always BLACK — an invariant locked in by feature 9.5 and read directly by `RoomDetailsMapper` (role-by-index), by `RoomController`'s hardcoded role constants, and by `RoomService.joinRoom` (`white = creator`). Letting the creator pick BLACK breaks that invariant, so the fix **persists the creator's chosen side** on the `Room` and derives every role / white-black decision from it.
+
+**Design:** A new concrete `Side creatorSide` field on the `Room` record. RANDOM is resolved server-side **at create time** (anti-cheat coin flip via a new injectable `RandomSideChooser`, `SecureRandom`-backed, mirroring `RoomCodeGenerator`'s ownership of randomness), so the domain never stores RANDOM — the creator learns their colour immediately in the create response and the joiner always gets the opposite. Request intent is a new `domain/SidePreference` enum `{WHITE, BLACK, RANDOM}`, kept distinct from the domain `Side {WHITE, BLACK}` (a real side-to-move / piece owner).
+
+**Backwards-compatibility** reused the exact record-evolution pattern from `Player.userId` (feature 19): canonical 4-arg `Room` constructor + a convenience 3-arg constructor defaulting `creatorSide = WHITE` + a compact constructor that maps a `null` `creatorSide` to WHITE *before* the other validations. Result: every existing `new Room(...)` call site (RedisRoomStoreIT, RedisTtlIT, RoomTest, RoomDetailsMapperTest) compiled unchanged, and Jackson deserialisation of rooms serialised into Redis before the deploy stays valid (null component → WHITE). `CreateRoomRequest.preferredSide` is nullable and defaults to WHITE, so frontends that never send the field behave exactly as before — additive, backwards-compatible, no coordinated breaking change (the frontend was deliberately kept un-blocked).
+
+**Reviewer verdict:** approved. `./init.sh` green; +14 new test methods (RoomServiceTest 2, RoomTest 3, RoomDetailsMapperTest 1, RoomControllerIT 6, RoomDetailsControllerIT 2), all green. No fully-qualified names, constructor injection only, no new pom deps, README correctly untouched (out of scope), `docs/architecture.md` API-contract updated.
+
+**Files touched:**
+
+- `src/main/java/io/github/dariogguillen/chess/domain/SidePreference.java` (new; request-intent enum)
+- `src/main/java/io/github/dariogguillen/chess/service/RandomSideChooser.java` (new; `SecureRandom`-backed `Side choose()` seam)
+- `src/main/java/io/github/dariogguillen/chess/domain/Room.java` (modified; `creatorSide` field, canonical + convenience constructors, null→WHITE compact constructor, JavaDoc)
+- `src/main/java/io/github/dariogguillen/chess/service/RoomService.java` (modified; injected `RandomSideChooser`; `createRoom` accepts `SidePreference` and resolves it via `resolveCreatorSide`; `joinRoom` assigns the joiner the opposite side and builds the `Game` white/black from the stored side)
+- `src/main/java/io/github/dariogguillen/chess/web/room/CreateRoomRequest.java` (modified; nullable `SidePreference preferredSide` with `@Schema`)
+- `src/main/java/io/github/dariogguillen/chess/web/room/RoomController.java` (modified; resolved role on create, opposite on join; removed hardcoded role constants)
+- `src/main/java/io/github/dariogguillen/chess/web/room/RoomDetailsMapper.java` (modified; roles derived from `creatorSide`; JavaDoc)
+- `src/main/java/io/github/dariogguillen/chess/web/room/RoomDetailsResponse.java`, `RoomResponse.java` (modified; `@Schema` / JavaDoc corrected for the chosen-side semantics)
+- `src/test/java/io/github/dariogguillen/chess/service/RoomServiceTest.java` (new; stubbed-chooser RANDOM determinism + BLACK-creator white/black assignment)
+- `src/test/java/io/github/dariogguillen/chess/domain/RoomTest.java`, `web/room/RoomDetailsMapperTest.java`, `web/room/RoomControllerIT.java`, `web/room/RoomDetailsControllerIT.java` (modified; extended coverage)
+- `docs/architecture.md` (modified; API-contract section documents `preferredSide` and the positional→`creatorSide` role-derivation change)
+- `notes/21-color-selection.md` (new; feature note)
+- `feature_list.json` (`color-selection` status → done)
+
+**Feature note:** [`notes/21-color-selection.md`](../notes/21-color-selection.md).

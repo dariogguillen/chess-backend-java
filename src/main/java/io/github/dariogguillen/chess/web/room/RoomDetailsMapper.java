@@ -2,6 +2,7 @@ package io.github.dariogguillen.chess.web.room;
 
 import io.github.dariogguillen.chess.domain.Player;
 import io.github.dariogguillen.chess.domain.Room;
+import io.github.dariogguillen.chess.domain.Side;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -15,12 +16,13 @@ import org.springframework.stereotype.Component;
  * thin.
  *
  * <p><strong>Role derivation.</strong> The domain {@code Player} record has no {@code role} field.
- * Role is computed here from the position of each player in {@link Room#players()}: index 0 is
- * always WHITE (the creator), index 1 (when present) is always BLACK (the joiner). This mirrors the
+ * Since feature 21 (`color-selection`) role is computed from {@link Room#creatorSide()}, not from
+ * list position alone: the player at index 0 (always the creator) holds {@code creatorSide}, and
+ * the player at index 1 (when present, always the joiner) holds the opposite. This mirrors the
  * invariant maintained by {@code RoomService} — {@code createRoom} produces a 1-element list with
- * the creator at position 0; {@code joinRoom} appends the joiner at position 1. Any future feature
- * that rearranges {@code Room.players} would break the role-derivation contract; the deliberate
- * trade-off is keeping the domain minimal in exchange for a position-sensitive mapper.
+ * the creator at position 0 and stores their resolved side; {@code joinRoom} appends the joiner at
+ * position 1 and gives them the opposite. Position still identifies <em>who</em> a player is
+ * (creator vs joiner); {@code creatorSide} decides <em>which colour</em> each one plays.
  */
 @Component
 public class RoomDetailsMapper {
@@ -40,10 +42,12 @@ public class RoomDetailsMapper {
    */
   public RoomDetailsResponse toResponse(Room room, Optional<UUID> gameId) {
     List<Player> sourcePlayers = room.players();
+    String creatorRole = (room.creatorSide() == Side.WHITE) ? ROLE_WHITE : ROLE_BLACK;
+    String joinerRole = (room.creatorSide() == Side.WHITE) ? ROLE_BLACK : ROLE_WHITE;
     List<PlayerInRoom> mapped = new ArrayList<>(sourcePlayers.size());
     for (int i = 0; i < sourcePlayers.size(); i++) {
       Player player = sourcePlayers.get(i);
-      String role = (i == 0) ? ROLE_WHITE : ROLE_BLACK;
+      String role = (i == 0) ? creatorRole : joinerRole;
       mapped.add(new PlayerInRoom(player.id(), player.displayName(), role));
     }
     return new RoomDetailsResponse(

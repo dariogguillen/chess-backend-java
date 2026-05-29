@@ -22,7 +22,9 @@ import java.util.UUID;
  *
  * @param roomId the room id (six-character short code on create, the same id passed in on join).
  * @param playerId the server-assigned UUID for the caller.
- * @param role {@code "WHITE"} for the creator, {@code "BLACK"} for the joiner.
+ * @param role the caller's resolved side: on create the side the creator chose ({@code "WHITE"} by
+ *     default, {@code "BLACK"} if requested, or a coin-flip result for {@code RANDOM}); on join the
+ *     opposite of the creator's side.
  * @param gameId the freshly created game id on join; {@code null} on create.
  */
 public record RoomResponse(
@@ -38,7 +40,9 @@ public record RoomResponse(
         UUID playerId,
     @Schema(
             description =
-                "Side assigned to the caller. WHITE for the room creator, BLACK for the joiner.",
+                "Side assigned to the caller. On create it is the creator's chosen side (WHITE by "
+                    + "default, or BLACK / a RANDOM coin-flip result if requested); on join it is "
+                    + "the opposite of the creator's side.",
             example = "WHITE")
         String role,
     @Schema(

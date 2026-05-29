@@ -34,9 +34,9 @@ public record RoomDetailsResponse(
         String roomId,
     @Schema(
             description =
-                "Players in the room. Index 0 is the creator (WHITE); index 1 (when present) is "
-                    + "the joiner (BLACK). The array has 1 element while WAITING_FOR_PLAYER and 2 "
-                    + "while ACTIVE.")
+                "Players in the room. Index 0 is the creator and holds the side they chose at "
+                    + "create time; index 1 (when present) is the joiner and holds the opposite "
+                    + "side. The array has 1 element while WAITING_FOR_PLAYER and 2 while ACTIVE.")
         List<PlayerInRoom> players,
     @Schema(
             description =

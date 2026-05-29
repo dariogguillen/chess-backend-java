@@ -75,6 +75,35 @@ class RoomDetailsControllerIT {
   }
 
   @Test
+  void getRoom_blackCreator_waitingForPlayer_reflectsChosenSide() throws Exception {
+    String roomId = createRoomAndReturnId("Alice", "BLACK");
+
+    mockMvc
+        .perform(get("/api/rooms/{id}", roomId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status", equalTo("WAITING_FOR_PLAYER")))
+        .andExpect(jsonPath("$.players", hasSize(1)))
+        .andExpect(jsonPath("$.players[0].displayName", equalTo("Alice")))
+        .andExpect(jsonPath("$.players[0].role", equalTo("BLACK")));
+  }
+
+  @Test
+  void getRoom_blackCreator_active_reflectsChosenSideForBothPlayers() throws Exception {
+    String roomId = createRoomAndReturnId("Alice", "BLACK");
+    joinRoom(roomId, "Bob");
+
+    mockMvc
+        .perform(get("/api/rooms/{id}", roomId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status", equalTo("ACTIVE")))
+        .andExpect(jsonPath("$.players", hasSize(2)))
+        .andExpect(jsonPath("$.players[0].displayName", equalTo("Alice")))
+        .andExpect(jsonPath("$.players[0].role", equalTo("BLACK")))
+        .andExpect(jsonPath("$.players[1].displayName", equalTo("Bob")))
+        .andExpect(jsonPath("$.players[1].role", equalTo("WHITE")));
+  }
+
+  @Test
   void getRoom_unknownId_returns404RoomNotFound() throws Exception {
     mockMvc
         .perform(get("/api/rooms/{id}", "NOPE99"))
@@ -91,6 +120,24 @@ class RoomDetailsControllerIT {
                 post("/api/rooms")
                     .contentType(MediaType.APPLICATION_JSON)
                     .content("{\"displayName\":\"" + displayName + "\"}"))
+            .andExpect(status().isCreated())
+            .andReturn();
+    JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+    return body.get("roomId").asText();
+  }
+
+  private String createRoomAndReturnId(String displayName, String preferredSide) throws Exception {
+    MvcResult result =
+        mockMvc
+            .perform(
+                post("/api/rooms")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(
+                        "{\"displayName\":\""
+                            + displayName
+                            + "\",\"preferredSide\":\""
+                            + preferredSide
+                            + "\"}"))
             .andExpect(status().isCreated())
             .andReturn();
     JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());

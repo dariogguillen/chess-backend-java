@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import io.github.dariogguillen.chess.domain.Player;
 import io.github.dariogguillen.chess.domain.Room;
 import io.github.dariogguillen.chess.domain.RoomStatus;
+import io.github.dariogguillen.chess.domain.Side;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -12,9 +13,9 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Unit coverage for the role-derivation rule inside {@link RoomDetailsMapper}. Role is computed
- * from the position of each {@link Player} in {@link Room#players()} — index 0 is WHITE, index 1 is
- * BLACK — and these two tests pin both phases of the lifecycle. The mapper is pure, so it does not
- * need a Spring context.
+ * from {@link Room#creatorSide()}: the creator (index 0) holds that side, the joiner (index 1)
+ * holds the opposite. These tests pin both phases of the lifecycle and both creator sides. The
+ * mapper is pure, so it does not need a Spring context.
  */
 class RoomDetailsMapperTest {
 
@@ -58,5 +59,22 @@ class RoomDetailsMapperTest {
     assertThat(black.id()).isEqualTo(joiner.id());
     assertThat(black.displayName()).isEqualTo("Bob");
     assertThat(black.role()).isEqualTo("BLACK");
+  }
+
+  @Test
+  void derivesBlackForCreatorAndWhiteForJoiner_whenCreatorChoseBlack() {
+    Player creator = new Player(UUID.randomUUID(), "Alice");
+    Player joiner = new Player(UUID.randomUUID(), "Bob");
+    Room room = new Room("ABC123", List.of(creator, joiner), RoomStatus.ACTIVE, Side.BLACK);
+
+    RoomDetailsResponse response = mapper.toResponse(room, Optional.of(UUID.randomUUID()));
+
+    assertThat(response.players()).hasSize(2);
+    PlayerInRoom index0 = response.players().get(0);
+    PlayerInRoom index1 = response.players().get(1);
+    assertThat(index0.id()).isEqualTo(creator.id());
+    assertThat(index0.role()).isEqualTo("BLACK");
+    assertThat(index1.id()).isEqualTo(joiner.id());
+    assertThat(index1.role()).isEqualTo("WHITE");
   }
 }

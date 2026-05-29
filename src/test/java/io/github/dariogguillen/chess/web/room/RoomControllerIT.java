@@ -1,6 +1,7 @@
 package io.github.dariogguillen.chess.web.room;
 
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.isOneOf;
 import static org.hamcrest.Matchers.matchesPattern;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.nullValue;
@@ -51,6 +52,77 @@ class RoomControllerIT {
         .andExpect(jsonPath("$.playerId", matchesPattern(UUID_PATTERN)))
         .andExpect(jsonPath("$.role", equalTo("WHITE")))
         .andExpect(jsonPath("$.gameId", nullValue()));
+  }
+
+  @Test
+  void createRoom_preferredSideWhite_returnsRoleWhite() throws Exception {
+    mockMvc
+        .perform(
+            post("/api/rooms")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"Alice\",\"preferredSide\":\"WHITE\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.role", equalTo("WHITE")));
+  }
+
+  @Test
+  void createRoom_preferredSideBlack_returnsRoleBlack() throws Exception {
+    mockMvc
+        .perform(
+            post("/api/rooms")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"Alice\",\"preferredSide\":\"BLACK\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.role", equalTo("BLACK")));
+  }
+
+  @Test
+  void createRoom_preferredSideOmitted_defaultsToWhite() throws Exception {
+    // Regression for the existing frontend version that does not send the field.
+    mockMvc
+        .perform(
+            post("/api/rooms")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"Alice\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.role", equalTo("WHITE")));
+  }
+
+  @Test
+  void createRoom_preferredSideRandom_returnsConcreteSideNeverRandom() throws Exception {
+    mockMvc
+        .perform(
+            post("/api/rooms")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"Alice\",\"preferredSide\":\"RANDOM\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.role", isOneOf("WHITE", "BLACK")));
+  }
+
+  @Test
+  void joinRoom_whiteCreator_joinerGetsBlack() throws Exception {
+    String roomId = createRoomAndReturnId("Alice", "WHITE");
+
+    mockMvc
+        .perform(
+            post("/api/rooms/{id}/join", roomId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"Bob\"}"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.role", equalTo("BLACK")));
+  }
+
+  @Test
+  void joinRoom_blackCreator_joinerGetsWhite() throws Exception {
+    String roomId = createRoomAndReturnId("Alice", "BLACK");
+
+    mockMvc
+        .perform(
+            post("/api/rooms/{id}/join", roomId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"Bob\"}"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.role", equalTo("WHITE")));
   }
 
   @Test
@@ -152,6 +224,24 @@ class RoomControllerIT {
                 post("/api/rooms")
                     .contentType(MediaType.APPLICATION_JSON)
                     .content("{\"displayName\":\"" + displayName + "\"}"))
+            .andExpect(status().isCreated())
+            .andReturn();
+    JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+    return body.get("roomId").asText();
+  }
+
+  private String createRoomAndReturnId(String displayName, String preferredSide) throws Exception {
+    MvcResult result =
+        mockMvc
+            .perform(
+                post("/api/rooms")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(
+                        "{\"displayName\":\""
+                            + displayName
+                            + "\",\"preferredSide\":\""
+                            + preferredSide
+                            + "\"}"))
             .andExpect(status().isCreated())
             .andReturn();
     JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());

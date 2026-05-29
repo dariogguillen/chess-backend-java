@@ -87,6 +87,27 @@ class RoomTest {
   }
 
   @Test
+  void shouldDefaultCreatorSideToWhite_whenUsingThreeArgConstructor() {
+    Room room = new Room("r-1", List.of(ALICE), RoomStatus.WAITING_FOR_PLAYER);
+
+    assertThat(room.creatorSide()).isEqualTo(Side.WHITE);
+  }
+
+  @Test
+  void shouldStoreCreatorSide_whenUsingFourArgConstructor() {
+    Room room = new Room("r-1", List.of(ALICE), RoomStatus.WAITING_FOR_PLAYER, Side.BLACK);
+
+    assertThat(room.creatorSide()).isEqualTo(Side.BLACK);
+  }
+
+  @Test
+  void shouldDefaultCreatorSideToWhite_whenCreatorSideIsNull() {
+    Room room = new Room("r-1", List.of(ALICE), RoomStatus.WAITING_FOR_PLAYER, null);
+
+    assertThat(room.creatorSide()).isEqualTo(Side.WHITE);
+  }
+
+  @Test
   void shouldReturnUnmodifiableView_fromPlayers() {
     Room room = new Room("r-1", List.of(ALICE), RoomStatus.WAITING_FOR_PLAYER);
 

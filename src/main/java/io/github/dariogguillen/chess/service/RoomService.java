@@ -5,6 +5,8 @@ import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.domain.Player;
 import io.github.dariogguillen.chess.domain.Room;
 import io.github.dariogguillen.chess.domain.RoomStatus;
+import io.github.dariogguillen.chess.domain.Side;
+import io.github.dariogguillen.chess.domain.SidePreference;
 import io.github.dariogguillen.chess.exception.RoomFullException;
 import io.github.dariogguillen.chess.exception.RoomNotFoundException;
 import io.github.dariogguillen.chess.websocket.RoomJoinedEvent;
@@ -48,41 +50,54 @@ public class RoomService {
   private final RoomCodeGenerator codeGenerator;
   private final ChessRules chessRules;
   private final SimpMessagingTemplate messagingTemplate;
+  private final RandomSideChooser randomSideChooser;
 
   public RoomService(
       RoomStore roomStore,
       GameStore gameStore,
       RoomCodeGenerator codeGenerator,
       ChessRules chessRules,
-      SimpMessagingTemplate messagingTemplate) {
+      SimpMessagingTemplate messagingTemplate,
+      RandomSideChooser randomSideChooser) {
     this.roomStore = roomStore;
     this.gameStore = gameStore;
     this.codeGenerator = codeGenerator;
     this.chessRules = chessRules;
     this.messagingTemplate = messagingTemplate;
+    this.randomSideChooser = randomSideChooser;
   }
 
   /**
-   * Creates a new room with the caller as its single player (who becomes White). The room id is a
-   * fresh six-character short code; on the (extraordinarily unlikely) event of a collision against
-   * an existing room, the service retries with a freshly generated code up to {@value
-   * #MAX_CODE_ATTEMPTS} times.
+   * Creates a new room with the caller as its single player. The creator's side is the resolution
+   * of {@code preferredSide}: {@link SidePreference#WHITE} / {@link SidePreference#BLACK} pass
+   * through to the matching {@link Side}; {@link SidePreference#RANDOM} is resolved by a
+   * server-side coin flip via {@link RandomSideChooser} (the client cannot bias it); a {@code null}
+   * preference defaults to {@link Side#WHITE} for backwards compatibility with clients that do not
+   * send the field. The resolved concrete {@link Side} is stored on the {@link Room} so the joiner
+   * can take the opposite and every role decision derives from it rather than from list position.
+   *
+   * <p>The room id is a fresh six-character short code; on the (extraordinarily unlikely) event of
+   * a collision against an existing room, the service retries with a freshly generated code up to
+   * {@value #MAX_CODE_ATTEMPTS} times.
    *
    * @param displayName the human-readable name of the creator; passed through to the {@link Player}
    *     record.
+   * @param preferredSide the creator's requested side; {@code null} defaults to {@link Side#WHITE}.
    * @param currentUserId the authenticated user's id when the request carried a valid Bearer JWT,
    *     {@code null} for anonymous guest creation. Threaded into the new {@link Player}'s {@code
    *     userId} field so the archive path can populate {@code games.white_user_id} when the game
    *     terminates (feature 19, `auth-my-games`).
-   * @return the freshly created room with one player and status {@link
-   *     RoomStatus#WAITING_FOR_PLAYER}, plus the synthesised {@link Player} so the caller can
-   *     surface the assigned player id.
+   * @return the freshly created room with one player, the resolved {@code creatorSide}, and status
+   *     {@link RoomStatus#WAITING_FOR_PLAYER}, plus the synthesised {@link Player} so the caller
+   *     can surface the assigned player id.
    * @throws IllegalStateException if {@value #MAX_CODE_ATTEMPTS} consecutive generated codes all
    *     collide with existing rooms — a system-level failure indicating either a near-full keyspace
    *     or a broken {@link RoomCodeGenerator}.
    */
-  public CreatedRoom createRoom(String displayName, UUID currentUserId) {
+  public CreatedRoom createRoom(
+      String displayName, SidePreference preferredSide, UUID currentUserId) {
     Player creator = new Player(UUID.randomUUID(), displayName, currentUserId);
+    Side creatorSide = resolveCreatorSide(preferredSide);
     for (int attempt = 1; attempt <= MAX_CODE_ATTEMPTS; attempt++) {
       String candidate = codeGenerator.generate();
       Room created =
@@ -92,7 +107,7 @@ public class RoomService {
                 if (existing != null) {
                   return existing;
                 }
-                return new Room(id, List.of(creator), RoomStatus.WAITING_FOR_PLAYER);
+                return new Room(id, List.of(creator), RoomStatus.WAITING_FOR_PLAYER, creatorSide);
               });
       // If compute returned the existing room, our candidate collided and `created`
       // is not the room we built. Retry with a fresh code.
@@ -108,6 +123,23 @@ public class RoomService {
     }
     throw new IllegalStateException(
         "Could not allocate a unique room code after " + MAX_CODE_ATTEMPTS + " attempts.");
+  }
+
+  /**
+   * Resolves a request-level {@link SidePreference} into the concrete {@link Side} the creator will
+   * play. {@code WHITE} / {@code BLACK} map directly; {@code RANDOM} delegates to the
+   * server-authoritative {@link RandomSideChooser}; {@code null} (omitted field) defaults to {@link
+   * Side#WHITE} so pre-feature-21 clients keep the historical "creator is white" behaviour.
+   */
+  private Side resolveCreatorSide(SidePreference preferredSide) {
+    if (preferredSide == null) {
+      return Side.WHITE;
+    }
+    return switch (preferredSide) {
+      case WHITE -> Side.WHITE;
+      case BLACK -> Side.BLACK;
+      case RANDOM -> randomSideChooser.choose();
+    };
   }
 
   /**
@@ -138,7 +170,9 @@ public class RoomService {
 
   /**
    * Joins {@code roomId} as the second player and creates the {@link Game} for that room in the
-   * same atomic step. The caller becomes Black; the creator (already on the room) becomes White.
+   * same atomic step. The caller takes the side opposite to the creator's stored {@link
+   * Room#creatorSide()}; the {@link Game}'s {@code white} / {@code black} players are assigned from
+   * whichever of the two holds {@link Side#WHITE} (no longer hardcoded creator → white).
    *
    * <p>The read-check-write block runs inside {@link RoomStore#compute}, which serializes
    * concurrent calls for the same {@code roomId}. Inside the block we validate the room, build the
@@ -184,14 +218,18 @@ public class RoomService {
               List<Player> bothPlayers = new ArrayList<>(2);
               bothPlayers.add(creator);
               bothPlayers.add(joiner);
-              Room nextRoom = new Room(id, bothPlayers, RoomStatus.ACTIVE);
+              Side creatorSide = existing.creatorSide();
+              Room nextRoom = new Room(id, bothPlayers, RoomStatus.ACTIVE, creatorSide);
+              // Assign white/black from the stored creator side rather than from join order.
+              Player white = creatorSide == Side.WHITE ? creator : joiner;
+              Player black = creatorSide == Side.WHITE ? joiner : creator;
               String initialFen = chessRules.standardInitialState().currentFen();
               Game game =
                   new Game(
                       UUID.randomUUID(),
                       id,
-                      creator,
-                      joiner,
+                      white,
+                      black,
                       initialFen,
                       initialFen,
                       GameStatus.ONGOING,
@@ -234,9 +272,10 @@ public class RoomService {
   }
 
   /**
-   * Carrier returned from {@link #createRoom(String)}. The room exposes the assigned id and the
-   * single-element player list; {@code creator} is the player just synthesised, kept separately so
-   * the controller does not have to pick it out of the list.
+   * Carrier returned from {@link #createRoom(String, SidePreference, UUID)}. The room exposes the
+   * assigned id, the resolved {@code creatorSide}, and the single-element player list; {@code
+   * creator} is the player just synthesised, kept separately so the controller does not have to
+   * pick it out of the list.
    */
   public record CreatedRoom(Room room, Player creator) {}
 

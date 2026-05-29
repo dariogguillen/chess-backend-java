@@ -190,6 +190,46 @@ Adding a new code requires updating both `GlobalExceptionHandler` and
 `OpenApiIT` drift canary asserts the enum array matches the expected
 set exactly, so forgetting one of the two halves fails the build.
 
+#### Room create / join side selection
+
+`POST /api/rooms` accepts an optional `preferredSide` on
+`CreateRoomRequest`:
+
+```
+POST /api/rooms
+{ "displayName": "Alice", "preferredSide": "BLACK" }
+
+201 Created
+{ "roomId": "K7M3X9", "playerId": "<uuid>", "role": "BLACK", "gameId": null }
+```
+
+- **`preferredSide`** — enum `WHITE | BLACK | RANDOM`. **Optional**:
+  omitting it (or sending `null`) defaults to `WHITE`, so clients built
+  before this feature keep the historical "creator is white" behaviour
+  unchanged. `RANDOM` is resolved to a concrete side by a
+  **server-side coin flip** (`RandomSideChooser`, `SecureRandom`-backed)
+  so a client cannot bias the outcome — the same anti-cheat posture as
+  server-side move validation. Being an enum, springdoc emits the
+  allowable values into the OpenAPI schema, which `openapi-typescript`
+  turns into a literal union on the frontend.
+- **Create response `role`** — now reflects the **resolved** side, not a
+  hardcoded `WHITE`: it can be `BLACK` when the creator asked for it (or
+  when `RANDOM` flipped to black). It is always a concrete side, never
+  `RANDOM`.
+- **Join response `role`** — the **opposite** of the creator's chosen
+  side (so a black creator yields a white joiner). The `Game`'s `white`
+  / `black` players are assigned from whoever holds `WHITE`, no longer
+  from join order.
+- **Where the side lives** — the resolved side is persisted as
+  `Room.creatorSide` (a concrete `Side`). This replaces the previous
+  positional invariant "`players[0]` is always white": position now
+  identifies *who* a player is (creator vs joiner), while `creatorSide`
+  decides *which colour* each one plays. `Room` evolves with the same
+  backwards-compatible record pattern as `Player.userId` — a
+  null-tolerant compact constructor plus a 3-arg convenience constructor
+  defaulting to `WHITE`, so rooms serialised into Redis before this
+  deploy deserialise as white-creator rooms.
+
 #### Room read endpoint
 
 `GET /api/rooms/{id}` returns the current state of a room, used by
@@ -219,12 +259,13 @@ GET /api/rooms/{id}
   `ACTIVE`, or `CLOSED`. No mapping to a presentation-specific
   vocabulary; the frontend uses the literals directly.
 - **`players`** — 1 element while `WAITING_FOR_PLAYER`, 2 elements
-  while `ACTIVE`. Role is **derived at the web boundary** from the
-  player's position in the array: index 0 is `WHITE` (the
-  creator), index 1 (when present) is `BLACK` (the joiner). The
-  domain `Player` record has no `role` field — the deliberate
-  trade-off keeps the domain minimal at the cost of a
-  position-sensitive mapper.
+  while `ACTIVE`. Role is **derived at the web boundary** from
+  `Room.creatorSide`: index 0 is the creator and holds that side,
+  index 1 (when present) is the joiner and holds the opposite. (Before
+  feature 21 this was a pure index→role mapping with index 0 always
+  `WHITE`.) The domain `Player` record has no `role` field — the
+  deliberate trade-off keeps the domain minimal at the cost of a
+  position-plus-creatorSide mapper.
 - **`gameId`** — `null` while `WAITING_FOR_PLAYER` (no game has
   been created yet); non-`null` once `ACTIVE`.
 - **404 `ROOM_NOT_FOUND`** — when the id does not match any room.
