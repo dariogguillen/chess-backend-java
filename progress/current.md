@@ -50,10 +50,16 @@ classes, `docs/architecture.md`, `feature_list.json`, and
 - New features get a full harness cycle (leader plan → implementer →
   reviewer → user OK → feature note → history entry). Diff size is
   irrelevant.
-- Sub-agent dispatch caveat: the `implementer` / `reviewer` agent types
-  are **not** registered as Agent `subagent_type`s in this environment.
-  Launch them as `general-purpose` agents with a prompt that tells them
-  to adopt the role by reading `.claude/agents/{implementer,reviewer}.md`.
+- Sub-agent dispatch: as of 2026-05-29 the `.claude/agents/*.md` files
+  (leader, implementer, reviewer) gained YAML frontmatter (`name` +
+  `description`) so Claude Code registers them as invocable
+  `subagent_type`s. **The registry is read at session start**, so the
+  first session after this change must be a *fresh* one for
+  `Agent(subagent_type: "implementer" | "reviewer")` to resolve — it was
+  added mid-session and did not take effect in that session. If a session
+  still reports `Agent type 'implementer' not found`, fall back to
+  launching a `general-purpose` agent told to adopt the role by reading
+  `.claude/agents/{implementer,reviewer}.md`.
 - Per [[feedback-user-handles-commits]]: never `git add` / `git commit`
   here — the user commits. Tell delegated implementer agents this
   explicitly (it overrides the implementer role file's "make small
