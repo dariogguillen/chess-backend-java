@@ -262,6 +262,55 @@ class RoomControllerIT {
         .andExpect(jsonPath("$.error", equalTo("MALFORMED_REQUEST")));
   }
 
+  @Test
+  void createRoom_botEloBelowMin_returns400() throws Exception {
+    // 1319 is one below the engine's UCI_Elo floor (1320); Bean Validation rejects it.
+    mockMvc
+        .perform(
+            post("/api/rooms")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"Alice\",\"opponentKind\":\"BOT\",\"botElo\":1319}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.error", equalTo("VALIDATION_FAILED")))
+        .andExpect(jsonPath("$.message").exists());
+  }
+
+  @Test
+  void createRoom_botEloAboveMax_returns400() throws Exception {
+    // 3191 is one above the engine's UCI_Elo ceiling (3190); Bean Validation rejects it.
+    mockMvc
+        .perform(
+            post("/api/rooms")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"Alice\",\"opponentKind\":\"BOT\",\"botElo\":3191}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.error", equalTo("VALIDATION_FAILED")))
+        .andExpect(jsonPath("$.message").exists());
+  }
+
+  @Test
+  void createRoom_botEloInRange_returns201() throws Exception {
+    mockMvc
+        .perform(
+            post("/api/rooms")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"Alice\",\"opponentKind\":\"BOT\",\"botElo\":2200}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.gameId", not(nullValue())));
+  }
+
+  @Test
+  void createRoom_botOpponentNullElo_returns201() throws Exception {
+    // Omitting botElo on a BOT room is accepted — the server applies its configured default.
+    mockMvc
+        .perform(
+            post("/api/rooms")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"Alice\",\"opponentKind\":\"BOT\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.gameId", not(nullValue())));
+  }
+
   private CreatedRoom createRoom(String displayName) throws Exception {
     return createRoomFromBody("{\"displayName\":\"" + displayName + "\"}");
   }

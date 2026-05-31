@@ -507,7 +507,7 @@
     "id": "bot-opponent",
     "title": "Play against a bot (Stockfish via subprocess)",
     "description": "Add a 'Play against the bot' room creation path. When the creator selects BOT as the opponent kind, the backend creates a Game with the creator as one side and a bot (Stockfish) as the other and, on the bot's turn, invokes a chess engine to compute and play a move via the same move-validation + broadcast pipeline a human move uses. Recommendation: Stockfish bundled into the Docker image and driven via subprocess + UCI protocol. Single difficulty in MVP (e.g. skill level 5 or depth 10); difficulty selection is a follow-up. Selected over Java-only minimax because portfolio signal is significantly higher (Stockfish integration is a real-world recruiter signal) and the bot is actually strong enough to be interesting.",
-    "status": "pending",
+    "status": "done",
     "priority": 23,
     "acceptance": [
       "CreateRoomRequest gains an opponentKind field: FRIEND | BOT | RANDOM (null = FRIEND for backwards compatibility). Today only FRIEND exists implicitly.",
@@ -609,6 +609,25 @@
       "Springdoc + docs/architecture.md API contract updated for the new join requirement and the create-response field.",
       "Integration tests: join with valid token succeeds; join with missing/invalid token returns 403; the watch path (GET + room subscribe) needs no token.",
       "Feature note notes/22.7-room-access-tokens.md.",
+      "./init.sh passes."
+    ]
+  },
+  {
+    "id": "bot-difficulty",
+    "title": "Choose the bot's strength by Elo (Stockfish UCI_LimitStrength)",
+    "description": "Follow-up to bot-opponent (23): today the bot plays at a single fixed strength (chess.bot.move-time, no Skill Level / Elo limit). This feature lets the room creator pick the bot's strength as a target Elo when creating a BOT room. Decision taken with the user: Elo (not 3 named tiers) because discrete tiers jump too coarsely. The backend uses Stockfish's UCI_LimitStrength + UCI_Elo. Stockfish's UCI_Elo floor is ~1320 (it clamps internally if its build's range is narrower), so the offered range is ~1320-3190; sub-1320 beginner play via Skill Level is a later follow-up. The chosen Elo is threaded CreateRoomRequest -> the BOT Game (a new nullable field, same pattern as timeControl) and applied on every bot move. Persisting the Elo to Postgres history is out of scope (no migration); only the Redis active Game carries it.",
+    "status": "done",
+    "priority": 23.5,
+    "acceptance": [
+      "CreateRoomRequest gains a nullable Integer botElo (relevant only when opponentKind=BOT) with @Min/@Max bounding it to the supported Stockfish UCI_Elo range (~1320-3190) and a @Schema documenting it; null/omitted -> a configured default (chess.bot.default-elo). An out-of-range value returns 400 VALIDATION_FAILED (Bean Validation; no new error code).",
+      "Game gains a nullable Integer botElo, threaded from createRoom's BOT path into the Game, using the same backwards-compatible record-evolution pattern as timeControl (convenience constructors delegate; compact constructor tolerates null; withStatus/withClock carry it through); null for non-bot games.",
+      "BotEngine.chooseMove signature carries the Elo; StockfishBotEngine issues setoption name UCI_LimitStrength value true + setoption name UCI_Elo value <elo> before the search. Stockfish clamps internally if asked for a value outside its build's range. The deterministic test double / Mockito bean ignores the Elo (or is verified to receive it).",
+      "BotProperties gains default-elo (validated within the supported range); BotMoveService passes game.botElo() (or the default) to the engine on every bot move.",
+      "Anonymous/FRIEND regression: non-bot games are unaffected (botElo null, no UCI_Elo option); a BOT room created without botElo uses the default and still plays.",
+      "Integration tests: botElo threaded into the Game and passed to the engine (verify on the mocked BotEngine); out-of-range botElo -> 400; null botElo on a BOT room -> default applied; the gated StockfishEngineIT updated to the new signature and (when the binary is present) confirms the UCI_LimitStrength/UCI_Elo option exchange does not break move selection.",
+      "Springdoc @Schema documents botElo + its range; docs/architecture.md bot section documents the Elo-limited strength model and the ~1320 floor caveat.",
+      "Persisting the Elo to Postgres history is explicitly out of scope (no Flyway migration this feature); stated in the plan + note.",
+      "Feature note notes/23.5-bot-difficulty.md.",
       "./init.sh passes."
     ]
   }

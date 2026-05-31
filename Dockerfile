@@ -28,6 +28,22 @@ RUN ./mvnw package -DskipTests -B
 FROM eclipse-temurin:21-jre-jammy
 WORKDIR /app
 
+# Bundle the Stockfish chess engine (feature 23 — bot-opponent). The bot is
+# driven via a subprocess + UCI, so the binary must be present in the runtime
+# image. The Ubuntu Jammy `stockfish` package installs the binary at
+# /usr/games/stockfish, which is the chess.bot.engine-path default in
+# application.yml. Clean the apt lists in the same layer to keep the size cost
+# down (~a few MB for the binary; the multiverse repo must be enabled because
+# `stockfish` lives there on Jammy). Documented in notes/23-bot-opponent.md.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends software-properties-common \
+  && add-apt-repository -y multiverse \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends stockfish \
+  && apt-get purge -y software-properties-common \
+  && apt-get autoremove -y \
+  && rm -rf /var/lib/apt/lists/*
+
 # Copy the repackaged fat jar (the *.jar.original sibling is the
 # unpackaged artifact and is intentionally excluded by glob ordering —
 # only the executable jar matches both the COPY and the ENTRYPOINT

@@ -26,6 +26,9 @@ import java.util.UUID;
  *       reconnect cancels a pending grace timer; closes the mid-grace UX window.
  *   <li>{@link GameTimedOutEvent} — {@code type = "GAME_TIMED_OUT"} — terminal-by-clock-flag on a
  *       timed game (feature 22, {@code time-control}).
+ *   <li>{@link GameEngineFailedEvent} — {@code type = "GAME_ENGINE_FAILED"} — terminal-by-engine-
+ *       failure on a vs-bot game (feature 23, {@code bot-opponent}); the game flips to {@code
+ *       ABANDONED} (status reused) with the human as winner.
  * </ul>
  */
 public sealed interface GameStateEvent
@@ -33,7 +36,8 @@ public sealed interface GameStateEvent
         GameAbandonedEvent,
         PlayerDisconnectedEvent,
         PlayerReconnectedEvent,
-        GameTimedOutEvent {
+        GameTimedOutEvent,
+        GameEngineFailedEvent {
 
   /**
    * The discriminator string. Each variant returns its own stable, upper-snake-case constant (e.g.

@@ -8,7 +8,10 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import io.github.dariogguillen.chess.config.BotProperties;
 import io.github.dariogguillen.chess.domain.Game;
+import io.github.dariogguillen.chess.domain.GameStatus;
+import io.github.dariogguillen.chess.domain.OpponentKind;
 import io.github.dariogguillen.chess.domain.Player;
 import io.github.dariogguillen.chess.domain.Room;
 import io.github.dariogguillen.chess.domain.RoomStatus;
@@ -18,6 +21,7 @@ import io.github.dariogguillen.chess.domain.TimeControl;
 import io.github.dariogguillen.chess.service.RoomService.CreatedRoom;
 import io.github.dariogguillen.chess.service.RoomService.JoinedRoom;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -46,6 +50,7 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 class RoomServiceTest {
 
   private static final Instant NOW = Instant.parse("2026-05-29T10:00:00Z");
+  private static final int DEFAULT_ELO = 1500;
 
   @Mock private RoomStore roomStore;
   @Mock private GameStore gameStore;
@@ -59,6 +64,9 @@ class RoomServiceTest {
   @BeforeEach
   void setUp() {
     Clock fixedClock = Clock.fixed(NOW, ZoneOffset.UTC);
+    BotProperties botProperties =
+        new BotProperties(
+            "/usr/games/stockfish", Duration.ofMillis(500), Duration.ofSeconds(5), 2, DEFAULT_ELO);
     roomService =
         new RoomService(
             roomStore,
@@ -68,7 +76,8 @@ class RoomServiceTest {
             messagingTemplate,
             randomSideChooser,
             fixedClock,
-            clockTimerManager);
+            clockTimerManager,
+            botProperties);
   }
 
   @Test
@@ -77,7 +86,8 @@ class RoomServiceTest {
     when(randomSideChooser.choose()).thenReturn(Side.BLACK);
     when(roomStore.compute(anyString(), any())).thenAnswer(applyOnExisting(null));
 
-    CreatedRoom created = roomService.createRoom("Alice", SidePreference.RANDOM, null, null);
+    CreatedRoom created =
+        roomService.createRoom("Alice", SidePreference.RANDOM, null, null, null, null);
 
     assertThat(created.room().creatorSide()).isEqualTo(Side.BLACK);
   }
@@ -88,9 +98,77 @@ class RoomServiceTest {
     when(codeGenerator.generate()).thenReturn("ABC234");
     when(roomStore.compute(anyString(), any())).thenAnswer(applyOnExisting(null));
 
-    CreatedRoom created = roomService.createRoom("Alice", SidePreference.WHITE, null, tc);
+    CreatedRoom created =
+        roomService.createRoom("Alice", SidePreference.WHITE, null, tc, null, null);
 
     assertThat(created.room().timeControl()).isEqualTo(tc);
+  }
+
+  @Test
+  void createRoom_botOpponent_buildsActiveTwoSideGameImmediately() {
+    when(codeGenerator.generate()).thenReturn("ABC234");
+    when(roomStore.compute(anyString(), any())).thenAnswer(applyOnExisting(null));
+
+    CreatedRoom created =
+        roomService.createRoom("Alice", SidePreference.WHITE, null, null, OpponentKind.BOT, null);
+
+    // The room is full and active, the game exists immediately, and the bot is the opposite side.
+    assertThat(created.room().status()).isEqualTo(RoomStatus.ACTIVE);
+    assertThat(created.room().players()).hasSize(2);
+    assertThat(created.room().joinToken()).isNull();
+    assertThat(created.game()).isNotNull();
+    assertThat(created.game().white().id()).isEqualTo(created.creator().id());
+    assertThat(created.game().black().isBot()).isTrue();
+    assertThat(created.game().status()).isEqualTo(GameStatus.ONGOING);
+    verify(gameStore).save(created.game());
+  }
+
+  @Test
+  void createRoom_botOpponentNoElo_storesTheConfiguredDefaultOnTheGame() {
+    when(codeGenerator.generate()).thenReturn("ABC234");
+    when(roomStore.compute(anyString(), any())).thenAnswer(applyOnExisting(null));
+
+    // A BOT room created with a null botElo falls back to BotProperties.defaultElo.
+    CreatedRoom created =
+        roomService.createRoom("Alice", SidePreference.WHITE, null, null, OpponentKind.BOT, null);
+
+    assertThat(created.game().botElo()).isEqualTo(DEFAULT_ELO);
+  }
+
+  @Test
+  void createRoom_botOpponentWithElo_storesTheRequestedEloOnTheGame() {
+    when(codeGenerator.generate()).thenReturn("ABC234");
+    when(roomStore.compute(anyString(), any())).thenAnswer(applyOnExisting(null));
+
+    CreatedRoom created =
+        roomService.createRoom("Alice", SidePreference.WHITE, null, null, OpponentKind.BOT, 2200);
+
+    assertThat(created.game().botElo()).isEqualTo(2200);
+  }
+
+  @Test
+  void createRoom_friendOpponent_leavesBotEloNullOnNoGame() {
+    when(codeGenerator.generate()).thenReturn("ABC234");
+    when(roomStore.compute(anyString(), any())).thenAnswer(applyOnExisting(null));
+
+    // A FRIEND room has no game yet, and a stray botElo is ignored (no bot to apply it to).
+    CreatedRoom created =
+        roomService.createRoom(
+            "Alice", SidePreference.WHITE, null, null, OpponentKind.FRIEND, 2200);
+
+    assertThat(created.game()).isNull();
+  }
+
+  @Test
+  void createRoom_botOpponentBlackCreator_putsBotOnWhite() {
+    when(codeGenerator.generate()).thenReturn("ABC234");
+    when(roomStore.compute(anyString(), any())).thenAnswer(applyOnExisting(null));
+
+    CreatedRoom created =
+        roomService.createRoom("Alice", SidePreference.BLACK, null, null, OpponentKind.BOT, null);
+
+    assertThat(created.game().white().isBot()).isTrue();
+    assertThat(created.game().black().id()).isEqualTo(created.creator().id());
   }
 
   @Test

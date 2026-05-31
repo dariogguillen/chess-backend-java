@@ -8,6 +8,7 @@ import io.github.dariogguillen.chess.domain.Side;
 import io.github.dariogguillen.chess.domain.Square;
 import io.github.dariogguillen.chess.exception.ErrorResponse;
 import io.github.dariogguillen.chess.service.GameService;
+import io.github.dariogguillen.chess.service.bot.BotMoveService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -44,9 +45,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class GameController {
 
   private final GameService gameService;
+  private final BotMoveService botMoveService;
 
-  public GameController(GameService gameService) {
+  public GameController(GameService gameService, BotMoveService botMoveService) {
     this.gameService = gameService;
+    this.botMoveService = botMoveService;
   }
 
   @Operation(
@@ -135,7 +138,13 @@ public class GameController {
             request.promotion() == null
                 ? Optional.empty()
                 : Optional.of(Piece.valueOf(request.promotion())));
-    return toResponse(gameService.applyMove(id, playerId, move));
+    Game updated = gameService.applyMove(id, playerId, move);
+    // If this is a vs-bot game and the human's move handed the turn to the bot (and did not end the
+    // game), kick off the bot's reply off-request. maybeTriggerBotMove is a no-op for
+    // human-vs-human
+    // games and for positions where it is still the human's turn.
+    botMoveService.maybeTriggerBotMove(updated);
+    return toResponse(updated);
   }
 
   /** Maps a domain {@link Game} to the wire-format {@link GameStateResponse}. */

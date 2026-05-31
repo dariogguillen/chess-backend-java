@@ -1,7 +1,9 @@
 package io.github.dariogguillen.chess.service;
 
+import io.github.dariogguillen.chess.config.BotProperties;
 import io.github.dariogguillen.chess.domain.Game;
 import io.github.dariogguillen.chess.domain.GameStatus;
+import io.github.dariogguillen.chess.domain.OpponentKind;
 import io.github.dariogguillen.chess.domain.Player;
 import io.github.dariogguillen.chess.domain.Room;
 import io.github.dariogguillen.chess.domain.RoomStatus;
@@ -58,6 +60,7 @@ public class RoomService {
   private final RandomSideChooser randomSideChooser;
   private final Clock clock;
   private final ClockTimerManager clockTimerManager;
+  private final BotProperties botProperties;
 
   public RoomService(
       RoomStore roomStore,
@@ -67,7 +70,8 @@ public class RoomService {
       SimpMessagingTemplate messagingTemplate,
       RandomSideChooser randomSideChooser,
       Clock clock,
-      ClockTimerManager clockTimerManager) {
+      ClockTimerManager clockTimerManager,
+      BotProperties botProperties) {
     this.roomStore = roomStore;
     this.gameStore = gameStore;
     this.codeGenerator = codeGenerator;
@@ -76,6 +80,7 @@ public class RoomService {
     this.randomSideChooser = randomSideChooser;
     this.clock = clock;
     this.clockTimerManager = clockTimerManager;
+    this.botProperties = botProperties;
   }
 
   /**
@@ -101,10 +106,23 @@ public class RoomService {
    * @param timeControl the optional declared clock (feature 22, `time-control`); {@code null} means
    *     an untimed room whose game carries no clock. Stored on the {@link Room} and read at join
    *     time to initialise the game clock.
-   * @return the freshly created room with one player, the resolved {@code creatorSide}, the
-   *     declared {@code timeControl}, a freshly generated {@code joinToken} (feature 22.7), and
-   *     status {@link RoomStatus#WAITING_FOR_PLAYER}, plus the synthesised {@link Player} so the
-   *     caller can surface the assigned player id and the token the creator must keep.
+   * @param opponentKind the kind of opponent (feature 23, `bot-opponent`); {@code null} → {@link
+   *     OpponentKind#FRIEND}. {@link OpponentKind#FRIEND} keeps the historical flow (one player,
+   *     {@code WAITING_FOR_PLAYER}, a {@code joinToken}, a second human joins later). {@link
+   *     OpponentKind#BOT} builds the complete two-side {@link Game} immediately — the human on
+   *     {@code creatorSide}, the {@link Player#bot()} on the opposite side, status {@link
+   *     RoomStatus#ACTIVE} — so {@link CreatedRoom#gameId()} is non-null on the response and no
+   *     {@code joinToken} is minted (the room is already full).
+   * @param botElo the requested bot strength (feature 23.5, `bot-difficulty`), relevant only for a
+   *     {@link OpponentKind#BOT} room. {@code null} (omitted) falls back to {@code
+   *     BotProperties.defaultElo()}. The resolved value is stored on the bot {@link Game} so {@code
+   *     BotMoveService} applies it on every bot move. Ignored for {@link OpponentKind#FRIEND} (the
+   *     game has no bot, so the field stays {@code null} on the {@link Game}). The controller's
+   *     Bean Validation has already bounded it to the engine's supported range.
+   * @return the freshly created room plus the synthesised {@link Player}. For FRIEND the room is
+   *     {@link RoomStatus#WAITING_FOR_PLAYER} with a non-null {@code joinToken} and a {@code null}
+   *     {@code gameId}; for BOT the room is {@link RoomStatus#ACTIVE} with a non-null {@code
+   *     gameId} and a {@code null} {@code joinToken}.
    * @throws IllegalStateException if {@value #MAX_CODE_ATTEMPTS} consecutive generated codes all
    *     collide with existing rooms — a system-level failure indicating either a near-full keyspace
    *     or a broken {@link RoomCodeGenerator}.
@@ -113,13 +131,20 @@ public class RoomService {
       String displayName,
       SidePreference preferredSide,
       UUID currentUserId,
-      TimeControl timeControl) {
+      TimeControl timeControl,
+      OpponentKind opponentKind,
+      Integer botElo) {
     Player creator = new Player(UUID.randomUUID(), displayName, currentUserId);
     Side creatorSide = resolveCreatorSide(preferredSide);
-    // The join token is the secret capability the join endpoint requires (feature 22.7). A
-    // 122-bit random UUID is not guessable, so possession of the public-ish six-char roomId (used
-    // for watching) does not let a spectator take the second-player slot.
-    String joinToken = UUID.randomUUID().toString();
+    boolean vsBot = opponentKind == OpponentKind.BOT;
+    // Resolve the bot strength once for the BOT path: the requested Elo, or the configured default
+    // when the client omitted it. Irrelevant for FRIEND (no bot game is built).
+    int resolvedBotElo = botElo != null ? botElo : botProperties.defaultElo();
+    // FRIEND rooms carry a secret join token (feature 22.7); BOT rooms are already full, so no
+    // token is minted and a stray join attempt hits RoomFull.
+    String joinToken = vsBot ? null : UUID.randomUUID().toString();
+    // Captured from inside the atomic block so the outer code can return the bot game's id.
+    Game[] createdGameHolder = new Game[1];
     for (int attempt = 1; attempt <= MAX_CODE_ATTEMPTS; attempt++) {
       String candidate = codeGenerator.generate();
       Room created =
@@ -128,6 +153,10 @@ public class RoomService {
               (id, existing) -> {
                 if (existing != null) {
                   return existing;
+                }
+                if (vsBot) {
+                  return buildBotRoom(
+                      id, creator, creatorSide, timeControl, resolvedBotElo, createdGameHolder);
                 }
                 return new Room(
                     id,
@@ -139,9 +168,23 @@ public class RoomService {
               });
       // If compute returned the existing room, our candidate collided and `created`
       // is not the room we built. Retry with a fresh code.
-      if (created.players().size() == 1 && created.players().get(0).id().equals(creator.id())) {
-        log.info("Room created: roomId={}, creatorId={}", created.id(), creator.id());
-        return new CreatedRoom(created, creator);
+      boolean ours = created.players().get(0).id().equals(creator.id());
+      if (ours) {
+        Game botGame = createdGameHolder[0];
+        log.info(
+            "Room created: roomId={}, creatorId={}, opponentKind={}, gameId={}",
+            created.id(),
+            creator.id(),
+            vsBot ? OpponentKind.BOT : OpponentKind.FRIEND,
+            botGame == null ? null : botGame.id());
+        // For a timed vs-bot game, arm white's flag timer outside the atomic block (the game write
+        // is durable), the same as joinRoom does for a friend game. The bot answers in well under a
+        // second so it never flags, but the human side still needs the canonical clock running.
+        if (botGame != null && botGame.isTimed()) {
+          Instant whiteDeadline = botGame.lastMoveAt().plusMillis(botGame.whiteTimeRemainingMs());
+          clockTimerManager.scheduleFlag(botGame.id(), whiteDeadline);
+        }
+        return new CreatedRoom(created, creator, botGame);
       }
       log.warn(
           "Room code collision on attempt {}/{}: candidate={}",
@@ -151,6 +194,54 @@ public class RoomService {
     }
     throw new IllegalStateException(
         "Could not allocate a unique room code after " + MAX_CODE_ATTEMPTS + " attempts.");
+  }
+
+  /**
+   * Builds a complete vs-bot room (feature 23, `bot-opponent`) and persists its game inside the
+   * room {@code compute} block, mirroring the cross-store atomicity {@link #joinRoom(String,
+   * String, UUID, String)} uses: the {@link Room} (two players — human + bot — and {@link
+   * RoomStatus#ACTIVE}) and the {@link Game} are written together so the "a game exists iff its
+   * room is ACTIVE" invariant holds for bot rooms too. The created game is surfaced to the caller
+   * via the one-element holder.
+   */
+  private Room buildBotRoom(
+      String roomId,
+      Player creator,
+      Side creatorSide,
+      TimeControl timeControl,
+      int botElo,
+      Game[] createdGameHolder) {
+    Player bot = Player.bot();
+    Room room =
+        new Room(roomId, List.of(creator, bot), RoomStatus.ACTIVE, creatorSide, timeControl, null);
+    Player white = creatorSide == Side.WHITE ? creator : bot;
+    Player black = creatorSide == Side.WHITE ? bot : creator;
+    String initialFen = chessRules.standardInitialState().currentFen();
+    Long whiteMs = timeControl == null ? null : timeControl.initialMs();
+    Long blackMs = timeControl == null ? null : timeControl.initialMs();
+    Instant lastMoveAt = timeControl == null ? null : Instant.now(clock);
+    Long incrementMs = timeControl == null ? null : timeControl.incrementMs();
+    // botElo is set on the bot game (and only the bot game) so BotMoveService applies the requested
+    // strength on every bot move. The 13-arg canonical constructor carries it as the trailing
+    // field.
+    Game game =
+        new Game(
+            UUID.randomUUID(),
+            roomId,
+            white,
+            black,
+            initialFen,
+            initialFen,
+            GameStatus.ONGOING,
+            List.of(),
+            whiteMs,
+            blackMs,
+            lastMoveAt,
+            incrementMs,
+            botElo);
+    gameStore.save(game);
+    createdGameHolder[0] = game;
+    return room;
   }
 
   /**
@@ -343,12 +434,13 @@ public class RoomService {
   }
 
   /**
-   * Carrier returned from {@link #createRoom(String, SidePreference, UUID, TimeControl)}. The room
-   * exposes the assigned id, the resolved {@code creatorSide}, and the single-element player list;
-   * {@code creator} is the player just synthesised, kept separately so the controller does not have
-   * to pick it out of the list.
+   * Carrier returned from {@link #createRoom(String, SidePreference, UUID, TimeControl,
+   * OpponentKind, Integer)}. {@code creator} is the player just synthesised, kept separately so the
+   * controller does not have to pick it out of the list. {@code game} is the freshly created vs-bot
+   * game ({@link OpponentKind#BOT}) whose id the create response surfaces, or {@code null} for a
+   * {@link OpponentKind#FRIEND} room (no game exists until a second human joins).
    */
-  public record CreatedRoom(Room room, Player creator) {}
+  public record CreatedRoom(Room room, Player creator, Game game) {}
 
   /**
    * Carrier returned from {@link #joinRoom(String, String, UUID, String)}. The room is post-join

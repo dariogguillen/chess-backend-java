@@ -38,6 +38,20 @@ import java.util.UUID;
  */
 public record Player(UUID id, String displayName, UUID userId) {
 
+  /**
+   * The fixed sentinel {@code id} of the Stockfish bot player (feature 23, {@code bot-opponent}).
+   *
+   * <p>The sentinel lives on {@code id}, NOT on {@code userId}. {@code userId} is the FK to {@code
+   * users(id)}; the bot is not a real {@code User} row, so an invented {@code userId} would break
+   * the archive write (the {@code games.{white,black}_user_id} foreign key would reference a
+   * non-existent user). The bot therefore archives exactly like a guest ({@code userId == null})
+   * and is recognised everywhere else by this constant {@code id} via {@link #isBot()}.
+   */
+  public static final UUID BOT_PLAYER_ID = UUID.fromString("00000000-0000-0000-0000-0000005706f1");
+
+  /** The human-readable label the bot player carries in the UI and in archived game records. */
+  public static final String BOT_DISPLAY_NAME = "Stockfish";
+
   public Player {
     Objects.requireNonNull(id, "id");
     Objects.requireNonNull(displayName, "displayName");
@@ -53,5 +67,27 @@ public record Player(UUID id, String displayName, UUID userId) {
    */
   public Player(UUID id, String displayName) {
     this(id, displayName, null);
+  }
+
+  /**
+   * Factory for the Stockfish bot player (feature 23, {@code bot-opponent}). Always the same {@link
+   * #BOT_PLAYER_ID} / {@link #BOT_DISPLAY_NAME} with a {@code null} {@code userId} — see {@link
+   * #BOT_PLAYER_ID} for why the sentinel is the id, not the userId.
+   *
+   * @return the canonical bot player.
+   */
+  public static Player bot() {
+    return new Player(BOT_PLAYER_ID, BOT_DISPLAY_NAME, null);
+  }
+
+  /**
+   * Whether this player is the Stockfish bot, identified by its sentinel {@link #BOT_PLAYER_ID}.
+   * Used by {@code BotMoveService} to decide whether the side to move is the engine's, and by the
+   * room-create path to trigger the bot's first move when it plays white.
+   *
+   * @return {@code true} when {@code id} equals {@link #BOT_PLAYER_ID}.
+   */
+  public boolean isBot() {
+    return BOT_PLAYER_ID.equals(id);
   }
 }

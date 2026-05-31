@@ -266,6 +266,41 @@ The full clock model, the no-polling flag-detection design, and the
 grace/clock coexistence are documented under "Server-authoritative clock
 (time control)" in the STOMP section below.
 
+#### Bot opponent on room create
+
+`POST /api/rooms` accepts an optional `opponentKind` (and, for bot rooms,
+an optional `botElo`) on `CreateRoomRequest` (features 23 / 23.5,
+`bot-opponent` / `bot-difficulty`):
+
+```
+POST /api/rooms
+{ "displayName": "Alice", "preferredSide": "WHITE", "opponentKind": "BOT",
+  "botElo": 1800 }
+
+201 Created
+{ "roomId": "K7M3X9", "playerId": "<uuid>", "role": "WHITE",
+  "gameId": "<uuid>", "joinToken": null }
+```
+
+- **`opponentKind`** — enum `FRIEND | BOT`, **optional** (`null` /
+  omitted → `FRIEND`, the historical two-human flow). `BOT` builds a
+  complete vs-Stockfish game immediately, so the create response carries
+  a **non-null `gameId`** (it is `null` for `FRIEND`) and **no
+  `joinToken`** (there is no human to invite). `RANDOM` is *not* a value
+  here — it arrives with feature 24 (`random-matchmaking`).
+- **`botElo`** — `Integer`, **optional**, relevant only for `BOT`. The
+  target bot strength as a Stockfish `UCI_Elo` value, bounded by Bean
+  Validation to **~1320–3190**. Omitted → the server's configured default
+  (`chess.bot.default-elo`). Out of range → 400 `VALIDATION_FAILED` (no
+  new code). See the bot strength subsection for the full model.
+- **No new `ErrorResponse` code.** An engine failure is a terminal game
+  event (`GAME_ENGINE_FAILED` STOMP, status `ABANDONED`), not a 4xx.
+
+The bot-move orchestration, the engine port + subprocess lifecycle, the
+async executor, and the engine-failure terminal path are documented
+under "Bot opponent (Stockfish via subprocess)" in the STOMP section
+below.
+
 #### Join token — separating "can join" from "can watch"
 
 Feature 22.7 (`room-access-tokens`) splits the capability to **join** a
@@ -1045,14 +1080,16 @@ in the "API contract" section above), which carries the same
 `/topic/games/{gameId}` is a polymorphic topic. The Java model is a
 `sealed interface GameStateEvent permits MoveEvent,
 GameAbandonedEvent, PlayerDisconnectedEvent, PlayerReconnectedEvent,
-GameTimedOutEvent` with the discriminator set explicitly in each
-variant's convenience constructor (no `@JsonTypeInfo`). Every variant
-carries `type: "..."` and `gameId: <UUID>` as its first two fields;
-subscribers branch on `event.type` and parse the rest accordingly.
-Feature 11.5 established this family by retrofitting `MoveEvent` and
-`GameAbandonedEvent` (both already on the topic from features 6 and
-11) with the discriminator field and adding the two mid-grace
-variants; feature 22 (`time-control`) added `GameTimedOutEvent`.
+GameTimedOutEvent, GameEngineFailedEvent` with the discriminator set
+explicitly in each variant's convenience constructor (no
+`@JsonTypeInfo`). Every variant carries `type: "..."` and `gameId:
+<UUID>` as its first two fields; subscribers branch on `event.type` and
+parse the rest accordingly. Feature 11.5 established this family by
+retrofitting `MoveEvent` and `GameAbandonedEvent` (both already on the
+topic from features 6 and 11) with the discriminator field and adding
+the two mid-grace variants; feature 22 (`time-control`) added
+`GameTimedOutEvent`; feature 23 (`bot-opponent`) added
+`GameEngineFailedEvent`.
 
 The retrofit is **backward-compatible** for the deployed frontend:
 the new `type` field is an additive change. Jackson's
@@ -1217,6 +1254,35 @@ offline — the clock is server-authoritative.
 - **`timedOutAt`** — ISO-8601 instant in UTC, from the service's
   injected `Clock`.
 
+**`GAME_ENGINE_FAILED`** — published from `BotMoveService` (feature 23,
+`bot-opponent`) when the chess engine cannot produce a move for a vs-bot
+game: a subprocess timeout, process death, or an illegal / unparseable
+`bestmove`. The game is terminated as `ABANDONED` (the status is
+**reused**, not a new `GameStatus` — see the bot section below for why)
+with the human as winner, archived, and this event broadcast. Terminal;
+no follow-up. It is the discriminated signal that lets a subscriber tell
+"the engine broke" apart from a human-disconnect `GAME_ABANDONED`, even
+though both land on the `ABANDONED` status.
+
+```json
+{
+  "type": "GAME_ENGINE_FAILED",
+  "gameId": "0d52a8a0-bea0-4b21-bbe3-3df7f8e83bfb",
+  "winnerId": "550e8400-e29b-41d4-a716-446655440000",
+  "reason": "BOT_ENGINE_FAILURE",
+  "finalFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+  "failedAt": "2026-05-29T10:31:11.123Z"
+}
+```
+
+- **`winnerId`** — the human player; they win by forfeit when the engine
+  fails. Derived server-side.
+- **`reason`** — a stable machine-readable code; today always
+  `BOT_ENGINE_FAILURE`.
+- **`finalFen`** — the position frozen on the board at the failure.
+- **`failedAt`** — ISO-8601 instant in UTC, from the service's injected
+  `Clock`.
+
 ### Server-authoritative clock (time control)
 
 Feature 22 (`time-control`) adds an **optional** per-player clock to the
@@ -1268,6 +1334,114 @@ timer (→ `TIMEOUT`) **race**; whichever terminal mutation enters
 `GameStore.compute` first wins, the second observes the already-terminal
 status and is a no-op. The two terminal paths converge cleanly through
 the same `isTerminal()` idempotency guard.
+
+### Bot opponent (Stockfish via subprocess)
+
+Feature 23 (`bot-opponent`) adds a "play against the bot" room-creation
+path. `CreateRoomRequest.opponentKind` is a nullable `OpponentKind`
+(`FRIEND | BOT`, `null` → `FRIEND`, so pre-feature-23 clients are
+unchanged). `RANDOM` is intentionally **not** an `opponentKind` value
+yet — it lands with feature 24 (`random-matchmaking`) together with the
+queue behaviour, so we do not ship an enum value with no behaviour.
+
+**Immediate two-side game.** When `opponentKind=BOT`,
+`RoomService.createRoom` builds a complete game right away — the human
+on `resolveCreatorSide(preferredSide)`, the bot on the opposite side,
+status `ACTIVE` — inside the same atomic `RoomStore.compute` block that a
+`FRIEND` join uses (so "a game exists iff its room is `ACTIVE`" holds for
+bot rooms too). The create response therefore carries a **non-null
+`gameId`** (`FRIEND` still returns `null`) and **no `joinToken`** (the
+room is already full; a stray join hits `RoomFull`). If the bot plays
+white it must open, so the `RoomController` triggers the bot's first move
+right after creation.
+
+**Bot identity.** A constant `Player.BOT_PLAYER_ID` (a fixed UUID) +
+`displayName = "Stockfish"`, `userId = null`. The sentinel lives on
+`id`, **not** on `userId`: `userId` is the FK to `users(id)`, and an
+invented value would break the terminal-archive write
+(`games.{white,black}_user_id`). The bot archives exactly like a guest
+(`userId = null`) and is recognised by its sentinel id via
+`Player.isBot()`.
+
+**The engine is a port.** `BotEngine` (`Move chooseMove(String fen, int
+elo)`) is a hexagonal seam with one production adapter,
+`StockfishBotEngine`, that drives a Stockfish subprocess over **UCI**. The
+lifecycle is **spawn-per-move**: each call spawns a fresh process via
+`ProcessBuilder`, runs `uci` / `isready` / `setoption name
+UCI_LimitStrength value true` / `setoption name UCI_Elo value <elo>` /
+`position fen <fen>` / `go movetime <ms>`, parses `bestmove`, and
+**always** force-kills the process
+in a `finally` (`destroyForcibly`) — even on a timeout (`waitFor(timeout)`
+deadline) — so no orphaned `stockfish` survives. Stateless (the FEN is
+the whole position), so there is no per-game process to track. Keeping
+the engine behind the port is what lets `./init.sh` stay green
+**without** the binary: integration tests register a deterministic
+`BotEngine` double; only the **gated** `StockfishEngineIT` (`assumeTrue`
+Stockfish on `PATH`, else skip) exercises the real adapter.
+
+**Off-request, off-scheduler async.** Bot thinking runs on a dedicated
+`ExecutorService` (`BotConfig`, daemon threads, small fixed pool,
+`@PreDestroy` graceful shutdown), **not** on the request thread and
+**not** on the clock `TaskScheduler` (a blocking ~500ms search would
+starve the flag timers). `BotMoveService.maybeTriggerBotMove(Game)`
+submits the task; the task re-reads the authoritative game, asks
+`BotEngine.chooseMove(fen, elo)` (with `elo` from `game.botElo()` or the
+default — see the strength subsection below), converts the UCI string to
+a `Move` via `UciMove`, and calls `GameService.applyMove(gameId,
+Player.BOT_PLAYER_ID, move)` — **reusing the human pipeline verbatim**
+(validation, clock advance, archive-on-terminal, `MoveEvent` broadcast).
+The bot's move is therefore indistinguishable on the wire from a
+two-human move. No dependency cycle: `BotMoveService` depends on
+`GameService`; nothing depends back on it. Call sites are the
+`GameController` (after a human move) and the `RoomController` (after a
+bot-as-white game is created).
+
+**Engine-failure terminal path.** If the engine throws (timeout, process
+death) or its move is rejected by `applyMove` (illegal / unparseable
+`bestmove`), `BotMoveService` terminates the game as `ABANDONED` (the
+status is **reused** — a new `GameStatus` would force the
+`MyGameSummary` / `PlayerGameSummary` `allowableValues` enum cascade)
+with the human as winner, archives it via the same idempotent
+`GameStore.compute` + `isTerminal()` guard `GameAbandonService` /
+`GameTimeoutService` use, and broadcasts `GAME_ENGINE_FAILED`. The
+subprocess and the executor task never leak (the adapter's `finally` kill
++ the broad catch in the task).
+
+**Config & deploy.** `chess.bot.*` (`BotProperties`,
+`@ConfigurationProperties`, compact-constructor-validated):
+`engine-path` (default `/usr/games/stockfish`, env-overridable),
+`move-time` (~500ms search depth), `move-timeout` (the hard subprocess
+kill deadline), `pool-size`, and `default-elo` (feature 23.5 — the bot
+strength applied when a BOT room omits `botElo`; default 1500,
+env-overridable via `CHESS_BOT_DEFAULT_ELO`, validated within the
+supported Elo range). The runtime Docker stage installs the `stockfish`
+apt package (a few MB), so the deployed image ships the binary;
+`./init.sh` and CI need **no** Stockfish because the ITs use the double.
+No new `pom.xml` dependency (native `ProcessBuilder`, chesslib already
+validates the move).
+
+**Strength selection (feature 23.5, `bot-difficulty`).** The room creator
+picks the bot's strength as a **target Elo** on the BOT create path.
+`CreateRoomRequest.botElo` is a nullable `Integer` bounded by Bean
+Validation (`@Min`/`@Max`) to Stockfish's `UCI_Elo` range, **~1320–3190**
+(`BotEngine.MIN_BOT_ELO` / `MAX_BOT_ELO`, the single source of truth that
+both the request bounds and the `default-elo` validation reference, so
+they cannot drift). An out-of-range value is a 400 `VALIDATION_FAILED` (no
+new error code); `null`/omitted falls back to `chess.bot.default-elo`. The
+resolved Elo is stored on the `Game` (a new nullable `Integer botElo`,
+threaded `CreateRoomRequest → Game` exactly like `timeControl`, null for
+non-bot games), and `BotMoveService` reads `game.botElo()` (or the
+default) on **every** bot move and passes it to the engine. The adapter
+issues `UCI_LimitStrength=true` + `UCI_Elo=<elo>` before the search;
+Stockfish **clamps internally** if its build's range is narrower, so any
+in-range value is always safe. The **~1320 floor** is a Stockfish
+limitation: below it, strength is governed by `Skill Level` rather than
+`UCI_Elo` — sub-1320 beginner play is a documented follow-up.
+
+**Not persisted to history.** The Elo lives only on the active Redis
+`Game`; the Postgres archive (`GameEntity` / `GameEntityMapper`) does
+**not** map it — no Flyway migration this feature. Surfacing "vs
+Stockfish (1500)" in game history is a follow-up.
 
 ### No STOMP-level authentication
 

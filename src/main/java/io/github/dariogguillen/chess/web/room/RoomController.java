@@ -8,6 +8,7 @@ import io.github.dariogguillen.chess.exception.RoomNotFoundException;
 import io.github.dariogguillen.chess.service.RoomService;
 import io.github.dariogguillen.chess.service.RoomService.CreatedRoom;
 import io.github.dariogguillen.chess.service.RoomService.JoinedRoom;
+import io.github.dariogguillen.chess.service.bot.BotMoveService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -45,10 +46,13 @@ public class RoomController {
 
   private final RoomService roomService;
   private final RoomDetailsMapper roomDetailsMapper;
+  private final BotMoveService botMoveService;
 
-  public RoomController(RoomService roomService, RoomDetailsMapper roomDetailsMapper) {
+  public RoomController(
+      RoomService roomService, RoomDetailsMapper roomDetailsMapper, BotMoveService botMoveService) {
     this.roomService = roomService;
     this.roomDetailsMapper = roomDetailsMapper;
+    this.botMoveService = botMoveService;
   }
 
   @Operation(
@@ -81,10 +85,22 @@ public class RoomController {
     UUID currentUserId = currentUser == null ? null : currentUser.getId();
     CreatedRoom created =
         roomService.createRoom(
-            request.displayName(), request.preferredSide(), currentUserId, request.timeControl());
+            request.displayName(),
+            request.preferredSide(),
+            currentUserId,
+            request.timeControl(),
+            request.opponentKind(),
+            request.botElo());
     String role = created.room().creatorSide().name();
+    // For a vs-bot room the game already exists, so the create response carries its id (FRIEND
+    // rooms still return null). If the bot plays white it must open, so we trigger its first move
+    // off-request; maybeTriggerBotMove is a no-op when the human (white) is to move.
+    UUID gameId = created.game() == null ? null : created.game().id();
+    if (created.game() != null) {
+      botMoveService.maybeTriggerBotMove(created.game());
+    }
     return new RoomResponse(
-        created.room().id(), created.creator().id(), role, null, created.room().joinToken());
+        created.room().id(), created.creator().id(), role, gameId, created.room().joinToken());
   }
 
   @Operation(

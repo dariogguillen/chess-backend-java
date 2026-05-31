@@ -2460,3 +2460,68 @@ Modified (main): `domain/Room.java`, `exception/GlobalExceptionHandler.java`, `e
 **Follow-up still queued:** direct invitations to registered users (layered on top of this token model) — not yet a `feature_list.json` entry.
 
 **Feature note:** [`notes/22.7-room-access-tokens.md`](../notes/22.7-room-access-tokens.md).
+
+---
+
+## 2026-05-30 — bot-opponent (feature 23)
+
+**Status:** done. Full harness cycle (leader plan → implementer → reviewer → user OK), approved on the first review pass. Spanned two calendar days: planning + approval on 2026-05-29 (the implementer dispatch was interrupted when the user had to step away), implementation + review + close on 2026-05-30.
+
+**Summary:** Added a "play against Stockfish" path. When the room creator picks `opponentKind = BOT`, the backend immediately creates a complete two-side `Game` (the human on their `preferredSide`, a fixed "Stockfish" bot on the opposite side, status `ACTIVE`) and, on the bot's turn, computes a move with a Stockfish subprocess (UCI) that is fed through the SAME `GameService.applyMove` pipeline a human move uses — so the bot's `MoveEvent` is wire-identical to a human's. The create response for a BOT room carries a non-null `gameId` (FRIEND still returns null); no `joinToken` is minted (the room is already full).
+
+**Design decisions (confirmed with the user):**
+- **`BotEngine` port + production-only real binary.** `BotEngine.chooseMove(fen)` with a `StockfishBotEngine` adapter (subprocess, spawn-per-move, UCI) and a deterministic test double. ITs use the double / a `@MockitoBean`, so `./init.sh` is green WITHOUT Stockfish installed. The real adapter is covered by a `UciMove` unit test and a GATED `StockfishEngineIT` (`assumeTrue` Stockfish on PATH → skips cleanly when absent). Docker bundles Stockfish for production.
+- **Spawn-per-move lifecycle** (stateless: `position fen <fen>` + `go movetime`), subprocess always torn down in a `finally`/`destroyForcibly`.
+- **Async on a dedicated `ExecutorService`** (`BotConfig`, daemon, `@PreDestroy` graceful shutdown) — NOT the clock `TaskScheduler`. `BotMoveService.maybeTriggerBotMove` submits the task; it converts the UCI bestmove via `UciMove` and calls `applyMove(gameId, Player.BOT_PLAYER_ID, move)`. No dependency cycle.
+- **Single difficulty, configurable** via `chess.bot.*` (`move-time` default 500ms). `OpponentKind { FRIEND, BOT }` only — RANDOM deferred to feature 24.
+- **Bot identity = sentinel `Player.id`, `userId = null`** (sentinel on `id`, NOT `userId`, because `userId` is the FK to `users(id)`; the bot archives like a guest with NULL FK columns).
+- **Engine failure** (timeout / process death / illegal bestmove) → game `ABANDONED` (status reused — deliberately NOT a new GameStatus, to avoid the MyGameSummary/PlayerGameSummary allowableValues cascade) + a new `GameEngineFailedEvent` (STOMP type `GAME_ENGINE_FAILED`, reason `BOT_ENGINE_FAILURE`), human as winner, archived, idempotent via the `gameStore.compute` + `isTerminal()` guard mirroring `GameAbandonService`/`GameTimeoutService`.
+- The bot never holds a STOMP session, so the disconnect/grace machinery (feature 11) ignores it naturally.
+
+**Implementation note:** much of the code was already present on disk (uncommitted) from the interrupted 2026-05-29 session; the implementer audited it against the plan and the real domain/service APIs rather than assuming correctness, corrected the feature-note status header, and verified green. The reviewer was asked to be extra-thorough given the code's origin.
+
+**Reviewer verdict:** approved (first pass), with the two critical checks traced explicitly: (1) the **FK-archive trap** — `Player.bot()` sets `userId == null`, `GameEntityMapper` writes NULL to `white_user_id`/`black_user_id` for the bot side, and `V2` declares those columns as nullable FKs, so a bot game archives without violating the users FK (the sentinel UUID lands only in the un-constrained `*_player_id` columns); (2) **no-leak / async correctness** — dedicated daemon pool with graceful shutdown, subprocess closed in `finally`, engine failures caught so a task exception can't silently kill a pool thread. `./init.sh` green; 289 tests (142 IT + 147 unit), 0 failures, 1 skipped (the gated `StockfishEngineIT`). Two non-blocking out-of-scope observations: no direct subprocess-reaping assertion (correct by inspection; ITs use the mocked engine), and the engine-failure path is asserted at the service level (`BotMoveServiceIT`) rather than end-to-end over STOMP.
+
+**Files touched:**
+
+New: `domain/OpponentKind.java`, `config/BotConfig.java`, `config/BotProperties.java`, `websocket/GameEngineFailedEvent.java`, `service/bot/{BotEngine,StockfishBotEngine,BotEngineException,UciMove,BotMoveService}.java`, `notes/23-bot-opponent.md`, tests `service/bot/{UciMoveTest,BotMoveServiceIT,StockfishEngineIT}.java`, `websocket/BotGameIT.java`.
+
+Modified: `domain/Player.java` (BOT sentinel + `bot()`/`isBot()`), `service/RoomService.java` (BOT create path), `web/game/GameController.java` (trigger bot move after human move), `web/room/{CreateRoomRequest,RoomController}.java`, `websocket/GameStateEvent.java` (permits), `Dockerfile` (install Stockfish), `src/main/resources/application.yml` (`chess.bot.*`), `docs/architecture.md`, `test/.../service/RoomServiceTest.java`, `feature_list.json` (status → done).
+
+**Verification:** `./init.sh` green (gated `StockfishEngineIT` skips without the binary).
+
+**Operator follow-ups:** Docker bundles Stockfish (verify the installed path matches `chess.bot.engine-path` after the image build; note the image-size increase). Local dev only needs Stockfish to run the gated `StockfishEngineIT`; `./init.sh` is green without it. CI (`ci.yml`) needs no Stockfish.
+
+**Feature note:** [`notes/23-bot-opponent.md`](../notes/23-bot-opponent.md).
+
+---
+
+## 2026-05-30 — bot-difficulty (feature 23.5)
+
+**Status:** done. Full harness cycle (leader plan → implementer → reviewer → user OK), approved on the first review pass.
+
+**Summary:** Follow-up to bot-opponent (23): the room creator now picks the bot's strength as a **target Elo** when creating a BOT room, instead of the single fixed strength feature 23 shipped. The backend uses Stockfish's `UCI_LimitStrength` + `UCI_Elo` options.
+
+**Design decisions (confirmed with the user):**
+- **Elo, not named tiers.** The user chose a numeric Elo over three EASY/MEDIUM/HARD tiers because discrete tiers jump too coarsely. Offered range ~1320–3190 (Stockfish's `UCI_Elo` floor is ~1320; it clamps internally if its build's range is narrower). Sub-1320 beginner play (which needs `Skill Level`, not `UCI_Elo`) is a documented later follow-up.
+- **Elo on the `Game`** (new nullable `Integer botElo`), threaded `CreateRoomRequest` → BOT `Game` exactly as `timeControl` (22), because `BotMoveService` reads the authoritative `Game` on every bot move and must apply the right strength each time. Backwards-compatible record evolution (field last, convenience constructors delegate null, compact constructor tolerates null, `withStatus`/`withClock` carry it through). Null for non-bot / in-flight games → engine default at move time.
+- **Validation via Bean Validation** (`@Min`/`@Max` on the DTO field) → out-of-range is a 400 `VALIDATION_FAILED`, no new error code; `null` resolves to a configured default (`chess.bot.default-elo`, default 1500). The range bounds live in a single source of truth — `BotEngine.MIN_BOT_ELO = 1320` / `MAX_BOT_ELO = 3190` — referenced by both the `@Min`/`@Max` and `BotProperties.defaultElo` validation.
+- **No Postgres history persistence** of the Elo (no Flyway migration); `GameEntityMapper` does not map it. Surfacing "vs Stockfish (1500)" in history is a follow-up.
+
+**Signature ripple:** `BotEngine.chooseMove` widened to `(String fen, int elo)`; `StockfishBotEngine` issues `setoption name UCI_LimitStrength value true` + `setoption name UCI_Elo value <elo>` after `isready`, before `go movetime`. The test double and the gated `StockfishEngineIT` were updated in lockstep.
+
+**Reviewer verdict:** approved (first pass). The Elo-applied-on-every-move trace was verified end to end (with the default fallback defended in both `RoomService` at create time and `BotMoveService` at move time, asserted via `ArgumentCaptor` in `BotMoveServiceIT`); the range single-source-of-truth confirmed (no duplicated literals); the 13-code `OpenApiIT` canary untouched; no migration; FRIEND/non-bot regression clean. `./init.sh` green — 295 tests, 0 failures, 1 skipped (the gated `StockfishEngineIT`).
+
+**Files touched:**
+
+New: `notes/23.5-bot-difficulty.md`.
+
+Modified (main): `domain/Game.java` (+`botElo`), `service/bot/BotEngine.java` (range constants + 2-arg `chooseMove`), `service/bot/StockfishBotEngine.java` (UCI_LimitStrength/UCI_Elo), `service/bot/BotMoveService.java` (pass `game.botElo()`/default), `config/BotProperties.java` (+`defaultElo`), `src/main/resources/application.yml` (`chess.bot.default-elo`), `service/RoomService.java` (resolve + store Elo on the BOT game), `web/room/CreateRoomRequest.java` (+`botElo` `@Min`/`@Max`/`@Schema`), `web/room/RoomController.java`, `docs/architecture.md`. Modified (test): `service/RoomServiceTest.java`, `service/bot/BotMoveServiceIT.java`, `service/bot/StockfishEngineIT.java`, `web/room/RoomControllerIT.java`, `websocket/BotGameIT.java`. `feature_list.json` (status → done).
+
+**Verification:** `./init.sh` green (gated `StockfishEngineIT` skips without the binary).
+
+**Commit note:** features 23 (`bot-opponent`) and 23.5 (`bot-difficulty`) were both uncommitted at close time and are intermixed in the working tree (shared files: `Game.java`, `RoomService.java`, `CreateRoomRequest.java`, `RoomController.java`, `application.yml`, `docs/architecture.md`). Last commit before them was `27344cd feat: room access token` (feature 22.7). The user planned to commit 23 + 23.5 together.
+
+**Follow-ups (not yet promoted):** sub-1320 beginner strength via `Skill Level`; persisting the bot Elo to Postgres history; multi-tier/labelled Elo presets in the frontend.
+
+**Feature note:** [`notes/23.5-bot-difficulty.md`](../notes/23.5-bot-difficulty.md).
