@@ -8,7 +8,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -93,7 +93,7 @@ class BotMoveServiceIT {
               assertThat(persisted.moves()).hasSize(1);
               assertThat(persisted.moves().get(0).from().value()).isEqualTo("e2");
             });
-    verify(messagingTemplate, times(1))
+    verify(messagingTemplate, timeout(POLL_TIMEOUT.toMillis()).times(1))
         .convertAndSend(eq("/topic/games/" + game.id()), any(MoveEvent.class));
   }
 
@@ -106,15 +106,18 @@ class BotMoveServiceIT {
 
     botMoveService.maybeTriggerBotMove(game);
 
+    // failGame writes the ABANDONED status to Redis, then archives to Postgres, then broadcasts —
+    // all on the async executor thread. Wait inside untilAsserted for BOTH the status flip AND the
+    // archive so the post-await assertions never race the slower Postgres/broadcast steps.
     await()
         .atMost(POLL_TIMEOUT)
         .untilAsserted(
             () -> {
               Game persisted = gameStore.findById(game.id()).orElseThrow();
               assertThat(persisted.status()).isEqualTo(GameStatus.ABANDONED);
+              assertThat(repository.findById(game.id())).isPresent();
             });
-    assertThat(repository.findById(game.id())).isPresent();
-    verify(messagingTemplate, times(1))
+    verify(messagingTemplate, timeout(POLL_TIMEOUT.toMillis()).times(1))
         .convertAndSend(eq("/topic/games/" + game.id()), any(GameEngineFailedEvent.class));
     // No move was ever applied, so no MoveEvent was broadcast.
     verify(messagingTemplate, never()).convertAndSend(anyString(), any(MoveEvent.class));

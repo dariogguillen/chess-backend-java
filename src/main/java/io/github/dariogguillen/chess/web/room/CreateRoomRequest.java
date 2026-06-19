@@ -38,12 +38,14 @@ import jakarta.validation.constraints.NotBlank;
  *
  * <p>{@code botElo} (feature 23.5, `bot-difficulty`) is the requested bot strength, relevant only
  * for {@link OpponentKind#BOT}. It is optional: a {@code null} / omitted value falls back to the
- * configured {@code chess.bot.default-elo} so existing clients keep working unchanged. When present
- * it must lie within Stockfish's {@code UCI_Elo} range ({@link BotEngine#MIN_BOT_ELO}–{@link
- * BotEngine#MAX_BOT_ELO}); Bean Validation ({@link Min}/{@link Max}) rejects an out-of-range value
- * as a 400 {@code VALIDATION_FAILED} at the controller boundary (no new error code). The bound
- * literals come from the same {@link BotEngine} constants that validate the default, so the two
- * cannot drift.
+ * configured {@code chess.bot.default-elo} so existing clients keep working unchanged. It is a
+ * target strength as an Elo, mapped server-side to the engine's skill level (Fairy-Stockfish)
+ * rather than a raw engine parameter. When present it must lie within the supported range ({@link
+ * BotEngine#MIN_BOT_ELO}–{@link BotEngine#MAX_BOT_ELO}, with the ~{@value BotEngine#MIN_BOT_ELO}
+ * floor reachable for true beginners); Bean Validation ({@link Min}/{@link Max}) rejects an
+ * out-of-range value as a 400 {@code VALIDATION_FAILED} at the controller boundary (no new error
+ * code). The bound literals come from the same {@link BotEngine} constants that validate the
+ * default, so the two cannot drift.
  *
  * @param displayName the name to display for the room creator; non-blank.
  * @param preferredSide the creator's requested side; {@code null} → {@link SidePreference#WHITE}.
@@ -80,12 +82,16 @@ public record CreateRoomRequest(
         @Max(BotEngine.MAX_BOT_ELO)
         @Schema(
             description =
-                "Requested bot strength as a target Elo, relevant only when opponentKind=BOT. Must "
-                    + "lie within Stockfish's UCI_Elo range ("
+                "Requested bot target strength as an Elo, relevant only when opponentKind=BOT. The "
+                    + "server maps it to the engine's skill level (Fairy-Stockfish) rather than "
+                    + "exposing a raw engine parameter. Must lie within "
                     + BotEngine.MIN_BOT_ELO
                     + "-"
                     + BotEngine.MAX_BOT_ELO
-                    + "). Omit the field to use the server's configured default strength.",
+                    + " (the ~"
+                    + BotEngine.MIN_BOT_ELO
+                    + " floor stays reachable for true beginners). Omit the field to use the "
+                    + "server's configured default strength.",
             minimum = "" + BotEngine.MIN_BOT_ELO,
             maximum = "" + BotEngine.MAX_BOT_ELO,
             example = "1500",

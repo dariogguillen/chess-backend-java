@@ -2525,3 +2525,39 @@ Modified (main): `domain/Game.java` (+`botElo`), `service/bot/BotEngine.java` (r
 **Follow-ups (not yet promoted):** sub-1320 beginner strength via `Skill Level`; persisting the bot Elo to Postgres history; multi-tier/labelled Elo presets in the frontend.
 
 **Feature note:** [`notes/23.5-bot-difficulty.md`](../notes/23.5-bot-difficulty.md).
+
+---
+
+## 2026-05-30 — bot-strength-fairy-stockfish (feature 23.7)
+
+**Status:** done. Full harness cycle (leader plan → implementer → reviewer → user OK). One implementer↔reviewer fix loop (stale text + a flaky-test fix) after the first approval; re-reviewed and approved with determinism confirmed.
+
+**Summary:** Adopted Lichess's bot-strength model so the bot can play like a beginner. Official Stockfish's `UCI_Elo` floors at ~1320; this feature swapped the engine to **Fairy-Stockfish** (whose `Skill Level` range is −20..20, the negatives reaching <1320) and replaced the 23.5 `UCI_LimitStrength`/`UCI_Elo` model with a mapping from the requested **Elo** to **(Skill Level, search depth)**, interpolating Lichess's published level table. The public interface stays Elo (`CreateRoomRequest.botElo`, `Game.botElo` unchanged); the allowed range widened down to ~400.
+
+**Design decisions (confirmed with the user, after researching how Lichess does it):**
+- **Follow Lichess; Fairy-Stockfish; Elo interface kept; replace (not hybrid).** Lichess uses Skill Level + depth (not UCI_Elo), so the single-mechanism model is the coherent choice.
+- **Phase 1 = no MultiPV.** Lichess additionally runs MultiPV-4 + a randomized weakness factor; deferred to a Phase-2 follow-up (Fairy's native Skill Level already randomizes).
+- **Mapping verified against lila** (`lichess-org/fishnet`, `src/api.rs` `SkillLevel` enum), not just a forum table: anchors `(-9,5)(-5,5)(-1,5)(3,5)(7,5)(11,8)(16,13)(20,22)` at ~`400/500/800/1100/1500/1900/2300/3190`. One correction vs the forum summary — tier-7 skill is **16** in lila, not 15. The mapping is a single-sourced pure function (`BotEloMapping`) with interpolation, unit-tested.
+- **Bot still branded "Stockfish"** to the user (displayName + some `opponentKind` schema text): a deliberate branding call (Fairy-Stockfish is a Stockfish fork, and "Stockfish" is more recognisable); only the technically-false `UCI_Elo` text was corrected.
+
+**Infra:** the Dockerfile downloads a pinned Fairy-Stockfish linux x86-64 binary (`fairy_sf_14`, asset `fairy-stockfish_x86-64`, ~2.3 MB) from GitHub releases with a **SHA-256 checksum verification** step (`sha256sum -c`), installs it to `/usr/local/bin/fairy-stockfish`, classical eval (`Use NNUE false`) so no NNUE net ships. apt `stockfish` removed. `chess.bot.move-time` dropped (replaced by the depth model); `move-timeout` raised to 30s (a generous backstop for `go depth 22`).
+
+**The flaky-test episode (caught and fixed in this cycle):** applying the stale-text fixes surfaced that `./init.sh` was non-deterministic — `BotMoveServiceIT.maybeTriggerBotMove_engineThrows_...` asserted the Postgres archive and the STOMP broadcast OUTSIDE the `await()` that only waited for the Redis status write. Since `BotMoveService.failGame` does compute(Redis ABANDONED) → archive(Postgres) → broadcast on the async executor, those post-await assertions raced the async work; the first-pass reviewer's run won the race, another run lost it. Fixed as a pure synchronisation fix (no assertion weakened): the archive assertion moved INSIDE `untilAsserted`, the broadcast verifies switched to Mockito `timeout(...).times(1)`. All 6 tests in the file were audited for the same pattern (2 had it, fixed; the 4 `*_isNoop`/Elo tests already wait correctly). Re-review confirmed determinism across 5 isolated IT runs + a full `./init.sh`.
+
+**Reviewer verdict:** approved (second pass), determinism confirmed. `./init.sh` green — 170 unit + 147 IT, 0 failures/errors, 2 skipped (the gated `FairyStockfishEngineIT`, which exercises the real binary's low-Elo + high-Elo legal-move cases when Stockfish/Fairy is on PATH).
+
+**Files touched:**
+
+New: `service/bot/{BotEloMapping,EngineStrength,FairyStockfishBotEngine}.java`, tests `service/bot/{BotEloMappingTest,FairyStockfishBotEngineTest,FairyStockfishEngineIT}.java`, `notes/23.7-bot-strength-fairy-stockfish.md`.
+
+Modified: `service/bot/{BotEngine,BotEngineException}.java` (MIN_BOT_ELO 1320→400), `config/{BotProperties,BotConfig}.java` (dropped moveTime, re-pointed enginePath), `src/main/resources/application.yml`, `Dockerfile` (pinned Fairy binary + checksum), `web/room/CreateRoomRequest.java` (stale `UCI_Elo`/Stockfish schema text corrected), `service/bot/BotMoveServiceIT` + `web/room/RoomControllerIT.java` + `service/RoomServiceTest.java` (tests), `docs/architecture.md`, `feature_list.json` (status → done).
+
+Deleted (renamed): `service/bot/StockfishBotEngine.java`, `service/bot/StockfishEngineIT.java` → the `FairyStockfish*` equivalents.
+
+**Verification:** `./init.sh` green and deterministic (gated IT skips without the binary).
+
+**Commit note:** the user committed features 23 + 23.5 together in `7222479 feat: bot implementation stockfish` (during the 23.7 work). At 23.7 close the working tree was clean except 23.7's own changes; the leader ran `git add -A` so 23.7 is staged on its own — a clean independent commit (23 files: the FairyStockfish* additions, the StockfishBotEngine→FairyStockfish rename, BotEloMapping/EngineStrength, the widened range, the Dockerfile/engine swap, the stale-text + flaky-test fixes, and the harness state). Prior commit: `27344cd feat: room access token` (22.7).
+
+**Follow-ups (not yet promoted):** Phase 2 (MultiPV-4 + randomized weakness, the full Lichess model); a "section to learn" using the Lichess API (user's idea); sub-1320 was the goal of THIS feature and is now done.
+
+**Feature note:** [`notes/23.7-bot-strength-fairy-stockfish.md`](../notes/23.7-bot-strength-fairy-stockfish.md).

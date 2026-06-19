@@ -65,8 +65,7 @@ class RoomServiceTest {
   void setUp() {
     Clock fixedClock = Clock.fixed(NOW, ZoneOffset.UTC);
     BotProperties botProperties =
-        new BotProperties(
-            "/usr/games/stockfish", Duration.ofMillis(500), Duration.ofSeconds(5), 2, DEFAULT_ELO);
+        new BotProperties("/usr/local/bin/fairy-stockfish", Duration.ofSeconds(30), 2, DEFAULT_ELO);
     roomService =
         new RoomService(
             roomStore,

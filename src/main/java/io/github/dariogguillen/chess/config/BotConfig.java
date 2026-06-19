@@ -14,20 +14,20 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * Wiring for the bot-opponent feature (feature 23, {@code bot-opponent}): the dedicated executor on
- * which a Stockfish subprocess thinks, plus the {@link BotProperties} binding.
+ * which a Fairy-Stockfish subprocess thinks, plus the {@link BotProperties} binding.
  *
  * <p><strong>Why a separate executor and not the clock {@link
  * org.springframework.scheduling.TaskScheduler}.</strong> The clock {@code TaskScheduler} ({@code
  * SchedulingConfig}) is a 2-thread pool sized for short, non-blocking flag-timer tasks. A bot move
- * blocks for up to {@code chess.bot.move-time} (~500ms) while the subprocess searches; running it
- * on the scheduler would starve the flag timers and risk a timed game not flagging on time. The bot
+ * blocks while the subprocess runs its depth-bounded search (feature 23.7); running it on the
+ * scheduler would starve the flag timers and risk a timed game not flagging on time. The bot
  * therefore gets its own small fixed pool. The threads are daemon so an in-flight search never
  * holds the JVM alive during shutdown, and named for log readability.
  *
  * <p>The pool is shut down gracefully in {@link #shutdown()} ({@code @PreDestroy}): no new tasks
  * are accepted, in-flight searches get a brief window to finish, and anything still running is
  * interrupted. The subprocess itself is always force-killed in the engine adapter's own {@code
- * finally}, so even an abrupt shutdown cannot leak a {@code stockfish} process.
+ * finally}, so even an abrupt shutdown cannot leak a Fairy-Stockfish process.
  */
 @Configuration
 @EnableConfigurationProperties(BotProperties.class)

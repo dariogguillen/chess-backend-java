@@ -28,21 +28,29 @@ RUN ./mvnw package -DskipTests -B
 FROM eclipse-temurin:21-jre-jammy
 WORKDIR /app
 
-# Bundle the Stockfish chess engine (feature 23 — bot-opponent). The bot is
+# Bundle the Fairy-Stockfish chess engine (feature 23 — bot-opponent; strength
+# model reworked in feature 23.7 — bot-strength-fairy-stockfish). The bot is
 # driven via a subprocess + UCI, so the binary must be present in the runtime
-# image. The Ubuntu Jammy `stockfish` package installs the binary at
-# /usr/games/stockfish, which is the chess.bot.engine-path default in
-# application.yml. Clean the apt lists in the same layer to keep the size cost
-# down (~a few MB for the binary; the multiverse repo must be enabled because
-# `stockfish` lives there on Jammy). Documented in notes/23-bot-opponent.md.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends software-properties-common \
-  && add-apt-repository -y multiverse \
-  && apt-get update \
-  && apt-get install -y --no-install-recommends stockfish \
-  && apt-get purge -y software-properties-common \
-  && apt-get autoremove -y \
-  && rm -rf /var/lib/apt/lists/*
+# image. We switched from official Stockfish (apt `stockfish`) to
+# Fairy-Stockfish because its `Skill Level` option spans -20..20 — the negative
+# levels are what let the bot play below ~1320 Elo, which official Stockfish's
+# UCI_Elo floor cannot reach.
+#
+# Fairy-Stockfish is NOT packaged in apt, so we download a PINNED release asset
+# from its GitHub releases instead. Pinned to the `fairy_sf_14` tag, the
+# chess-only (non-largeboard) generic `x86-64` build — the plain x86-64 target
+# (not -bmi2/-modern) runs on any x86-64 CPU including the t3.micro. The SHA-256
+# is verified so the build is reproducible and a tampered/partial download fails
+# fast. The binary is ~2.3 MB (smaller than the apt stockfish footprint, and we
+# no longer pull in software-properties-common to enable multiverse). We run
+# with `Use NNUE false` (classical eval) at runtime, so NO NNUE net file needs
+# to be shipped. Documented in notes/23.7-bot-strength-fairy-stockfish.md.
+ARG FAIRY_SF_TAG=fairy_sf_14
+ARG FAIRY_SF_SHA256=ab6b85823152e78654092dc2fbb154956a559c6ef0455d728268544390ee150f
+ADD --chmod=755 \
+  https://github.com/fairy-stockfish/Fairy-Stockfish/releases/download/${FAIRY_SF_TAG}/fairy-stockfish_x86-64 \
+  /usr/local/bin/fairy-stockfish
+RUN echo "${FAIRY_SF_SHA256}  /usr/local/bin/fairy-stockfish" | sha256sum -c -
 
 # Copy the repackaged fat jar (the *.jar.original sibling is the
 # unpackaged artifact and is intentionally excluded by glob ordering —

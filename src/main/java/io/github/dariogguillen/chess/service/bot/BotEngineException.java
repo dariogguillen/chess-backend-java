@@ -2,9 +2,9 @@ package io.github.dariogguillen.chess.service.bot;
 
 /**
  * Thrown by a {@link BotEngine} adapter when it cannot produce a move: the production {@link
- * StockfishBotEngine} raises it on subprocess spawn failure, a UCI handshake / search timeout (the
- * {@code waitFor(timeout)} deadline elapses and the process is force-killed), a non-zero process
- * exit, or an unparseable {@code bestmove} line.
+ * FairyStockfishBotEngine} raises it on subprocess spawn failure, a UCI handshake / search timeout
+ * (the {@code waitFor(timeout)} deadline elapses and the process is force-killed), a non-zero
+ * process exit, or an unparseable {@code bestmove} line.
  *
  * <p>It is a {@link RuntimeException} so the async bot task does not have to declare it; {@code
  * BotMoveService} catches it (together with any other failure surfaced while applying the move) and

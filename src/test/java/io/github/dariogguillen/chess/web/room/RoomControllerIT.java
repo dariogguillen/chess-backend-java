@@ -264,12 +264,12 @@ class RoomControllerIT {
 
   @Test
   void createRoom_botEloBelowMin_returns400() throws Exception {
-    // 1319 is one below the engine's UCI_Elo floor (1320); Bean Validation rejects it.
+    // 399 is one below the widened floor (400, feature 23.7); Bean Validation rejects it.
     mockMvc
         .perform(
             post("/api/rooms")
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"displayName\":\"Alice\",\"opponentKind\":\"BOT\",\"botElo\":1319}"))
+                .content("{\"displayName\":\"Alice\",\"opponentKind\":\"BOT\",\"botElo\":399}"))
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.error", equalTo("VALIDATION_FAILED")))
         .andExpect(jsonPath("$.message").exists());
@@ -277,7 +277,7 @@ class RoomControllerIT {
 
   @Test
   void createRoom_botEloAboveMax_returns400() throws Exception {
-    // 3191 is one above the engine's UCI_Elo ceiling (3190); Bean Validation rejects it.
+    // 3191 is one above the engine's ceiling (3190); Bean Validation rejects it.
     mockMvc
         .perform(
             post("/api/rooms")
@@ -295,6 +295,18 @@ class RoomControllerIT {
             post("/api/rooms")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"displayName\":\"Alice\",\"opponentKind\":\"BOT\",\"botElo\":2200}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.gameId", not(nullValue())));
+  }
+
+  @Test
+  void createRoom_botEloAtNewFloor_returns201() throws Exception {
+    // 400 is the widened floor (feature 23.7); the boundary value is accepted (@Min is inclusive).
+    mockMvc
+        .perform(
+            post("/api/rooms")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"displayName\":\"Alice\",\"opponentKind\":\"BOT\",\"botElo\":400}"))
         .andExpect(status().isCreated())
         .andExpect(jsonPath("$.gameId", not(nullValue())));
   }

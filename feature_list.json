@@ -630,5 +630,24 @@
       "Feature note notes/23.5-bot-difficulty.md.",
       "./init.sh passes."
     ]
+  },
+  {
+    "id": "bot-strength-fairy-stockfish",
+    "title": "Lichess-style bot strength via Fairy-Stockfish (Skill Level + depth, sub-1320 Elo)",
+    "description": "Follow-up to bot-difficulty (23.5). Official Stockfish's UCI_Elo floors at ~1320, so it cannot play like a beginner. This feature adopts Lichess's model: switch the engine to Fairy-Stockfish (Skill Level range -20..20, the negatives are what reach <1320) and replace the UCI_LimitStrength/UCI_Elo strength model with a mapping from the requested Elo to (Skill Level, search depth), interpolating Lichess's published 8-level table (lila modules/fishnet AiPerf.scala / the play-with-computer config). The public interface stays Elo (CreateRoomRequest.botElo, Game.botElo) — only the internal mapping + UCI options change. The allowed Elo range is widened downward to ~400. Phase 1 deliberately does NOT implement Lichess's MultiPV-4 + randomized-weakness layer (Fairy's native Skill Level already randomizes); that is a documented Phase 2 follow-up. Decision taken with the user: follow Lichess; Elo interface kept; Fairy-Stockfish; no MultiPV in Phase 1.",
+    "status": "done",
+    "priority": 23.7,
+    "acceptance": [
+      "Engine switched to Fairy-Stockfish: the Dockerfile installs the Fairy-Stockfish binary (from its GitHub releases for linux x86-64; not in apt), and chess.bot.engine-path default is updated to the installed path. Image-size impact documented in the note.",
+      "The UCI_Elo strength model from 23.5 is replaced by the Lichess model: a mapping from the requested Elo to (Skill Level, search depth) interpolating Lichess's level table (Skill Level -20..20, negative for sub-~1320 Elo; depth caps per tier). StockfishBotEngine issues setoption name Skill Level value <s> and searches with go depth <d> (per the mapped tier) instead of UCI_LimitStrength/UCI_Elo.",
+      "The Elo->(skill,depth) mapping is verified against lila's current config (not just the forum summary) and documented in the feature note with the source link; the mapping lives in one place (a small pure function / table) that is unit-tested at the tier boundaries and for interpolation.",
+      "Allowed Elo range widened downward (e.g. MIN_BOT_ELO ~400, MAX_BOT_ELO ~3190); the single-source-of-truth constants referenced by the DTO @Min/@Max and BotProperties.defaultElo are updated together; default-elo stays valid.",
+      "Public interface unchanged: CreateRoomRequest.botElo and Game.botElo keep their shape and threading; only the internal mapping + emitted UCI options change. Out-of-range still -> 400 VALIDATION_FAILED (no new error code).",
+      "MultiPV-4 + randomized weakness is explicitly OUT OF SCOPE (Phase 2 follow-up); the note documents why Fairy's native Skill Level is enough for Phase 1 and what Phase 2 would add.",
+      "Tests: the Elo->(skill,depth) mapping unit test (tier boundaries, interpolation, the new low floor); the engine wiring (Skill Level + go depth emitted, NOT UCI_Elo); validation of the widened range (below new MIN / above MAX -> 400, null -> default); the gated engine IT updated to Fairy-Stockfish (assumeTrue the fairy binary on PATH; skips cleanly when absent). The deterministic test double keeps ./init.sh binary-free and green.",
+      "docs/architecture.md updated: the Lichess-derived strength model, the Fairy-Stockfish dependency and why (sub-1320 floor), the skill/depth mapping, and the MultiPV Phase-2 deferral.",
+      "Feature note notes/23.7-bot-strength-fairy-stockfish.md.",
+      "./init.sh passes."
+    ]
   }
 ]

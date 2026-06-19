@@ -66,28 +66,28 @@ chess:
     # @TestPropertySource so the timer fires in well under a second).
     grace-period: ${CHESS_DISCONNECT_GRACE_PERIOD:60s}
   bot:
-    # Stockfish subprocess integration (feature 23 — bot-opponent). The bot thinks on a dedicated
-    # executor (NOT the clock TaskScheduler) and feeds its move through the same applyMove pipeline a
-    # human move uses. ITs run against a deterministic BotEngine double, so a green ./init.sh does
-    # NOT require the binary; only the gated StockfishEngineIT exercises the real adapter and skips
-    # when the binary is absent.
+    # Fairy-Stockfish subprocess integration (feature 23 — bot-opponent; strength model reworked in
+    # feature 23.7 — bot-strength-fairy-stockfish). The bot thinks on a dedicated executor (NOT the
+    # clock TaskScheduler) and feeds its move through the same applyMove pipeline a human move uses.
+    # ITs run against a deterministic BotEngine double, so a green ./init.sh does NOT require the
+    # binary; only the gated FairyStockfishEngineIT exercises the real adapter and skips when the
+    # binary is absent.
     #
-    # Absolute path to the Stockfish binary. The default matches where the Ubuntu/Debian `stockfish`
-    # package the Dockerfile installs puts it on the Temurin Jammy runtime image (/usr/games/...).
-    # Override locally (e.g. /opt/homebrew/bin/stockfish on macOS, /usr/bin/stockfish elsewhere) via
-    # CHESS_BOT_ENGINE_PATH to run the gated StockfishEngineIT.
-    engine-path: ${CHESS_BOT_ENGINE_PATH:/usr/games/stockfish}
-    # How long the engine searches per move (UCI `go movetime <ms>`). The single-difficulty MVP knob.
-    move-time: ${CHESS_BOT_MOVE_TIME:500ms}
+    # Absolute path to the Fairy-Stockfish binary. The default matches where the Dockerfile installs
+    # the pinned binary it downloads from Fairy-Stockfish's GitHub releases (Fairy-Stockfish is not
+    # in apt). Override locally (e.g. a Homebrew/manual install path) via CHESS_BOT_ENGINE_PATH to
+    # run the gated FairyStockfishEngineIT.
+    engine-path: ${CHESS_BOT_ENGINE_PATH:/usr/local/bin/fairy-stockfish}
     # Hard wall-clock deadline for the whole spawn -> search -> bestmove round-trip; the subprocess
-    # is force-killed past it. Must be strictly greater than move-time.
-    move-timeout: ${CHESS_BOT_MOVE_TIMEOUT:5s}
+    # is force-killed past it. The search is bounded by `go depth <d>` (Lichess's tier model), so this
+    # is sized so even a top-tier `go depth 22` with classical eval finishes within it on a t3.micro.
+    move-timeout: ${CHESS_BOT_MOVE_TIMEOUT:30s}
     # Size of the dedicated bot executor pool. Small fixed pool is plenty at portfolio scale.
     pool-size: ${CHESS_BOT_POOL_SIZE:2}
-    # Target Stockfish strength (UCI Elo) applied to a BOT room created without an explicit botElo
-    # (feature 23.5 — bot-difficulty). Must sit within the engine's UCI_Elo range (~1320-3190); the
-    # BotProperties compact constructor fails the boot fast if it does not. Override per environment
-    # via CHESS_BOT_DEFAULT_ELO.
+    # Target bot strength (Elo) applied to a BOT room created without an explicit botElo (feature
+    # 23.5 — bot-difficulty). Must sit within the supported range (~400-3190); the BotProperties
+    # compact constructor fails the boot fast if it does not. Internally mapped to a Fairy-Stockfish
+    # (Skill Level, depth) pair by BotEloMapping. Override per environment via CHESS_BOT_DEFAULT_ELO.
     default-elo: ${CHESS_BOT_DEFAULT_ELO:1500}
 
 auth:

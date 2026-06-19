@@ -289,17 +289,18 @@ POST /api/rooms
   `joinToken`** (there is no human to invite). `RANDOM` is *not* a value
   here — it arrives with feature 24 (`random-matchmaking`).
 - **`botElo`** — `Integer`, **optional**, relevant only for `BOT`. The
-  target bot strength as a Stockfish `UCI_Elo` value, bounded by Bean
-  Validation to **~1320–3190**. Omitted → the server's configured default
-  (`chess.bot.default-elo`). Out of range → 400 `VALIDATION_FAILED` (no
-  new code). See the bot strength subsection for the full model.
+  target bot strength as an Elo value, bounded by Bean Validation to
+  **~400–3190** (widened down from ~1320 in feature 23.7). Omitted → the
+  server's configured default (`chess.bot.default-elo`). Out of range →
+  400 `VALIDATION_FAILED` (no new code). See the bot strength subsection
+  for the full model.
 - **No new `ErrorResponse` code.** An engine failure is a terminal game
   event (`GAME_ENGINE_FAILED` STOMP, status `ABANDONED`), not a 4xx.
 
 The bot-move orchestration, the engine port + subprocess lifecycle, the
 async executor, and the engine-failure terminal path are documented
-under "Bot opponent (Stockfish via subprocess)" in the STOMP section
-below.
+under "Bot opponent (Fairy-Stockfish via subprocess)" in the STOMP
+section below.
 
 #### Join token — separating "can join" from "can watch"
 
@@ -1335,7 +1336,7 @@ timer (→ `TIMEOUT`) **race**; whichever terminal mutation enters
 status and is a no-op. The two terminal paths converge cleanly through
 the same `isTerminal()` idempotency guard.
 
-### Bot opponent (Stockfish via subprocess)
+### Bot opponent (Fairy-Stockfish via subprocess)
 
 Feature 23 (`bot-opponent`) adds a "play against the bot" room-creation
 path. `CreateRoomRequest.opponentKind` is a nullable `OpponentKind`
@@ -1365,25 +1366,29 @@ invented value would break the terminal-archive write
 
 **The engine is a port.** `BotEngine` (`Move chooseMove(String fen, int
 elo)`) is a hexagonal seam with one production adapter,
-`StockfishBotEngine`, that drives a Stockfish subprocess over **UCI**. The
-lifecycle is **spawn-per-move**: each call spawns a fresh process via
-`ProcessBuilder`, runs `uci` / `isready` / `setoption name
-UCI_LimitStrength value true` / `setoption name UCI_Elo value <elo>` /
-`position fen <fen>` / `go movetime <ms>`, parses `bestmove`, and
-**always** force-kills the process
-in a `finally` (`destroyForcibly`) — even on a timeout (`waitFor(timeout)`
-deadline) — so no orphaned `stockfish` survives. Stateless (the FEN is
-the whole position), so there is no per-game process to track. Keeping
-the engine behind the port is what lets `./init.sh` stay green
-**without** the binary: integration tests register a deterministic
-`BotEngine` double; only the **gated** `StockfishEngineIT` (`assumeTrue`
-Stockfish on `PATH`, else skip) exercises the real adapter.
+`FairyStockfishBotEngine`, that drives a **Fairy-Stockfish** subprocess
+over **UCI**. The lifecycle is **spawn-per-move**: each call spawns a
+fresh process via `ProcessBuilder`, runs `uci` / `isready` / `setoption
+name Use NNUE value false` / `setoption name Skill Level value <s>` /
+`position fen <fen>` / `go depth <d>` (where `(s, d)` is the
+`BotEloMapping` translation of the requested Elo — see the strength
+subsection), parses `bestmove`, and **always** force-kills the process in
+a `finally` (`destroyForcibly`) — even on a timeout (`waitFor(timeout)`
+deadline) — so no orphaned process survives. Stateless (the FEN is the
+whole position), so there is no per-game process to track. The
+`buildSearchCommands` method is a package-private **seam**: a unit test
+asserts the exact UCI lines (`Skill Level` + `go depth`, and the
+*absence* of `UCI_Elo`) without the real binary. Keeping the engine
+behind the port is what lets `./init.sh` stay green **without** the
+binary: integration tests register a deterministic `BotEngine` double;
+only the **gated** `FairyStockfishEngineIT` (`assumeTrue` the binary on
+`PATH`, else skip) exercises the real adapter.
 
 **Off-request, off-scheduler async.** Bot thinking runs on a dedicated
 `ExecutorService` (`BotConfig`, daemon threads, small fixed pool,
 `@PreDestroy` graceful shutdown), **not** on the request thread and
-**not** on the clock `TaskScheduler` (a blocking ~500ms search would
-starve the flag timers). `BotMoveService.maybeTriggerBotMove(Game)`
+**not** on the clock `TaskScheduler` (a blocking depth-bounded search
+would starve the flag timers). `BotMoveService.maybeTriggerBotMove(Game)`
 submits the task; the task re-reads the authoritative game, asks
 `BotEngine.chooseMove(fen, elo)` (with `elo` from `game.botElo()` or the
 default — see the strength subsection below), converts the UCI string to
@@ -1409,34 +1414,53 @@ subprocess and the executor task never leak (the adapter's `finally` kill
 
 **Config & deploy.** `chess.bot.*` (`BotProperties`,
 `@ConfigurationProperties`, compact-constructor-validated):
-`engine-path` (default `/usr/games/stockfish`, env-overridable),
-`move-time` (~500ms search depth), `move-timeout` (the hard subprocess
-kill deadline), `pool-size`, and `default-elo` (feature 23.5 — the bot
+`engine-path` (default `/usr/local/bin/fairy-stockfish`, env-overridable),
+`move-timeout` (the hard subprocess kill deadline; default **30s**, sized
+so even a top-tier `go depth 22` with classical eval completes within it
+on a t3.micro), `pool-size`, and `default-elo` (feature 23.5 — the bot
 strength applied when a BOT room omits `botElo`; default 1500,
 env-overridable via `CHESS_BOT_DEFAULT_ELO`, validated within the
-supported Elo range). The runtime Docker stage installs the `stockfish`
-apt package (a few MB), so the deployed image ships the binary;
-`./init.sh` and CI need **no** Stockfish because the ITs use the double.
-No new `pom.xml` dependency (native `ProcessBuilder`, chesslib already
-validates the move).
+supported Elo range). The `move-time` knob from 23.5 is **removed** — the
+search is now bounded by depth, not wall-clock. The runtime Docker stage
+downloads a **pinned** Fairy-Stockfish release binary (tag `fairy_sf_14`,
+the chess-only generic `x86-64` build, ~2.3 MB, **SHA-256 verified**) to
+`/usr/local/bin/fairy-stockfish` — Fairy-Stockfish is **not** in apt — so
+the deployed image ships the binary; `./init.sh` and CI need **no** binary
+because the ITs use the double. No new `pom.xml` dependency (native
+`ProcessBuilder`, chesslib already validates the move).
 
-**Strength selection (feature 23.5, `bot-difficulty`).** The room creator
-picks the bot's strength as a **target Elo** on the BOT create path.
-`CreateRoomRequest.botElo` is a nullable `Integer` bounded by Bean
-Validation (`@Min`/`@Max`) to Stockfish's `UCI_Elo` range, **~1320–3190**
-(`BotEngine.MIN_BOT_ELO` / `MAX_BOT_ELO`, the single source of truth that
-both the request bounds and the `default-elo` validation reference, so
-they cannot drift). An out-of-range value is a 400 `VALIDATION_FAILED` (no
-new error code); `null`/omitted falls back to `chess.bot.default-elo`. The
-resolved Elo is stored on the `Game` (a new nullable `Integer botElo`,
-threaded `CreateRoomRequest → Game` exactly like `timeControl`, null for
-non-bot games), and `BotMoveService` reads `game.botElo()` (or the
-default) on **every** bot move and passes it to the engine. The adapter
-issues `UCI_LimitStrength=true` + `UCI_Elo=<elo>` before the search;
-Stockfish **clamps internally** if its build's range is narrower, so any
-in-range value is always safe. The **~1320 floor** is a Stockfish
-limitation: below it, strength is governed by `Skill Level` rather than
-`UCI_Elo` — sub-1320 beginner play is a documented follow-up.
+**Strength model (feature 23.7, `bot-strength-fairy-stockfish`).** The
+room creator picks the bot's strength as a **target Elo** on the BOT
+create path. `CreateRoomRequest.botElo` is a nullable `Integer` bounded by
+Bean Validation (`@Min`/`@Max`) to **~400–3190** (`BotEngine.MIN_BOT_ELO`
+/ `MAX_BOT_ELO`, the single source of truth that both the request bounds
+and the `default-elo` validation reference, so they cannot drift). An
+out-of-range value is a 400 `VALIDATION_FAILED` (no new error code);
+`null`/omitted falls back to `chess.bot.default-elo`. The resolved Elo is
+stored on the `Game` (nullable `Integer botElo`, threaded
+`CreateRoomRequest → Game` like `timeControl`, null for non-bot games),
+and `BotMoveService` reads `game.botElo()` (or the default) on **every**
+bot move and passes it to the engine.
+
+Feature 23.5 capped strength with official Stockfish's
+`UCI_LimitStrength` + `UCI_Elo`, whose **~1320 floor** cannot play like a
+beginner. Feature 23.7 replaces that with **Lichess's model**: switch the
+engine to Fairy-Stockfish and weaken it with two knobs — the `Skill Level`
+option (extended **-20..20** range; the *negative* levels are what reach
+sub-1320) and a capped search `depth`. `BotEloMapping.forElo(int)` is a
+pure total function that linearly interpolates Lichess's eight published
+tiers — `(skill, depth)`: `(-9,5)` `(-5,5)` `(-1,5)` `(3,5)` `(7,5)`
+`(11,8)` `(16,13)` `(20,22)` at ~`400/500/800/1100/1500/1900/2300/3190`
+Elo — so a continuous Elo varies the engine rather than snapping to eight
+buckets, clamping below the floor and at the ceiling. The `(skill, depth)`
+anchors are taken verbatim from lila's fishnet worker (`SkillLevel` enum
+in `lichess-org/fishnet`, `src/api.rs`). The adapter issues `setoption
+name Use NNUE value false` (classical eval, so no NNUE net file ships) +
+`setoption name Skill Level value <s>` then `go depth <d>`. **MultiPV-4 +
+randomized weakness** — the rest of Lichess's model, the most expensive
+part — is an explicit **Phase 2 follow-up**, *out of scope* here;
+Fairy-Stockfish's native `Skill Level` randomization is Phase 1's
+weakening mechanism.
 
 **Not persisted to history.** The Elo lives only on the active Redis
 `Game`; the Postgres archive (`GameEntity` / `GameEntityMapper`) does
