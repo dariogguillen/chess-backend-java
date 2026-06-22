@@ -46,6 +46,13 @@ services:
         condition: service_healthy
     restart: unless-stopped
     environment:
+      # Explicit JVM memory cap for the t3.micro (911 MB RAM). Without any -Xmx
+      # the default heap (~25% of RAM) plus metaspace and off-heap buffers grew
+      # to ~400 MB RSS and, with no swap, triggered an OOM-kill of the JVM
+      # (confirmed 2026-06-21, anon-rss 397 MB). Paired with a 2 GB swapfile on
+      # the EC2 host. SerialGC keeps the GC footprint small on a tiny instance;
+      # the Fairy-Stockfish bot runs as a native subprocess, outside this heap.
+      JAVA_TOOL_OPTIONS: "-Xmx320m -XX:+UseSerialGC -XX:MaxMetaspaceSize=128m"
       SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL}
       SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME}
       SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}

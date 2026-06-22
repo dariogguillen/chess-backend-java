@@ -7,6 +7,44 @@ See `progress/history.md` for the entry.
 
 ---
 
+## Ops session 2026-06-22 — infra apagada (modo bajo demanda)
+
+Sesión de mantenimiento (no feature). Hallazgos y acciones:
+
+- **Producción estaba caída.** La EC2 `i-0af4adeab6d7afb02` (t3.micro, 1 GB,
+  región us-east-2, EIP `18.189.228.186`) se colgó (`InstanceStatus: impaired`)
+  el **2026-05-29 ~09:46 UTC**, ~2.5 h después del último deploy, y quedó zombie
+  ~3 semanas. Causa más probable: **RAM al 82% en idle + 0 swap → livelock**
+  (no confirmada por kernel log: el journald del boot -1 requiere root y la pass
+  de sudo del user `deploy` se perdió; `ubuntu`+Instance Connect es la vía root).
+  Un reboot la recuperó pero se volvió a colgar en ~20 min → fallo recurrente.
+- **CORRECCIÓN a una nota previa que era FALSA:** producción NO tenía
+  Fairy-Stockfish ni el bot. El deploy se dispara `on push to main`, y `main`
+  local está **7 commits adelante de `origin/main`** (nunca se pusheó). Lo
+  desplegado es `a5dde2d` (2026-05-29). Sin push, no hay deploy.
+- **Costo:** uso bruto ~$28/mes (RDS $10.9 + EC2 $7 + IPv4 $2.55), **cubierto
+  100% por créditos**. Saldo real (Billing → Credits, 2026-06-22): **~$129
+  restantes** ($140 emitidos = Free Tier $100 + 2× Explore AWS $20), **todos
+  vencen 20/05/2027**. A 24/7 se agotarían ~oct 2026; apagado bajo demanda
+  sobran hasta el vencimiento → NO hay urgencia financiera. El modo bajo-demanda
+  vale por evitar los cuelgues, no por dinero.
+- **DECISIÓN: portfolio en modo "apagar bajo demanda".** Se pararon **EC2 + RDS**
+  (`chess-backend-postgres`) el 2026-06-22. Piso de costo apagado ~$6/mes
+  (EBS + RDS storage + EIP). Scripts start/stop entregados (RDS primero al
+  encender; EIP mantiene la IP → DNS estable).
+
+### Pendientes de esta línea ops
+- Al **encender**: conseguir root (`ubuntu` vía EC2 Instance Connect, funciona
+  con la instancia recién arrancada) y aplicar **swap (1-2 GB) + cap de `-Xmx`**
+  en la JVM para que aguante encendida sin colgarse.
+- **RDS se auto-enciende a los 7 días** → re-parar manual, o montar
+  EventBridge+Lambda que lo re-pare.
+- Si en algún momento se quiere desplegar el trabajo local (bot, room-tokens,
+  game-time-control, choose-side): el user hace `git push origin main` → GHA
+  despliega los 7 commits. Ojo memoria t3.micro al meter Fairy-Stockfish.
+
+---
+
 ## Project state
 
 - **37 done, 0 in_progress, 2 pending** in `feature_list.json`.
@@ -41,10 +79,12 @@ Suggested commit message:
 - **22.7 `room-access-tokens`** still needs a coordinated frontend deploy
   (live frontend joins token-less; backend in-flight-safe via null-token
   legacy rule).
-- **Bot (23 / 23.7)**: the deployed Docker image now bundles
-  **Fairy-Stockfish** (pinned `fairy_sf_14`, checksum-verified) at
-  `/usr/local/bin/fairy-stockfish` — NOT the apt `stockfish` anymore.
-  Verify the path matches `chess.bot.engine-path` after the image build.
+- **Bot (23 / 23.7)**: ⚠️ CORREGIDO 2026-06-22 — esta nota afirmaba que la
+  imagen desplegada ya bundleaba Fairy-Stockfish. Es **FALSO**: esos commits
+  nunca se pushearon, así que producción (`a5dde2d`) no los tiene. La imagen
+  con Fairy-Stockfish (`fairy_sf_14`, `/usr/local/bin/fairy-stockfish`) solo
+  se construirá cuando el user haga `git push origin main`. Verificar entonces
+  que el path coincida con `chess.bot.engine-path`.
 
 ---
 
