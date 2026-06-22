@@ -16,6 +16,7 @@ import java.time.Instant;
 import java.util.Date;
 import java.util.UUID;
 import javax.crypto.SecretKey;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -56,6 +57,11 @@ class AuthCoreIT {
   @Autowired private UserRepository users;
 
   @Autowired private AuthProperties authProperties;
+
+  @BeforeEach
+  void cleanUsersTable() {
+    users.deleteAll();
+  }
 
   @Test
   void me_withoutAuthHeader_returns401WithAuthenticationRequiredBody() throws Exception {

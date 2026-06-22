@@ -33,6 +33,16 @@ Sesión de mantenimiento (no feature). Hallazgos y acciones:
   (EBS + RDS storage + EIP). Scripts start/stop entregados (RDS primero al
   encender; EIP mantiene la IP → DNS estable).
 
+### Hotfix CI en curso (2026-06-22) — AuthCoreIT aislamiento
+- El push de los 7 commits disparó el deploy; **falló en `Build and verify`**
+  (`./init.sh`), prod intacta. Causa: `AuthCoreIT` persiste users sin
+  `users.deleteAll()` en `@BeforeEach` → choca con `alice@/bob@example.com` que
+  dejan `AuthEndpointsIT`/`MyGamesIT` (BD Testcontainers compartida). Primera
+  vez que la suite completa corre junta en CI.
+- Plan: implementer añade `@BeforeEach { users.deleteAll(); }` a `AuthCoreIT`
+  (replica `AuthEndpointsIT:48-50`), corre `./init.sh` completo, barre otros ITs
+  con el mismo patrón latente. Luego reviewer. User re-pushea tras aprobación.
+
 ### Pendientes de esta línea ops
 - Al **encender**: conseguir root (`ubuntu` vía EC2 Instance Connect, funciona
   con la instancia recién arrancada) y aplicar **swap (1-2 GB) + cap de `-Xmx`**
