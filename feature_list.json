@@ -559,7 +559,7 @@
     "id": "deploy-config-sync",
     "title": "Sync docker-compose.prod.yml to EC2 on every deploy (eliminate manual drift)",
     "description": "Operational hardening surfaced by feature 25. The deploy.yml workflow currently does `docker compose pull && up -d` against the docker-compose.prod.yml that already lives on the EC2 host. The yml on EC2 is independent of the yml in the repo — any edit to the repo's yml does NOT reach production. Feature 25's same-day hotfix required manual SSH edits to /opt/chess/docker-compose.prod.yml because of this; without that, the env-var fix in the repo would have shipped to a host that ignored it. Solution: add an `scp` step (or rsync with --checksum) to deploy.yml that copies the repo's docker-compose.prod.yml to /opt/chess/ on the EC2 host BEFORE `docker compose pull && up -d` runs. The /opt/chess/.env stays manually managed on EC2 (credentials must not be in the repo); only the yml syncs.",
-    "status": "pending",
+    "status": "done",
     "priority": 26,
     "acceptance": [
       "deploy.yml gains an `scp` (or equivalent) step that copies docker-compose.prod.yml from the workflow runner to /opt/chess/docker-compose.prod.yml on EC2, preserving the existing file mode and owner.",

@@ -5,7 +5,10 @@
 #   1. Checkout + setup Java + run ./init.sh (build + tests).
 #   2. Configure AWS credentials via OIDC (no static keys).
 #   3. Login to ECR, build + tag + push the Docker image (commit SHA + latest).
-#   4. SSH to EC2 as `deploy`, pull the new image, restart the compose stack.
+#   4. SSH to EC2 as `deploy`: scp the repo's docker-compose.prod.yml to
+#      /opt/chess/ (so compose reads the committed file, not a hand-edited
+#      copy), then pull the new image and restart the compose stack. The
+#      /opt/chess/.env file is never touched — it is operator-managed on EC2.
 #   5. Smoke test the public HTTPS endpoint until it returns "status":"UP".
 #
 # Required secrets (configured via `gh secret set` or the GitHub web UI):
@@ -84,6 +87,15 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+          # Sync the repo's docker-compose.prod.yml to the host BEFORE the
+          # pull/up so compose reads the version committed to the repo, not a
+          # hand-edited copy. /opt/chess/.env is NEVER touched here — it holds
+          # operator-managed credentials that must not live in the repo. The
+          # scp runs as `deploy`, so the file lands with the correct owner; a
+          # changed-vs-identical yml is a no-op-equivalent (idempotent write).
+          scp -i ~/.ssh/deploy_key docker-compose.prod.yml \
+            "deploy@${EC2_HOST}:/opt/chess/docker-compose.prod.yml"
 
           # Compose v5.1.4 mis-parses `${VAR:-default}` when the default
           # contains a colon, so docker-compose.prod.yml splits the image

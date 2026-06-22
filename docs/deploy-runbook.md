@@ -28,6 +28,7 @@ push to main / workflow_dispatch
 │   docker build → tag (<sha>, latest) → docker push  ─►  AWS STS │
 │                                                                 │
 │   ssh deploy@chess-backend.duckdns.org                          │
+│     scp docker-compose.prod.yml → /opt/chess/  (repo→EC2 sync)  │
 │     aws ecr get-login-password | docker login                   │
 │     export APP_IMAGE_REPO=<ecr-url> APP_IMAGE_TAG=<sha>          │
 │     docker compose -f docker-compose.prod.yml pull && up -d     │
@@ -58,6 +59,32 @@ Two IAM identities make the flow keyless:
 - `chess-backend-ec2-ecr-pull` — attached to the EC2 via an instance
   profile. Read-only on ECR. EC2 reads credentials from IMDSv2; no
   `aws configure` ever runs on the host.
+
+### Config sync: `docker-compose.prod.yml` repo → EC2 (feature 26)
+
+The `Deploy to EC2 over SSH` step `scp`s the repo's
+`docker-compose.prod.yml` to `/opt/chess/docker-compose.prod.yml` on
+every deploy, **before** the `docker compose pull && up -d`. This makes
+the repo the single source of truth for the production compose file:
+
+- A change to `docker-compose.prod.yml` in the repo now reaches
+  production with the next push to `main` — no manual SSH edit.
+- The `scp` runs as the `deploy` user (the same key already loaded for
+  the SSH step), so the file lands with the correct owner.
+- The sync is idempotent: an unchanged yml is just a redundant write,
+  not a restart trigger.
+
+Before feature 26 the host's `/opt/chess/docker-compose.prod.yml` was
+**independent** of the repo's copy. Editing the repo yml never reached
+production, and config changes — most recently a JVM memory cap
+(`JAVA_TOOL_OPTIONS`) — had to be hand-applied over SSH in `/opt/chess`.
+Feature 26 closes that drift.
+
+**The `/opt/chess/.env` is never touched by the workflow.** It holds
+operator-managed RDS credentials (`SPRING_DATASOURCE_*`) that must not
+live in the repo, so it stays managed by hand on the EC2 host (see
+section 7). Only the yml syncs; the `.env` remains operator-managed and
+out of the deploy automation entirely.
 
 ---
 
@@ -456,10 +483,13 @@ watch the run. The expected order of green check marks:
   layers). The ECR console at
   <https://us-east-2.console.aws.amazon.com/ecr/repositories> should
   show two tags after this step: `latest` and the new commit SHA.
-- **✓ Deploy to EC2 over SSH** — the workflow SSHes in, logs into
+- **✓ Deploy to EC2 over SSH** — the workflow SSHes in, `scp`s the
+  repo's `docker-compose.prod.yml` to `/opt/chess/` (so compose reads
+  the committed file, not a hand-edited copy — feature 26), logs into
   ECR from the host, `docker compose pull` retrieves the new image,
   `docker compose up -d` recreates the `app` container. Redis stays
-  untouched because its image hash did not change.
+  untouched because its image hash did not change. The `/opt/chess/.env`
+  is left untouched — it is operator-managed (section 7).
 - **✓ Smoke test /api/health** — up to 12 retries at 5 s intervals;
   succeeds as soon as `{"status":"UP"}` appears in the response body.
 

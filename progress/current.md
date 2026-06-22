@@ -33,15 +33,41 @@ Sesión de mantenimiento (no feature). Hallazgos y acciones:
   (EBS + RDS storage + EIP). Scripts start/stop entregados (RDS primero al
   encender; EIP mantiene la IP → DNS estable).
 
-### Hotfix CI en curso (2026-06-22) — AuthCoreIT aislamiento
-- El push de los 7 commits disparó el deploy; **falló en `Build and verify`**
-  (`./init.sh`), prod intacta. Causa: `AuthCoreIT` persiste users sin
-  `users.deleteAll()` en `@BeforeEach` → choca con `alice@/bob@example.com` que
-  dejan `AuthEndpointsIT`/`MyGamesIT` (BD Testcontainers compartida). Primera
-  vez que la suite completa corre junta en CI.
-- Plan: implementer añade `@BeforeEach { users.deleteAll(); }` a `AuthCoreIT`
-  (replica `AuthEndpointsIT:48-50`), corre `./init.sh` completo, barre otros ITs
-  con el mismo patrón latente. Luego reviewer. User re-pushea tras aprobación.
+### Hotfix CI (2026-06-22) — AuthCoreIT aislamiento — ✅ RESUELTO Y DESPLEGADO
+- El push de los 7 commits disparó el deploy; falló en `Build and verify` por
+  `AuthCoreIT` persistiendo users sin `users.deleteAll()` en `@BeforeEach` →
+  choque con `alice@/bob@example.com` (BD Testcontainers compartida). Primera
+  vez que la suite completa corría junta en CI.
+- Fix (implementer): `@BeforeEach { users.deleteAll(); }` en `AuthCoreIT`
+  (replica `AuthEndpointsIT:48-50`). Reviewer APROBÓ, `./init.sh` verde.
+- Commit `e0f247b`, re-push → deploy `27980818579` **success** (2026-06-22).
+- **Producción AL DÍA**: ya no está 7 commits atrás. La imagen en vivo incluye
+  bot + Fairy-Stockfish, room-access-tokens, game-time-control, choose-side, y
+  arranca con el cap de JVM (`JAVA_TOOL_OPTIONS`) sobre el swap de 2 GB.
+- **Follow-up NO bloqueante**: `StompAuthIT` persiste `users` sin limpiar (mismo
+  patrón), pero con emails únicos (`alice-stomp@`, `*-spoof@`) que hoy no
+  colisionan. Arreglarlo requiere borrado en cascada por FKs games/rooms→users
+  (patrón de `MyGamesIT`). Tarea aparte si en el futuro otro IT comparte esos
+  emails.
+
+### Feature 26 `deploy-config-sync` — ✅ DONE (2026-06-22, reviewer approved + user OK)
+- Disparada por el dolor de hoy: el cap de JVM hubo que ponerlo a mano en
+  `/opt/chess` porque `deploy.yml` no sincroniza el compose del repo.
+- Plan: añadir un `scp` del `docker-compose.prod.yml` del runner a
+  `/opt/chess/` en la EC2 **antes** de `docker compose pull && up -d`, dentro
+  del step "Deploy to EC2 over SSH" (reusa la `DEPLOY_SSH_KEY` ya configurada).
+  El `.env` NUNCA se toca (credenciales operator-managed). Documentar en
+  `docs/architecture.md` y `docs/deploy-runbook.md`.
+- **Verificación:** `./init.sh` pasa (no toca app), pero el smoke test real
+  (editar yml → push → confirmar en EC2) es un deploy de verdad → lo hace el
+  user, o un `workflow_dispatch` tras aprobación. CUIDADO de no romper el
+  deploy (acabamos de estabilizar prod).
+- Cerrada: implementer → reviewer APROBÓ → user OK → `done`. `feature_list.json`
+  ahora 38 done / 0 in_progress / 1 pending (solo queda 24, diferido).
+- **Smoke test pendiente del PRÓXIMO push**: al pushear la 26, GitHub Actions
+  corre el `deploy.yml` NUEVO (el del commit), así que ese push valida el scp.
+  Sugerido: añadir un comentario inocuo a `docker-compose.prod.yml`, push, y
+  `sudo cat /opt/chess/docker-compose.prod.yml` en la EC2 para confirmar el sync.
 
 ### Pendientes de esta línea ops
 - Al **encender**: conseguir root (`ubuntu` vía EC2 Instance Connect, funciona

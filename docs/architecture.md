@@ -125,8 +125,19 @@ the commit SHA and `latest`, and pushes both tags to the ECR
 
 After the push, the workflow SSHes into the EC2 host as the dedicated
 `deploy` user (a CI-only SSH key, separate from the operator key used
-for the runbook) and runs `docker compose pull && docker compose up
--d` against `docker-compose.prod.yml`. The EC2 pulls the new image
+for the runbook). Before restarting the stack it `scp`s the repo's
+`docker-compose.prod.yml` to `/opt/chess/docker-compose.prod.yml`, so
+the file compose reads is always the one committed to the repo — a
+repo-to-EC2 sync on every deploy (feature 26). Before this, the
+host's copy was independent of the repo's: editing the repo yml never
+reached production, and config changes (e.g. a JVM memory cap) had to
+be applied by hand over SSH. The sync is idempotent — an unchanged yml
+is a redundant write, not a behavior change. The `/opt/chess/.env`
+file is **never** touched by the workflow: it holds operator-managed
+RDS credentials that must not live in the repo, so it stays managed by
+hand on the EC2 host. Only the yml syncs; the `.env` does not. The
+workflow then runs `docker compose pull && docker compose up -d`
+against `docker-compose.prod.yml`. The EC2 pulls the new image
 from ECR using an IAM **instance profile** with
 `AmazonEC2ContainerRegistryReadOnly` — the host never sees long-lived
 registry credentials either. A smoke test hitting
