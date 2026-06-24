@@ -42,7 +42,9 @@ public record ErrorResponse(
               "FRIEND_NOT_FOUND",
               "ALREADY_FRIENDS",
               "DUPLICATE_FRIEND_REQUEST",
-              "SELF_FRIENDSHIP"
+              "SELF_FRIENDSHIP",
+              "INVITATION_NOT_FOUND",
+              "NOT_ROOM_MEMBER"
             },
             example = "ROOM_NOT_FOUND")
         String error,

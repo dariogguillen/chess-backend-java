@@ -2,6 +2,7 @@ package io.github.dariogguillen.chess.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.dariogguillen.chess.domain.Game;
+import io.github.dariogguillen.chess.domain.Invitation;
 import io.github.dariogguillen.chess.domain.Room;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -58,6 +59,19 @@ public class RedisConfig {
   public RedisTemplate<String, Game> gameRedisTemplate(
       RedisConnectionFactory connectionFactory, ObjectMapper objectMapper) {
     return buildTemplate(connectionFactory, objectMapper, Game.class);
+  }
+
+  /**
+   * Template for the {@code invitations:user:{id}} hash keyspace (feature 23.9, {@code
+   * direct-invitations}). Used by {@code RedisInvitationStore}; the hash-value serializer is the
+   * same per-type {@link Jackson2JsonRedisSerializer} this method wires for {@code opsForValue}
+   * (the builder sets both the value and hash-value serializers), so each invitee's hash stores
+   * {@code redis-cli HGETALL}-readable JSON.
+   */
+  @Bean
+  public RedisTemplate<String, Invitation> invitationRedisTemplate(
+      RedisConnectionFactory connectionFactory, ObjectMapper objectMapper) {
+    return buildTemplate(connectionFactory, objectMapper, Invitation.class);
   }
 
   private static <T> RedisTemplate<String, T> buildTemplate(

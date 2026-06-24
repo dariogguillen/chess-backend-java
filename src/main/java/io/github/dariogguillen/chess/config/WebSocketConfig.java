@@ -53,7 +53,13 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
   @Override
   public void configureMessageBroker(MessageBrokerRegistry registry) {
     registry.setApplicationDestinationPrefixes("/app");
-    registry.enableSimpleBroker("/topic");
+    // {@code /topic} carries the public broadcast destinations (rooms, games, viewers). {@code
+    // /queue} is added by feature 23.9 (direct-invitations) as the carrier for per-user private
+    // destinations: a {@code convertAndSendToUser(userId, "/queue/invitations", ...)} resolves to
+    // the session-private {@code /user/{userId}/queue/invitations}. The user-destination prefix
+    // below is what makes that {@code /user/**} resolution work.
+    registry.enableSimpleBroker("/topic", "/queue");
+    registry.setUserDestinationPrefix("/user");
   }
 
   /**

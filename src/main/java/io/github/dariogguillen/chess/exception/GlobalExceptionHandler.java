@@ -96,6 +96,19 @@ public class GlobalExceptionHandler {
     return build(HttpStatus.FORBIDDEN, codeOf(ex), ex.getMessage());
   }
 
+  /**
+   * Maps {@link NotRoomMemberException} to HTTP 403 / {@code NOT_ROOM_MEMBER} (feature 23.9, {@code
+   * direct-invitations}). Wired identically to {@link InvalidJoinTokenException}: a narrow
+   * concrete-class branch, since there is still no {@code ForbiddenException} umbrella in the
+   * hierarchy and the two 403 cases do not yet justify one. The code is derived mechanically by
+   * {@link #codeOf(ChessException)} ({@code NotRoomMemberException} → {@code NOT_ROOM_MEMBER}).
+   */
+  @ExceptionHandler(NotRoomMemberException.class)
+  public ResponseEntity<ErrorResponse> handleNotRoomMember(NotRoomMemberException ex) {
+    log.warn("Not a room member: {}", ex.getMessage());
+    return build(HttpStatus.FORBIDDEN, codeOf(ex), ex.getMessage());
+  }
+
   @ExceptionHandler(MethodArgumentNotValidException.class)
   public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException ex) {
     String message =

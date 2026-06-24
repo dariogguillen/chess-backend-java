@@ -25,6 +25,7 @@ import org.springframework.messaging.simp.stomp.StompCommand;
 import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
 import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.messaging.support.MessageBuilder;
+import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.stereotype.Component;
 
 /**
@@ -183,14 +184,41 @@ public class StompAuthInterceptor implements ChannelInterceptor {
     }
     User user = resolved.get();
     StompPrincipal principal = new StompPrincipal(user.getId(), user);
+
+    // Prefer mutating the *existing* mutable accessor that {@code StompSubProtocolHandler} attached
+    // to the inbound CONNECT message. That handler registers a {@code setUserChangeCallback} on it
+    // (see StompSubProtocolHandler) which, when {@code setUser} fires, propagates the principal
+    // back
+    // onto the WebSocket session itself. That session-level principal is what {@code
+    // SessionConnectEvent} carries and what populates {@code SimpUserRegistry} — the registry
+    // {@code
+    // convertAndSendToUser} consults to resolve a user's sessions (feature 23.9's per-user
+    // invitation push). Setting the user on a {@code StompHeaderAccessor.wrap(...)} copy instead
+    // (as the original code did) feeds {@code @MessageMapping} principal resolution but never the
+    // change-callback, so the registry stayed empty and user-destination pushes were dropped.
+    StompHeaderAccessor mutable =
+        MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor.class);
+    if (mutable != null && mutable.isMutable()) {
+      mutable.setUser(principal);
+      Map<String, Object> sessionAttributes = mutable.getSessionAttributes();
+      if (sessionAttributes != null) {
+        sessionAttributes.put(SESSION_USER_ID_ATTR, user.getId());
+      }
+      // The original message is already carrying the mutated accessor; return it unchanged so the
+      // callback-bearing accessor (not a copy) is what flows downstream.
+      return message;
+    }
+
+    // Fallback for an immutable inbound message (defensive — the broker normally hands us a mutable
+    // one on CONNECT). Set the user on the wrapped accessor and rebuild. This restores the
+    // pre-23.9 behaviour: @MessageMapping principal resolution still works, even though the
+    // session-level propagation (and thus SimpUserRegistry population) does not happen on this
+    // path.
     accessor.setUser(principal);
     Map<String, Object> sessionAttributes = accessor.getSessionAttributes();
     if (sessionAttributes != null) {
       sessionAttributes.put(SESSION_USER_ID_ATTR, user.getId());
     }
-    // Mutating the accessor in place propagates because the message is rebuilt from it below; the
-    // alternative is to copy the message via MessageBuilder. setUser writes to the underlying
-    // MessageHeaders map, which is the canonical pattern for identity attachment on CONNECT.
     return MessageBuilder.createMessage(message.getPayload(), accessor.getMessageHeaders());
   }
 

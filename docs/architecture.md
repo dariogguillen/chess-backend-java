@@ -190,6 +190,8 @@ list on the client side.
 | `ALREADY_FRIENDS` | 409 | `AlreadyFriendsException` |
 | `DUPLICATE_FRIEND_REQUEST` | 409 | `DuplicateFriendRequestException` |
 | `SELF_FRIENDSHIP` | 422 | `SelfFriendshipException` |
+| `INVITATION_NOT_FOUND` | 404 | `InvitationNotFoundException` |
+| `NOT_ROOM_MEMBER` | 403 | `NotRoomMemberException` |
 
 The first six codes are produced mechanically by `GlobalExceptionHandler`'s
 `codeOf(ChessException)` derivation — simple class name minus the
@@ -893,6 +895,71 @@ The `GET /api/me/friend-code` endpoint is isolated from feature 16's
 surface with no STOMP component; the change is additive, so the frontend
 builds the friends UI against it without breaking any existing client.
 
+### Invitations (feature 23.9)
+
+Feature 23.9 (`direct-invitations`) is the second half of the social
+pair: invite an accepted friend to a room you created. It layers on the
+accepted-friends set (23.8) and the room join token (22.7), and it
+introduces the project's first **per-user STOMP push**.
+
+**Invite-to-an-existing-room model.** The inviter creates a FRIEND room
+first (`POST /api/rooms`, obtaining the `joinToken`) and then invites a
+friend to *that* room. It is deliberately not a "challenge" that creates
+a room on accept — the room already exists, so the invitation only needs
+to carry the inviter's identity and the room id.
+
+**Accept = server-side join; the token never leaves the server.** When
+the invitee accepts, `InvitationService` reads the `joinToken` from the
+live room *on the server* and performs the join via
+`RoomService.joinRoom` (with the invitee's display name + user id, so the
+game links to the account per feature 19). The token is never sent to the
+invitee's client. Because the accept reuses `joinRoom`, the inviter is
+notified by the **existing** `RoomJoinedEvent` on `/topic/rooms/{roomId}`
+(feature 9.5) — no redundant accept event is emitted.
+
+**Ephemeral Redis storage tied to the room TTL — no migration.** An
+invitation is meaningless once its room is gone, so it lives in Redis,
+not Postgres. `RedisInvitationStore` keeps one hash per invitee at
+`invitations:user:{inviteeUserId}` whose fields are room ids — a single
+`HGETALL` lists a user's invitations (no `SCAN`-by-pattern), and at most
+one invitation per (invitee, room) falls out of the field-keyed layout.
+The hash carries the same 24h active-state TTL the rooms use. Liveness is
+re-validated against the live `RoomStore` at read/accept time (room
+exists, `WAITING_FOR_PLAYER`, free slot, has a join token); stale entries
+are pruned lazily, so a sibling invite that lost the race (the room
+filled) silently disappears from the loser's list and accept yields
+`404 INVITATION_NOT_FOUND`.
+
+**Friend-only gate.** Send requires an ACCEPTED friendship
+(`FriendshipRepository.existsAcceptedBetween`, reused from 23.8) →
+`404 FRIEND_NOT_FOUND` otherwise; this also covers self-invite, since one
+cannot befriend oneself. Only a member of the room may invite into or
+cancel an invitation on it → `403 NOT_ROOM_MEMBER`.
+
+#### Invitations API contract
+
+All routes require a Bearer JWT; an unauthenticated call gets `401
+AUTHENTICATION_REQUIRED`. Path `{roomId}` is case-insensitive.
+
+| Method & path | Body | Success | Errors |
+|---|---|---|---|
+| `POST /api/me/invitations` | `{ roomId, friendUserId }` | `201` | 404 `FRIEND_NOT_FOUND` / `ROOM_NOT_FOUND`, 403 `NOT_ROOM_MEMBER`, 409 `ROOM_FULL`, 400, 401 |
+| `GET /api/me/invitations` | — | `200` list of `{ roomId, inviterUserId, inviterDisplayName, timeControl, side, createdAt }` (live, joinable only) | 401 |
+| `POST /api/me/invitations/{roomId}/accept` | — | `200 RoomResponse` (`roomId, playerId, role, gameId`) | 404 `INVITATION_NOT_FOUND`, 409 `ROOM_FULL`, 401 |
+| `DELETE /api/me/invitations/{roomId}` | — | `204` (invitee declines) | 404 `INVITATION_NOT_FOUND`, 401 |
+| `DELETE /api/me/invitations/{roomId}/to/{inviteeUserId}` | — | `204` (inviter cancels) | 404 `INVITATION_NOT_FOUND`, 403 `NOT_ROOM_MEMBER`, 401 |
+
+Sending the same `(room, invitee)` again is idempotent — it overwrites
+the stored value and refreshes the TTL, no error.
+
+This is a new REST surface **plus** a new STOMP user-destination (see the
+STOMP API contract below). The change is additive; the frontend builds
+the invite UI and subscribes to `/user/queue/invitations`. Cross-repo
+coordination: the user-queue subscription requires an authenticated STOMP
+`CONNECT` (Bearer JWT), and the per-user push only reaches sessions whose
+principal resolves — anonymous sessions never receive a push, which is
+fine because invitations require an account on both sides.
+
 ### WebSocket trust model (feature 20)
 
 Feature 20 (`auth-stomp-trust`) closes the last gap of the bundle:
@@ -1103,13 +1170,27 @@ the games topic gained `PlayerDisconnectedEvent` /
   client handle native WebSocket fine, and SockJS would add
   surface area we do not need.
 - **Broker:** Spring's in-process `SimpleBroker`, registered on
-  the `/topic` prefix. Subscriptions and fan-out happen inside
-  the application process — sufficient for a single-instance
-  deployment. Scaling out to multiple instances would require an
-  external broker (RabbitMQ, ActiveMQ, or equivalent) so that a
-  broadcast on instance A reaches subscribers connected to
-  instance B. That is a documented constraint to revisit, not a
-  current concern.
+  the `/topic` **and** `/queue` prefixes. Subscriptions and fan-out
+  happen inside the application process — sufficient for a
+  single-instance deployment. `/topic` carries the public broadcast
+  destinations (rooms, games, viewers); `/queue` was added by feature
+  23.9 as the carrier for **per-user private** destinations. Scaling
+  out to multiple instances would require an external broker
+  (RabbitMQ, ActiveMQ, or equivalent) so that a broadcast on instance
+  A reaches subscribers connected to instance B. That is a documented
+  constraint to revisit, not a current concern.
+- **User-destination prefix:** `/user`, added by feature 23.9
+  (`registry.setUserDestinationPrefix("/user")`). A client subscribes
+  to `/user/queue/invitations`; the broker rewrites it to a
+  session-private queue. The server pushes via
+  `SimpMessagingTemplate.convertAndSendToUser(userId, "/queue/invitations",
+  event)`, which resolves the target user's session(s) by the STOMP
+  principal name. Feature 20's `StompAuthInterceptor` sets that
+  principal on the authenticated `CONNECT` (`getName() = userId`), and
+  it does so on the **mutable** inbound accessor so the principal also
+  reaches the WebSocket session and thus the `SimpUserRegistry` the
+  user-destination resolver consults. An anonymous session has no
+  principal, so it never receives a per-user push.
 - **Application destination prefix:** `/app`, registered for
   future-proofing. This feature does not introduce any client-to-
   server STOMP messages — `MoveEvent` is the only traffic, and it
@@ -1178,6 +1259,37 @@ join miss the event entirely — there is no replay. The fallback in
 that case is the `GET /api/rooms/{id}` REST endpoint (documented
 in the "API contract" section above), which carries the same
 `gameId` and the rest of the room state for reconcile.
+
+### `InvitationEvent` family (per-user queue, feature 23.9)
+
+Feature 23.9 (`direct-invitations`) adds the project's first
+**per-user** STOMP destination. An authenticated client subscribes to
+**`/user/queue/invitations`**; the broker resolves it to a
+session-private queue keyed by the STOMP principal. This is *not* a
+broadcast topic — each event is routed to a single user's session(s)
+via `SimpMessagingTemplate.convertAndSendToUser(...)`, not
+`convertAndSend(...)`.
+
+The payloads form a `sealed interface InvitationEvent permits
+InvitationReceivedEvent, InvitationDeclinedEvent,
+InvitationCancelledEvent`, following the same explicit-discriminator
+rule as the topic families (each variant pins `type: "..."` in its
+convenience constructor; no `@JsonTypeInfo`). The three flows:
+
+| Event | `type` | Direction | Fields |
+|---|---|---|---|
+| `InvitationReceivedEvent` | `INVITATION_RECEIVED` | → invitee, on send | `type, roomId, inviterUserId, inviterDisplayName, timeControl` |
+| `InvitationDeclinedEvent` | `INVITATION_DECLINED` | → inviter, on decline | `type, roomId, inviteeUserId` |
+| `InvitationCancelledEvent` | `INVITATION_CANCELLED` | → invitee, on cancel | `type, roomId` |
+
+There is deliberately **no accept event** here: accept performs a room
+join, so the inviter is notified by the existing `RoomJoinedEvent` on
+`/topic/rooms/{roomId}` — the same signal as a plain join, no
+duplication. Each push is **fire-and-forget** with the same
+`try/catch + WARN` policy as `RoomJoinedEvent`; a missed push is
+covered by the `GET /api/me/invitations` REST list (which an offline
+invitee reads on next load). Anonymous sessions have no principal and
+never receive a push.
 
 ### `GameStateEvent` family
 

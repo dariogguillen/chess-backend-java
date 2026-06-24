@@ -223,6 +223,18 @@ Authenticated users build a mutual friends list discovered by a shareable **frie
 
 Full request/response shapes live in the Swagger UI linked above.
 
+#### Invitations (feature 23.9)
+
+Invite an accepted friend to a room you created. Create a FRIEND room (`POST /api/rooms`, which returns a `joinToken`), then invite a friend by user id. The invitee gets a real-time push on the per-user STOMP queue (below) if connected, and can also list pending invitations over REST. Accepting performs the room join **server-side** using the stored join token — the token never reaches the invitee's client — so the inviter is notified by the existing `ROOM_JOINED` event on `/topic/rooms/{roomId}`. Invitations are ephemeral (stored in Redis, tied to the room's 24h TTL; no migration) and re-validated against the live room at read/accept time. All routes require a Bearer JWT; path `{roomId}` is case-insensitive.
+
+- `POST /api/me/invitations` — `{ roomId, friendUserId }` → `201`. Errors: `404 FRIEND_NOT_FOUND` / `ROOM_NOT_FOUND`, `403 NOT_ROOM_MEMBER`, `409 ROOM_FULL`. Re-sending the same `(room, invitee)` is idempotent.
+- `GET /api/me/invitations` — the caller's live incoming invitations (`roomId`, `inviterUserId`, `inviterDisplayName`, `timeControl`, the `side` the invitee would take, `createdAt`); stale ones are pruned.
+- `POST /api/me/invitations/{roomId}/accept` — joins the room as the second player → `200` `RoomResponse` (`roomId`, `playerId`, `role`, `gameId`); `404 INVITATION_NOT_FOUND`, `409 ROOM_FULL`.
+- `DELETE /api/me/invitations/{roomId}` — invitee declines → `204`; pushes `INVITATION_DECLINED` to the inviter's queue.
+- `DELETE /api/me/invitations/{roomId}/to/{inviteeUserId}` — inviter cancels → `204`; pushes `INVITATION_CANCELLED` to the invitee's queue; `403 NOT_ROOM_MEMBER`.
+
+Full request/response shapes live in the Swagger UI linked above.
+
 ### WebSocket (STOMP)
 
 Live game updates are pushed over STOMP-over-WebSocket. After every successful `POST /api/games/{id}/moves`, the server broadcasts a `MoveEvent` to subscribers of the game's topic.
@@ -231,6 +243,7 @@ Live game updates are pushed over STOMP-over-WebSocket. After every successful `
 - Subscribe to `/topic/games/{gameId}` to receive `GameStateEvent` variants (`MOVE`, `GAME_ABANDONED`, `PLAYER_DISCONNECTED`, `PLAYER_RECONNECTED`) — each carries an explicit `type` discriminator field.
 - Subscribe to `/topic/rooms/{roomId}` to receive `RoomEvent` variants (today: `ROOM_JOINED`) — same discriminator pattern.
 - Subscribe to `/topic/games/{gameId}/viewers` to receive a `ViewerCountEvent` on every spectator join/leave. Players self-exclude from the count by sending a `playerId:<uuid>` native STOMP header on their `SUBSCRIBE` to `/topic/games/{gameId}`.
+- Subscribe to `/user/queue/invitations` (feature 23.9, **authenticated CONNECT required**) to receive your own invitation events: `INVITATION_RECEIVED` (someone invited you), `INVITATION_DECLINED` (an invitee you invited declined), `INVITATION_CANCELLED` (an inviter cancelled). This is a per-user private destination — delivered to your session(s) by your STOMP principal — so an anonymous CONNECT receives nothing here.
 - Optional: send `Authorization: Bearer <jwt>` as a native STOMP header on the CONNECT frame to identify the session. Anonymous CONNECT is still supported (guest play unchanged); a bad or missing JWT does not reject the connection. When the JWT is valid, the server blocks identity spoofing on SEND / SUBSCRIBE frames whose `playerId` does not match the authenticated user. See [`docs/architecture.md`](docs/architecture.md) → "Authentication → WebSocket trust model (feature 20)" for the two-phase interceptor contract and the "ERROR-but-no-disconnect" rejection model.
 
 See [`docs/architecture.md`](docs/architecture.md) → "STOMP API contract" for the full contract (payload shapes, allowed origins, failure mode, viewer count broadcasts, the `playerId` header convention, and the `GameStateEvent` family).

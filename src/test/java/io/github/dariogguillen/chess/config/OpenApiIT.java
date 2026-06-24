@@ -102,7 +102,7 @@ class OpenApiIT {
   }
 
   @Test
-  void errorResponseSchema_listsExactlyTheNineteenKnownErrorCodes() throws Exception {
+  void errorResponseSchema_listsExactlyTheTwentyOneKnownErrorCodes() throws Exception {
     MvcResult result = mockMvc.perform(get("/v3/api-docs")).andExpect(status().isOk()).andReturn();
 
     JsonNode spec = objectMapper.readTree(result.getResponse().getContentAsString());
@@ -126,6 +126,8 @@ class OpenApiIT {
     // Feature 23.8 (friends-list) added the six friendship codes: FRIEND_CODE_NOT_FOUND,
     // FRIEND_REQUEST_NOT_FOUND, FRIEND_NOT_FOUND (404), ALREADY_FRIENDS,
     // DUPLICATE_FRIEND_REQUEST (409), SELF_FRIENDSHIP (422).
+    // Feature 23.9 (direct-invitations) added INVITATION_NOT_FOUND (404) and NOT_ROOM_MEMBER (403),
+    // taking the allowlist to 21 codes.
     List<String> expected =
         List.of(
             "ALREADY_FRIENDS",
@@ -140,8 +142,10 @@ class OpenApiIT {
             "ILLEGAL_MOVE",
             "INVALID_CREDENTIALS",
             "INVALID_JOIN_TOKEN",
+            "INVITATION_NOT_FOUND",
             "MALFORMED_REQUEST",
             "MISSING_HEADER",
+            "NOT_ROOM_MEMBER",
             "NOT_YOUR_TURN",
             "ROOM_FULL",
             "ROOM_NOT_FOUND",

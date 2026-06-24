@@ -2561,3 +2561,41 @@ Deleted (renamed): `service/bot/StockfishBotEngine.java`, `service/bot/Stockfish
 **Follow-ups (not yet promoted):** Phase 2 (MultiPV-4 + randomized weakness, the full Lichess model); a "section to learn" using the Lichess API (user's idea); sub-1320 was the goal of THIS feature and is now done.
 
 **Feature note:** [`notes/23.7-bot-strength-fairy-stockfish.md`](../notes/23.7-bot-strength-fairy-stockfish.md).
+
+## 2026-06-24 — friends-list (feature 23.8)
+
+**Status:** done. Full harness cycle (leader plan → user-approved product decisions → implementer → reviewer → user OK). One short polish loop after reviewer approval (3 cosmetic items: a broken `{@link}` package, a test-helper FQN, the note's stale `Status: done`). First feature of the social pair (friends → direct invitations); the user named friends as the prerequisite for invitations.
+
+**Summary:** Authenticated users build a **mutual friends list** discovered by a **shareable friend code** (no user-base enumeration). Symmetric request/accept: A sends a request to B by code, B accepts or rejects; either party can cancel/remove. Full lifecycle shipped: send, accept, reject, cancel, list friends, list incoming/outgoing pending requests, remove a friend. Anonymous guest play unaffected (friends require an account).
+
+**Product decisions (taken with the user, 2026-06-23):**
+- **Mutual request/accept** (PENDING → ACCEPTED), not one-way follow — the natural prerequisite for direct invitations.
+- **Friend code** discovery, not display-name search — no enumeration/scraping surface.
+- **Full lifecycle** in one block, not happy-path-first — leaves no UX holes before invitations.
+
+**Leader architecture decisions (within the locked scope):**
+- **friend_code** = `VARCHAR(8) NOT NULL UNIQUE` column on `users`, minted in ONE place (`FriendCodeGenerator`, mirroring `RoomService`'s collision-retry generator + the unambiguous alphabet) at BOTH user-creation paths (`AuthService.register`, `OAuth2SuccessHandler.createUser`). V3 migration backfills pre-existing users (PL/pgSQL loop with in-batch collision-retry) before `SET NOT NULL` + the unique index.
+- **friendships stores UUIDs** (`requester_id`, `addressee_id`), NO `@ManyToOne` — consistent with how `games` denormalises. Live `displayName` comes from Hibernate **entity joins** in JPQL (`JOIN User u ON u.id = f.addresseeId`), so a friend's rename reflects (not a snapshot).
+- **Unordered-pair uniqueness**: UNIQUE index on `(LEAST(requester_id,addressee_id), GREATEST(...))` → one relationship per pair in either direction. The service also catches `DataIntegrityViolationException` on the reverse-direction race and re-throws `DuplicateFriendRequestException` (clean 409, no 500 leak).
+- **reject/cancel/remove DELETE the row**; `status` is only PENDING|ACCEPTED (no REJECTED). Re-requesting after a reject is valid.
+- **No existence leak**: accept/delete where the caller isn't a participant returns `404 FRIEND_REQUEST_NOT_FOUND` (caller baked into the `WHERE` clause → same code as truly-missing), never 403.
+
+**REST surface (all under `/api/me`, Bearer JWT, `@AuthenticationPrincipal User`):** `GET /friend-code`; `POST /friends/requests` (by code); `POST /friends/requests/{id}/accept`; `DELETE /friends/requests/{id}` (cancel/reject); `DELETE /friends/{userId}` (remove); `GET /friends`, `GET /friends/requests/incoming`, `.../outgoing` (paginated, `Page<T>`, default 20 / max 100 / page≥0, mirroring feature 19). `MeResponse` left untouched (friend-code is an isolated endpoint).
+
+**Error codes:** six new, auto-derived via `GlobalExceptionHandler.codeOf()` — `FRIEND_CODE_NOT_FOUND`, `FRIEND_REQUEST_NOT_FOUND`, `FRIEND_NOT_FOUND` (404); `ALREADY_FRIENDS`, `DUPLICATE_FRIEND_REQUEST` (409); `SELF_FRIENDSHIP` (422). `ErrorResponse.allowableValues` + the `OpenApiIT` canary now assert the exact 19-code set.
+
+**Reviewer verdict:** approved. `./init.sh` green — 173 unit + 170 IT (343 total), 0 failures/errors, 2 skipped (the gated Fairy-Stockfish ITs). All plan-critical invariants verified one by one. New tests: `FriendshipIT` (20 cases — full lifecycle, all error paths, both-direction duplicate, accept-by-non-addressee→404, pagination boundaries, 401 on every endpoint, anonymous game-create regression) + `FriendCodeGeneratorTest` (3 cases, pure logic).
+
+**Files touched:**
+
+New (22): `db/migration/V3__add_friend_code_and_friendships.sql`; `domain/{Friendship,FriendshipStatus}.java`; `persistence/{FriendshipRepository,FriendSummary,FriendRequestSummary}.java`; `service/{FriendCodeGenerator,FriendshipService}.java`; `web/me/{FriendshipController,FriendCodeResponse,SendFriendRequestRequest,FriendResponse,FriendRequestResponse}.java`; `exception/{FriendCodeNotFound,FriendRequestNotFound,FriendNotFound,AlreadyFriends,DuplicateFriendRequest,SelfFriendship}Exception.java`; tests `web/me/FriendshipIT.java`, `service/FriendCodeGeneratorTest.java`; `notes/23.8-friends-list.md`.
+
+Modified: `domain/User.java` (friend_code field/getter, 6→7-arg constructor, all call sites updated together), `service/auth/AuthService.java`, `config/security/OAuth2SuccessHandler.java`, `persistence/UserRepository.java` (`findByFriendCode`/`existsByFriendCode`), `exception/ErrorResponse.java` (+6 codes), `config/OpenApiIT.java` (canary → 19 codes), test helpers in `AuthCoreIT` + `StompAuthIT` + `OAuth2SuccessHandlerIT` (7-arg constructor; OAuth IT now asserts the created user gets a code), `docs/architecture.md` (Friends subsection + API-contract + error-code tables), `README.md` (Friends endpoints), `feature_list.json` (status → done).
+
+**Verification:** `./init.sh` green and deterministic. No STOMP. Cross-repo: new REST surface, additive; the frontend builds the friends UI (documented in `docs/architecture.md`).
+
+**Commit note:** the leader did NOT run git this cycle. All 22 new files are untracked + the modifications above are unstaged — flagged to the user for `git add` at close (the user batches/handles commits). Prior commit: `3daea6f feat: sync docker compose file to EC2 on deploy` (feature 26).
+
+**Follow-ups (not yet promoted):** **direct invitations** (the next feature in the user's roadmap, layered on the accepted-friends set + room-access-tokens 22.7); then **random-matchmaking (24)**, still deferred behind the social pair.
+
+**Feature note:** [`notes/23.8-friends-list.md`](../notes/23.8-friends-list.md).
