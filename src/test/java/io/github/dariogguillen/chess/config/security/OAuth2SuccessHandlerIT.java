@@ -115,6 +115,10 @@ class OAuth2SuccessHandlerIT {
                           + " email/password login path cannot accidentally authenticate them")
                   .isNull();
               assertThat(user.getGoogleSub()).isEqualTo("google-sub-12345");
+              assertThat(user.getFriendCode())
+                  .as("OAuth-created users must also get a friend code (feature 23.8)")
+                  .isNotBlank()
+                  .hasSize(8);
             });
 
     // The JWT must be accepted by feature 16's JwtAuthenticationFilter — call /api/me with it.
@@ -135,6 +139,7 @@ class OAuth2SuccessHandlerIT {
                 "Existing User",
                 null,
                 "google-sub-existing",
+                "FRIENDAA",
                 Instant.now()));
     long countBefore = users.count();
 
@@ -176,6 +181,7 @@ class OAuth2SuccessHandlerIT {
             "Email Password User",
             "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy",
             null,
+            "FRIENDBB",
             Instant.now()));
     long countBefore = users.count();
 

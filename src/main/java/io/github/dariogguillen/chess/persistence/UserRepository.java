@@ -39,4 +39,24 @@ public interface UserRepository extends JpaRepository<User, UUID> {
    * @return the matching user, or {@link Optional#empty()} if no row matches.
    */
   Optional<User> findByGoogleSub(String googleSub);
+
+  /**
+   * Finds a user by their shareable friend code (feature 23.8). The {@code friend_code} column has
+   * a UNIQUE index, so this lookup is index-backed. Powers {@code POST /api/me/friends/requests},
+   * which resolves the addressee from the code in the request body.
+   *
+   * @param friendCode the 8-char code to look up.
+   * @return the matching user, or {@link Optional#empty()} if no user owns the code.
+   */
+  Optional<User> findByFriendCode(String friendCode);
+
+  /**
+   * Reports whether any user already owns the given friend code. Used by {@code
+   * FriendCodeGenerator} to retry on the (vanishingly unlikely) collision against the UNIQUE
+   * constraint before the code is assigned to a new user.
+   *
+   * @param friendCode the candidate code.
+   * @return {@code true} if the code is already taken.
+   */
+  boolean existsByFriendCode(String friendCode);
 }

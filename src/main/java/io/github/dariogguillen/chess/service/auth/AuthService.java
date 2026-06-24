@@ -5,6 +5,7 @@ import io.github.dariogguillen.chess.domain.User;
 import io.github.dariogguillen.chess.exception.EmailAlreadyTakenException;
 import io.github.dariogguillen.chess.exception.InvalidCredentialsException;
 import io.github.dariogguillen.chess.persistence.UserRepository;
+import io.github.dariogguillen.chess.service.FriendCodeGenerator;
 import io.github.dariogguillen.chess.web.auth.AuthResponse;
 import io.github.dariogguillen.chess.web.auth.LoginRequest;
 import io.github.dariogguillen.chess.web.auth.MeResponse;
@@ -58,13 +59,19 @@ public class AuthService {
   private final UserRepository users;
   private final PasswordEncoder passwordEncoder;
   private final JwtIssuer jwtIssuer;
+  private final FriendCodeGenerator friendCodeGenerator;
   private final Clock clock;
 
   public AuthService(
-      UserRepository users, PasswordEncoder passwordEncoder, JwtIssuer jwtIssuer, Clock clock) {
+      UserRepository users,
+      PasswordEncoder passwordEncoder,
+      JwtIssuer jwtIssuer,
+      FriendCodeGenerator friendCodeGenerator,
+      Clock clock) {
     this.users = users;
     this.passwordEncoder = passwordEncoder;
     this.jwtIssuer = jwtIssuer;
+    this.friendCodeGenerator = friendCodeGenerator;
     this.clock = clock;
   }
 
@@ -75,6 +82,10 @@ public class AuthService {
    * Hibernate throws {@link DataIntegrityViolationException} on the duplicate insert, which this
    * method translates into {@link EmailAlreadyTakenException} so the client sees the same
    * structured 409 regardless of which branch triggered.
+   *
+   * <p>Every new user is minted a unique shareable friend code by {@link FriendCodeGenerator}
+   * (feature 23.8) inside this transaction, so the {@code users.friend_code} NOT NULL column is
+   * always populated on the email/password registration path.
    *
    * @param request the validated registration request; {@code email} / {@code password} / {@code
    *     displayName} are guaranteed non-blank by Jakarta Validation at the controller boundary.
@@ -95,6 +106,7 @@ public class AuthService {
             request.displayName(),
             passwordEncoder.encode(request.password()),
             null,
+            friendCodeGenerator.generateUnique(),
             Instant.now(clock));
     User saved;
     try {

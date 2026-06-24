@@ -184,6 +184,12 @@ list on the client side.
 | `EMAIL_ALREADY_TAKEN` | 409 | `EmailAlreadyTakenException` |
 | `INVALID_CREDENTIALS` | 401 | `InvalidCredentialsException` |
 | `INVALID_JOIN_TOKEN` | 403 | `InvalidJoinTokenException` |
+| `FRIEND_CODE_NOT_FOUND` | 404 | `FriendCodeNotFoundException` |
+| `FRIEND_REQUEST_NOT_FOUND` | 404 | `FriendRequestNotFoundException` |
+| `FRIEND_NOT_FOUND` | 404 | `FriendNotFoundException` |
+| `ALREADY_FRIENDS` | 409 | `AlreadyFriendsException` |
+| `DUPLICATE_FRIEND_REQUEST` | 409 | `DuplicateFriendRequestException` |
+| `SELF_FRIENDSHIP` | 422 | `SelfFriendshipException` |
 
 The first six codes are produced mechanically by `GlobalExceptionHandler`'s
 `codeOf(ChessException)` derivation — simple class name minus the
@@ -200,6 +206,13 @@ today), but they share the same `ErrorResponse` envelope.
 thirteenth: `InvalidJoinTokenException` follows the mechanical
 derivation and is mapped to 403 by a narrow `@ExceptionHandler` (like
 `InvalidCredentialsException`'s 401, it has no umbrella superclass).
+Feature 23.8 (`friends-list`) adds the six friendship codes
+(`FRIEND_CODE_NOT_FOUND`, `FRIEND_REQUEST_NOT_FOUND`, `FRIEND_NOT_FOUND`,
+`ALREADY_FRIENDS`, `DUPLICATE_FRIEND_REQUEST`, `SELF_FRIENDSHIP`),
+bringing the total to nineteen; all six are produced mechanically by
+`codeOf` from their `*Exception` subclasses, which extend the existing
+`NotFoundException` / `ConflictException` / `UnprocessableException`
+umbrellas, so no new `@ExceptionHandler` branch was needed.
 
 Adding a new code requires updating both `GlobalExceptionHandler` and
 `ErrorResponse.error`'s `@Schema(allowableValues = {...})`. The
@@ -800,6 +813,85 @@ boundary; `RoomJoinedEvent` does the same on the STOMP side with
 its own nested `PlayerView`. The two-field shape preserves the
 pre-feature-19 wire format byte-for-byte and isolates the contract
 from any future field added to `Player`.
+
+### Friends (feature 23.8)
+
+Feature 23.8 (`friends-list`) lets authenticated users build a mutual
+friends list. It is the prerequisite for the later direct-invitations
+feature (which will be layered on the accepted-friends set plus the
+room-access-tokens of 22.7). Guest play is unaffected — friends require
+an account.
+
+**Discovery by friend code (no enumeration).** Each user gets a stable,
+shareable 8-char `friend_code` at account creation. You add someone by
+typing their code, not by searching a directory — there is no endpoint
+that lists or searches the user base, so the friend graph cannot be
+enumerated. The code is generated in exactly one place,
+`FriendCodeGenerator` (mirroring `RoomCodeGenerator`'s unambiguous
+alphabet `ABCDEFGHJKMNPQRSTUVWXYZ23456789` and collision-retry, but
+owning the retry itself against the `users.friend_code` UNIQUE index),
+invoked at both user-creation paths (`AuthService.register` and the
+OAuth2 find-or-create handler). The V3 migration backfills every
+pre-existing user before flipping the column to `NOT NULL UNIQUE`.
+
+**Symmetric request/accept lifecycle.** A sends a request to B by code;
+B accepts (→ friends) or deletes it (reject). Either party can cancel a
+sent request or remove an accepted friendship. `FriendshipStatus` is a
+two-state ADT (`PENDING | ACCEPTED`) — there is deliberately no
+`REJECTED` state: reject, cancel, and remove all DELETE the row, so
+re-requesting after a reject is valid (no surviving tombstone blocks
+it).
+
+**Unordered-pair uniqueness as a DB invariant.** A UNIQUE index on
+`(LEAST(requester_id, addressee_id), GREATEST(requester_id,
+addressee_id))` guarantees at most one relationship per pair regardless
+of direction. This makes "A already requested B" and "B already
+requested A" the same database-level fact, so a both-directions
+duplicate is a constraint violation rather than a race-prone
+application check. The service pre-checks for the common case and
+catches the `DataIntegrityViolationException` as a race-condition safety
+net, surfacing the same `DUPLICATE_FRIEND_REQUEST` either way.
+
+**UUID storage + live names via entity joins.** `friendships` stores
+raw `requester_id` / `addressee_id` UUIDs with no `@ManyToOne` (the same
+denormalised house style `games` uses). But unlike `games` — which
+*snapshots* the player display name because a game is an audit record —
+the friends/requests list endpoints resolve the OTHER party's
+display name and friend code *live*, via a Hibernate entity join in
+JPQL (`JOIN User u ON u.id = ...`), so a friend's later rename is
+reflected. A friendship is a live relationship; the current name is the
+correct one.
+
+**No existence leak.** Accepting or deleting a request the caller does
+not participate in returns `404 FRIEND_REQUEST_NOT_FOUND` — the exact
+same code and status as a request that never existed — never `403`. The
+repository bakes the caller's id into the `WHERE` clause, so
+"not a participant" and "does not exist" both collapse to
+`Optional.empty()` indistinguishably. Returning 403 would confirm the
+id is real and let an attacker probe for valid request ids.
+
+#### Friends API contract
+
+All routes require a Bearer JWT; an unauthenticated call gets `401
+AUTHENTICATION_REQUIRED`. Pagination follows feature 19's `MyGamesPage`
+contract exactly: Spring Data `Page<T>` envelope, default `size` 20, max
+100, `page >= 0`; an out-of-range value is `400 VALIDATION_FAILED`.
+
+| Method & path | Body | Success | Errors |
+|---|---|---|---|
+| `GET /api/me/friend-code` | — | `200 { friendCode }` | 401 |
+| `POST /api/me/friends/requests` | `{ friendCode }` | `201` | 400 (blank code), 404 `FRIEND_CODE_NOT_FOUND`, 409 `ALREADY_FRIENDS` / `DUPLICATE_FRIEND_REQUEST`, 422 `SELF_FRIENDSHIP`, 401 |
+| `POST /api/me/friends/requests/{id}/accept` | — | `204` | 404 `FRIEND_REQUEST_NOT_FOUND` (also when not the addressee), 401 |
+| `DELETE /api/me/friends/requests/{id}` | — | `204` | 404 `FRIEND_REQUEST_NOT_FOUND` (also when not a participant), 401 |
+| `DELETE /api/me/friends/{userId}` | — | `204` | 404 `FRIEND_NOT_FOUND`, 401 |
+| `GET /api/me/friends?page&size` | — | `200` page of `{ userId, displayName, friendCode, friendsSince }` | 400, 401 |
+| `GET /api/me/friends/requests/incoming?page&size` | — | `200` page of `{ requestId, userId, displayName, friendCode, createdAt }` | 400, 401 |
+| `GET /api/me/friends/requests/outgoing?page&size` | — | same shape as incoming | 400, 401 |
+
+The `GET /api/me/friend-code` endpoint is isolated from feature 16's
+`MeResponse` (the `/api/me` contract is untouched). This is a new REST
+surface with no STOMP component; the change is additive, so the frontend
+builds the friends UI against it without breaking any existing client.
 
 ### WebSocket trust model (feature 20)
 

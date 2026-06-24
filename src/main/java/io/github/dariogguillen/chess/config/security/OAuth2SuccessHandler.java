@@ -3,6 +3,7 @@ package io.github.dariogguillen.chess.config.security;
 import io.github.dariogguillen.chess.config.AuthProperties;
 import io.github.dariogguillen.chess.domain.User;
 import io.github.dariogguillen.chess.persistence.UserRepository;
+import io.github.dariogguillen.chess.service.FriendCodeGenerator;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -72,14 +73,20 @@ public class OAuth2SuccessHandler implements AuthenticationSuccessHandler {
   private final UserRepository users;
   private final JwtIssuer jwtIssuer;
   private final AuthProperties authProperties;
+  private final FriendCodeGenerator friendCodeGenerator;
   private final Clock clock;
   private final RedirectStrategy redirectStrategy = new DefaultRedirectStrategy();
 
   public OAuth2SuccessHandler(
-      UserRepository users, JwtIssuer jwtIssuer, AuthProperties authProperties, Clock clock) {
+      UserRepository users,
+      JwtIssuer jwtIssuer,
+      AuthProperties authProperties,
+      FriendCodeGenerator friendCodeGenerator,
+      Clock clock) {
     this.users = users;
     this.jwtIssuer = jwtIssuer;
     this.authProperties = authProperties;
+    this.friendCodeGenerator = friendCodeGenerator;
     this.clock = clock;
   }
 
@@ -144,6 +151,9 @@ public class OAuth2SuccessHandler implements AuthenticationSuccessHandler {
             // user. Null short-circuits the matches() path in BCryptPasswordEncoder.
             null,
             googleSub,
+            // Every new user — OAuth-created included — gets a unique friend code (feature 23.8)
+            // so the users.friend_code NOT NULL column is populated on both creation paths.
+            friendCodeGenerator.generateUnique(),
             Instant.now(clock));
     return users.save(created);
   }

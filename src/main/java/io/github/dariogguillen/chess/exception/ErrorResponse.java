@@ -36,7 +36,13 @@ public record ErrorResponse(
               "AUTHENTICATION_REQUIRED",
               "EMAIL_ALREADY_TAKEN",
               "INVALID_CREDENTIALS",
-              "INVALID_JOIN_TOKEN"
+              "INVALID_JOIN_TOKEN",
+              "FRIEND_CODE_NOT_FOUND",
+              "FRIEND_REQUEST_NOT_FOUND",
+              "FRIEND_NOT_FOUND",
+              "ALREADY_FRIENDS",
+              "DUPLICATE_FRIEND_REQUEST",
+              "SELF_FRIENDSHIP"
             },
             example = "ROOM_NOT_FOUND")
         String error,

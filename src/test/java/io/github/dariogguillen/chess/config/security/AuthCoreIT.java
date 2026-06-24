@@ -133,8 +133,18 @@ class AuthCoreIT {
   }
 
   private User saveUser(String email, String displayName) {
-    User user = new User(UUID.randomUUID(), email, displayName, null, null, Instant.now());
+    User user =
+        new User(
+            UUID.randomUUID(), email, displayName, null, null, uniqueFriendCode(), Instant.now());
     return users.save(user);
+  }
+
+  /**
+   * A throwaway unique 8-char code for direct test inserts (the prod path uses
+   * FriendCodeGenerator).
+   */
+  private static String uniqueFriendCode() {
+    return UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase();
   }
 
   private String mintToken(UUID userId, String email, long ttlSeconds) {

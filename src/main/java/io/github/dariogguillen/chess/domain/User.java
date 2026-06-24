@@ -61,6 +61,15 @@ public class User {
   @Column(name = "google_sub", length = 255)
   private String googleSub;
 
+  /**
+   * The user's shareable friend code (feature 23.8). NOT NULL + UNIQUE at the database level. The
+   * value is generated once by {@code FriendCodeGenerator} at user-creation time and never changes;
+   * the column length matches {@code V3__add_friend_code_and_friendships.sql}'s {@code VARCHAR(8)}
+   * exactly so Hibernate's {@code ddl-auto: validate} accepts it.
+   */
+  @Column(name = "friend_code", nullable = false, length = 8, unique = true)
+  private String friendCode;
+
   @Column(name = "created_at", nullable = false)
   private Instant createdAt;
 
@@ -69,14 +78,16 @@ public class User {
 
   /**
    * Constructs a fully populated user. Callers are expected to assign a fresh {@link UUID} via
-   * {@code UUID.randomUUID()} and a normalised (lowercase) email; this constructor does not
-   * normalise or validate beyond null-checks delegated to the JPA persistence layer.
+   * {@code UUID.randomUUID()}, a normalised (lowercase) email, and a unique friend code minted by
+   * {@code FriendCodeGenerator}; this constructor does not normalise or validate beyond null-checks
+   * delegated to the JPA persistence layer.
    *
    * @param id the user identifier; non-null.
    * @param email the canonical (lowercase) email; non-null, must be unique in the database.
    * @param displayName the human-readable name; non-null.
    * @param passwordHash the BCrypt-hashed password, or {@code null} for OAuth-only users.
    * @param googleSub the Google {@code sub} claim, or {@code null} for email/password-only users.
+   * @param friendCode the unique shareable friend code; non-null (feature 23.8).
    * @param createdAt the audit timestamp; non-null.
    */
   public User(
@@ -85,12 +96,14 @@ public class User {
       String displayName,
       String passwordHash,
       String googleSub,
+      String friendCode,
       Instant createdAt) {
     this.id = id;
     this.email = email;
     this.displayName = displayName;
     this.passwordHash = passwordHash;
     this.googleSub = googleSub;
+    this.friendCode = friendCode;
     this.createdAt = createdAt;
   }
 
@@ -112,6 +125,10 @@ public class User {
 
   public String getGoogleSub() {
     return googleSub;
+  }
+
+  public String getFriendCode() {
+    return friendCode;
   }
 
   public Instant getCreatedAt() {

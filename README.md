@@ -209,6 +209,18 @@ The returned `token` is a stateless HS256 JWT (7-day lifetime). Send it back as 
 - `GET /api/me` — returns the authenticated user (`{ id, email, displayName }`).
 - `GET /api/me/games?page=&size=` — returns the authenticated user's archived games, newest first, in the standard Spring Data `Page` envelope. Pagination params are `page` (default 0, min 0) and `size` (default 20, min 1, max 100). Authenticated game creation (`POST /api/rooms` / `POST /api/rooms/{id}/join` with a Bearer token) populates `games.white_user_id` / `games.black_user_id` so this endpoint can find them.
 
+#### Friends (feature 23.8)
+
+Authenticated users build a mutual friends list discovered by a shareable **friend code** (each account gets a stable 8-char code; you add someone by entering their code, not by searching the user base). The relationship is symmetric request/accept — A sends a request, B accepts or rejects, either party can cancel or remove. All routes require a Bearer JWT; pagination follows the same `page` / `size` contract as `/api/me/games`.
+
+- `GET /api/me/friend-code` — the caller's shareable code → `200 { friendCode }`.
+- `POST /api/me/friends/requests` — `{ friendCode }` → `201`. Errors: `404 FRIEND_CODE_NOT_FOUND`, `422 SELF_FRIENDSHIP`, `409 ALREADY_FRIENDS`, `409 DUPLICATE_FRIEND_REQUEST`.
+- `POST /api/me/friends/requests/{id}/accept` — addressee accepts → `204`; `404 FRIEND_REQUEST_NOT_FOUND` otherwise (same code whether the request is missing or the caller is not its addressee — no existence leak).
+- `DELETE /api/me/friends/requests/{id}` — cancel (requester) or reject (addressee) → `204`.
+- `DELETE /api/me/friends/{userId}` — remove an accepted friend → `204`; `404 FRIEND_NOT_FOUND`.
+- `GET /api/me/friends?page=&size=` — accepted friends, projecting each friend's live display name, friend code, and `friendsSince`.
+- `GET /api/me/friends/requests/incoming?page=&size=` and `GET /api/me/friends/requests/outgoing?page=&size=` — pending requests where the caller is the addressee / requester respectively.
+
 Full request/response shapes live in the Swagger UI linked above.
 
 ### WebSocket (STOMP)

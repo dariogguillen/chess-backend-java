@@ -102,7 +102,7 @@ class OpenApiIT {
   }
 
   @Test
-  void errorResponseSchema_listsExactlyTheThirteenKnownErrorCodes() throws Exception {
+  void errorResponseSchema_listsExactlyTheNineteenKnownErrorCodes() throws Exception {
     MvcResult result = mockMvc.perform(get("/v3/api-docs")).andExpect(status().isOk()).andReturn();
 
     JsonNode spec = objectMapper.readTree(result.getResponse().getContentAsString());
@@ -123,10 +123,18 @@ class OpenApiIT {
     // Feature 17 added the three auth codes (AUTHENTICATION_REQUIRED, EMAIL_ALREADY_TAKEN,
     // INVALID_CREDENTIALS) on top of the 9-code allowlist that feature 6.6 established.
     // Feature 22.7 added INVALID_JOIN_TOKEN for the 403 on a missing or wrong room join token.
+    // Feature 23.8 (friends-list) added the six friendship codes: FRIEND_CODE_NOT_FOUND,
+    // FRIEND_REQUEST_NOT_FOUND, FRIEND_NOT_FOUND (404), ALREADY_FRIENDS,
+    // DUPLICATE_FRIEND_REQUEST (409), SELF_FRIENDSHIP (422).
     List<String> expected =
         List.of(
+            "ALREADY_FRIENDS",
             "AUTHENTICATION_REQUIRED",
+            "DUPLICATE_FRIEND_REQUEST",
             "EMAIL_ALREADY_TAKEN",
+            "FRIEND_CODE_NOT_FOUND",
+            "FRIEND_NOT_FOUND",
+            "FRIEND_REQUEST_NOT_FOUND",
             "GAME_ALREADY_ENDED",
             "GAME_NOT_FOUND",
             "ILLEGAL_MOVE",
@@ -137,6 +145,7 @@ class OpenApiIT {
             "NOT_YOUR_TURN",
             "ROOM_FULL",
             "ROOM_NOT_FOUND",
+            "SELF_FRIENDSHIP",
             "VALIDATION_FAILED");
     assertThat(actual).isEqualTo(expected);
   }

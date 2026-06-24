@@ -270,7 +270,9 @@ class StompAuthIT {
   }
 
   private User saveUser(String email, String displayName) {
-    User user = new User(UUID.randomUUID(), email, displayName, null, null, Instant.now());
+    String friendCode = UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase();
+    User user =
+        new User(UUID.randomUUID(), email, displayName, null, null, friendCode, Instant.now());
     return users.save(user);
   }
 

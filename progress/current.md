@@ -1,9 +1,86 @@
 # Current session
 
-**Status:** closed — no active feature. Feature
-`bot-strength-fairy-stockfish` (priority 23.7) closed on 2026-05-30 with
-reviewer approval and explicit user sign-off. Session ended for the day.
-See `progress/history.md` for the entry.
+**Status:** ACTIVE — feature `friends-list` (priority 23.8) in_progress.
+Plan locked below, awaiting user approval before dispatching the implementer.
+
+## Feature 23.8 `friends-list` — plan (2026-06-23)
+
+First feature of the social pair (friends → direct invitations). Mutual
+request/accept friendships, discovered by a **shareable friend code**.
+Product decisions taken with the user (2026-06-23):
+
+1. **Modelo:** request/accept mutuo (estados PENDING → ACCEPTED).
+2. **Descubrimiento:** friend code compartible (sin enumeración del padrón).
+3. **Alcance:** ciclo completo (send / accept / reject / cancel / list
+   friends / list incoming+outgoing / remove).
+
+### Leader architecture decisions (within the locked scope)
+- **friend_code**: columna `NOT NULL UNIQUE` en `users` (VARCHAR(8)),
+  generada en **un solo lugar** (`FriendCodeGenerator`, espeja el generador
+  de room-code de `RoomService` con retry por colisión y el alfabeto sin
+  caracteres ambiguos) en los DOS paths de creación de usuario
+  (`AuthService.register` + el find-or-create de OAuth). Los usuarios
+  preexistentes en prod se **backfillean en la migración V3**.
+- **friendships** guarda **UUIDs** (`requester_id`, `addressee_id`), SIN
+  `@ManyToOne` — consistente con cómo `games` denormaliza. El `displayName`
+  vivo se obtiene con **entity joins** de Hibernate en JPQL
+  (`JOIN User u ON u.id = f.addresseeId`), no snapshot → un rename del amigo
+  se refleja.
+- **Unicidad por par desordenado**: índice UNIQUE sobre
+  `(LEAST(requester_id,addressee_id), GREATEST(...))` → a lo sumo UNA
+  relación por par, en cualquier dirección. Bloquea A→B y B→A simultáneos.
+- **reject / cancel / remove BORRAN la fila** (no hay estado REJECTED);
+  status solo PENDING|ACCEPTED. Re-solicitar después de un reject es válido.
+- **Sin fuga de existencia**: aceptar/borrar una request donde el caller no
+  es participante devuelve `404 FRIEND_REQUEST_NOT_FOUND` (mismo código que
+  si no existiera), no 403.
+
+### REST surface (todo bajo `/api/me`, Bearer JWT, patrón `@AuthenticationPrincipal User`)
+- `GET    /api/me/friend-code` → `{ friendCode }` (aislado; NO toca MeResponse de la feature 16).
+- `POST   /api/me/friends/requests` body `{ friendCode }` → 201; 404 code, 422 self, 409 already / duplicate.
+- `POST   /api/me/friends/requests/{id}/accept` → addressee acepta; 404 si no es el addressee.
+- `DELETE /api/me/friends/requests/{id}` → cancel (requester) o reject (addressee); 204.
+- `DELETE /api/me/friends/{userId}` → remove accepted friend; 204 / 404 FRIEND_NOT_FOUND.
+- `GET    /api/me/friends?page&size` → accepted, proyecta al OTRO user (id, displayName vivo, friendCode, friendsSince).
+- `GET    /api/me/friends/requests/incoming?page&size` → PENDING donde soy addressee.
+- `GET    /api/me/friends/requests/outgoing?page&size` → PENDING donde soy requester.
+
+Paginación = `Page<T>` Spring Data, default 20 / max 100 / page≥0, igual que
+feature 19 (`MyGamesPage`). Out-of-range → 400 VALIDATION_FAILED.
+
+### Files to create
+- `src/main/resources/db/migration/V3__add_friend_code_and_friendships.sql`
+- `domain/Friendship.java` (@Entity, UUIDs, status enum), `domain/FriendshipStatus.java`
+- `persistence/FriendshipRepository.java` + projection records `FriendSummary`, `FriendRequestSummary`
+- `service/FriendshipService.java`, `service/FriendCodeGenerator.java`
+- `web/me/FriendshipController.java` + DTOs (`SendFriendRequestRequest`, `FriendCodeResponse`, Page wrappers)
+- `exception/`: `FriendCodeNotFoundException`, `FriendRequestNotFoundException`,
+  `FriendNotFoundException` (404), `AlreadyFriendsException`,
+  `DuplicateFriendRequestException` (409), `SelfFriendshipException` (422)
+- `notes/23.8-friends-list.md`
+- Tests: `FriendshipIT`, `FriendCodeGeneratorTest`
+
+### Files to modify
+- `domain/User.java` (+friend_code field/getter), `service/auth/AuthService.java`
+  + el OAuth success/find-or-create (set friend code on creation)
+- `exception/ErrorResponse.java` (+6 allowableValues) y el canary IT de error-codes
+- `docs/architecture.md` (sección Friends + API contract), `README.md` (endpoints)
+
+### Verification
+`./init.sh` — cubierto por `FriendshipIT` (full lifecycle + 401s + pagination
++ no-leak 404 + regresión anónima), `FriendCodeGeneratorTest`, y el canary de
+error-codes. Sin STOMP. Cross-repo: nueva superficie REST, aditiva; el
+frontend construye la UI de amigos (documentado en architecture.md).
+
+### Concepts for the feature note
+JPQL entity joins (Hibernate) vs relaciones `@ManyToOne`; invariante de
+unicidad por par desordenado a nivel DB vs chequeo en app; el enum
+`FriendshipStatus` como ADT; backfill en migración + generación en runtime;
+paralelos Scala/doobie (SQL join explícito) y el 404-no-leak.
+
+### Next step
+Esperar OK del user al plan → dispatch `implementer` → `./init.sh` →
+`reviewer` → user OK → `done` + nota + history.
 
 ---
 
@@ -64,15 +141,21 @@ Sesión de mantenimiento (no feature). Hallazgos y acciones:
   deploy (acabamos de estabilizar prod).
 - Cerrada: implementer → reviewer APROBÓ → user OK → `done`. `feature_list.json`
   ahora 38 done / 0 in_progress / 1 pending (solo queda 24, diferido).
-- **Smoke test pendiente del PRÓXIMO push**: al pushear la 26, GitHub Actions
-  corre el `deploy.yml` NUEVO (el del commit), así que ese push valida el scp.
-  Sugerido: añadir un comentario inocuo a `docker-compose.prod.yml`, push, y
-  `sudo cat /opt/chess/docker-compose.prod.yml` en la EC2 para confirmar el sync.
+- **Smoke test ✅ PASADO (2026-06-23)**: tras un deploy, el
+  `cat /opt/chess/docker-compose.prod.yml` en la EC2 (host
+  `ip-172-31-42-67`) salió **byte-idéntico** al `docker-compose.prod.yml`
+  del repo HEAD — mismos comentarios ricos (colon-bug, auth-bundle, CORS
+  NOTE), `JAVA_TOOL_OPTIONS` y los 4 env vars de auth. El `scp` sobrescribió
+  el archivo que dejó el hotfix manual de la 25 → la sincronización
+  repo→EC2 funciona end-to-end. Feature 26 verificada en producción.
 
 ### Pendientes de esta línea ops
-- Al **encender**: conseguir root (`ubuntu` vía EC2 Instance Connect, funciona
-  con la instancia recién arrancada) y aplicar **swap (1-2 GB) + cap de `-Xmx`**
-  en la JVM para que aguante encendida sin colgarse.
+- ✅ **RESUELTO (2026-06-23)**: swap + cap `-Xmx` aplicados y verificados en la
+  EC2 encendida (host `ip-172-31-42-67`). `swapon --show`: `/swapfile` 2 GB,
+  47 MiB usados. `free -h`: 693 MiB de 911 usados pero **217 MiB available**
+  (buff/cache reclamable), swap casi sin tocar. El cap `-Xmx320m` del compose
+  contiene el heap; el escenario de OOM-kill por 0-swap (RSS ~400 MiB sin
+  colchón) quedó mitigado. La instancia ya aguanta encendida sin colgarse.
 - **RDS se auto-enciende a los 7 días** → re-parar manual, o montar
   EventBridge+Lambda que lo re-pare.
 - Si en algún momento se quiere desplegar el trabajo local (bot, room-tokens,
