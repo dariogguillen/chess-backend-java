@@ -206,7 +206,9 @@ Guest play stays open on every existing surface; an account unlocks "review my p
 
 The returned `token` is a stateless HS256 JWT (7-day lifetime). Send it back as `Authorization: Bearer <token>` on subsequent requests to authenticated endpoints. Today the auth-required surface is:
 
-- `GET /api/me` — returns the authenticated user (`{ id, email, displayName }`).
+- `GET /api/me` — returns the authenticated user (`{ id, email, displayName, createdAt }`; `createdAt` is the "member since" timestamp, added in feature 23.91).
+- `PATCH /api/me` — `{ displayName }` → `200` with the updated `MeResponse`. Renames the display name (`@NotBlank`, ≤100 chars; a blank or too-long value → `400 VALIDATION_FAILED`). The rename reflects live in the friends list but not in past games (those snapshot the name at archive time).
+- `PUT /api/me/password` — `{ currentPassword, newPassword }` → `204`. Verifies the current password against the stored hash, then sets the new BCrypt hash (`newPassword` is 8–72 chars; a weak/oversized value → `400 VALIDATION_FAILED`). A wrong current password — or an OAuth-only account that has no password set — returns `401 INVALID_CREDENTIALS`, with no leak of which case applied. Existing JWTs are not revoked (the tokens are stateless).
 - `GET /api/me/games?page=&size=` — returns the authenticated user's archived games, newest first, in the standard Spring Data `Page` envelope. Pagination params are `page` (default 0, min 0) and `size` (default 20, min 1, max 100). Authenticated game creation (`POST /api/rooms` / `POST /api/rooms/{id}/join` with a Bearer token) populates `games.white_user_id` / `games.black_user_id` so this endpoint can find them.
 
 #### Friends (feature 23.8)

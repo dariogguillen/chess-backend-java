@@ -567,11 +567,21 @@ Spring Security 6+ idiom — no deprecated
 
 ### `GET /api/me`
 
-Returns 200 with `{ id, email, displayName }` on a valid JWT; returns
-401 (with a structured `ErrorResponse` body — see "401 entry point"
-below) on a missing, malformed, expired, or differently-signed JWT.
-Used as the frontend's "is my stored token still valid?" probe and as
-the regression-locking surface for the auth filter chain.
+Returns 200 with `{ id, email, displayName, createdAt }` on a valid
+JWT; returns 401 (with a structured `ErrorResponse` body — see "401
+entry point" below) on a missing, malformed, expired, or
+differently-signed JWT. Used as the frontend's "is my stored token
+still valid?" probe and as the regression-locking surface for the auth
+filter chain.
+
+`createdAt` (an ISO-8601 instant, the account's "member since"
+timestamp) was added by feature 23.91 (`profile-edit`). It is on the
+`User` entity already; the field was simply surfaced on `MeResponse`.
+All three construction sites of that payload — `MeController`,
+`AuthService` (register/login), and the new `ProfileService` — now go
+through a single `MeResponse.of(User)` factory, so `AuthResponse.user`
+on register/login carries `createdAt` too (additive, no breaking
+change).
 
 ### JWT issuance (feature 17)
 
@@ -641,6 +651,57 @@ message is intentionally uniform: missing header, expired token, and
 forged token all surface identically, mirroring
 `JwtAuthenticationFilter`'s policy of not logging the specific JWT
 failure reason in the response.
+
+### Profile editing (feature 23.91)
+
+Feature 23.91 (`profile-edit`) rounds out the authenticated user's
+own-profile surface with two write endpoints on the existing
+`/api/me` resource, plus the `createdAt` exposure described under
+`GET /api/me` above. No Flyway migration — the `created_at`,
+`display_name`, and `password_hash` columns already exist; this
+feature only touched the DTO/service/controller layers.
+
+| Method & path | Body | Success | Errors |
+| --- | --- | --- | --- |
+| `PATCH /api/me` | `{ displayName }` | `200` updated `MeResponse` | 400 `VALIDATION_FAILED` (blank / >100 chars), 401 |
+| `PUT /api/me/password` | `{ currentPassword, newPassword }` | `204` no body | 400 `VALIDATION_FAILED` (newPassword blank / outside 8-72), 401 `INVALID_CREDENTIALS` (wrong current, or OAuth-only account), 401 (no token) |
+
+- **Two endpoints, not one.** A display-name rename and a password
+  change have different bodies, different success codes (200 with a
+  body vs 204), and different security posture (the password change
+  must verify the current password). They are kept as separate
+  operations rather than a single `PATCH` with optional fields.
+- **Email is not editable here.** It is the unique login identity and
+  would need a re-verification flow; out of scope.
+- **OAuth-only accounts** (those with a `null` `password_hash`) cannot
+  change their password: `PasswordEncoder.matches(current, null)`
+  returns `false`, so the attempt fails with the same 401
+  `INVALID_CREDENTIALS` as a wrong current password — no new error
+  code, and no leak of whether the account is OAuth-only. No new error
+  codes are introduced (`ErrorResponse`'s allowable-values canary
+  stays at 21).
+- **No JWT re-issue on either change.** A display-name rename does not
+  touch any JWT claim (`sub` = userId, the only identity claim is
+  `email`), so existing tokens stay valid as-is. A password change
+  *cannot* revoke existing stateless tokens — there is no server-side
+  token store — so the old token remains valid until it expires; this
+  is the accepted trade-off of the stateless-JWT model.
+- **The service mutates a managed entity.** `ProfileService` re-loads
+  the `User` by id inside a `@Transactional` method and mutates it
+  through intention-revealing domain methods (`User.rename`,
+  `User.changePasswordHash`), relying on Hibernate dirty-checking to
+  flush. It deliberately does *not* mutate the detached
+  `@AuthenticationPrincipal User` the controller resolves — that
+  instance is bound to a closed persistence context and the change
+  would not persist.
+
+**Snapshot vs live on rename.** A display-name change reflects
+*live* in the friends list (feature 23.8 projects each friend's
+display name via an entity join at query time), but *not* in past
+games: the `games` table snapshots `white_display_name` /
+`black_display_name` at archive time (feature 9, denormalised by
+design). This is intentional audit semantics — a finished game shows
+the name the player used when it was played.
 
 ### Google OAuth 2.0 sign-in (feature 18)
 

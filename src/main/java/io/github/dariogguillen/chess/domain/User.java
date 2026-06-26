@@ -135,6 +135,34 @@ public class User {
     return createdAt;
   }
 
+  /**
+   * Renames this user's display name. Intention-revealing domain mutator used by {@code
+   * ProfileService.updateDisplayName} (feature 23.91) so a profile edit reads as a domain operation
+   * rather than a raw {@code setDisplayName} call. The package-private setter stays for
+   * JPA/internal use; this method is the public, named entry point. The caller is responsible for
+   * invoking this on a JPA-managed instance inside a transaction so Hibernate's dirty checking
+   * flushes the change.
+   *
+   * @param displayName the new human-readable name; non-null, capped at 100 chars at the validation
+   *     boundary ({@code UpdateProfileRequest}).
+   */
+  public void rename(String displayName) {
+    this.displayName = displayName;
+  }
+
+  /**
+   * Replaces this user's BCrypt password hash. Intention-revealing domain mutator used by {@code
+   * ProfileService.changePassword} (feature 23.91) after the current password has been verified.
+   * Takes an already-hashed value — hashing is the service's responsibility via the {@code
+   * PasswordEncoder}; the domain never sees the plain text. Must be invoked on a JPA-managed
+   * instance inside a transaction so the change is flushed by dirty checking.
+   *
+   * @param newHash the new BCrypt hash; non-null.
+   */
+  public void changePasswordHash(String newHash) {
+    this.passwordHash = newHash;
+  }
+
   void setEmail(String email) {
     this.email = email;
   }

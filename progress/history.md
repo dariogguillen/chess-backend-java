@@ -2599,3 +2599,77 @@ Modified: `domain/User.java` (friend_code field/getter, 6→7-arg constructor, a
 **Follow-ups (not yet promoted):** **direct invitations** (the next feature in the user's roadmap, layered on the accepted-friends set + room-access-tokens 22.7); then **random-matchmaking (24)**, still deferred behind the social pair.
 
 **Feature note:** [`notes/23.8-friends-list.md`](../notes/23.8-friends-list.md).
+
+## 2026-06-24 — direct-invitations (feature 23.9)
+
+**Status:** done. Full harness cycle (leader plan → user-approved product decisions → implementer → reviewer → user OK). No reject loop; one substantive in-scope deviation (a latent feature-20 STOMP bug surfaced and fixed, see below). Second and final feature of the social pair (friends → invitations).
+
+**Summary:** An authenticated user creates a FRIEND room (gets the joinToken, 22.7), then invites one of their ACCEPTED friends to that room. The invitee gets the invitation in **real time over a NEW per-user STOMP destination** (`/user/queue/invitations`) when connected+authenticated, and can also pull pending invitations over REST (offline path). Accepting performs the room join **server-side** so the joinToken never reaches the invitee's client. Full lifecycle: send, accept (→ joins as 2nd player), decline, cancel (inviter), list incoming (invitee). Anonymous guest play unaffected; invitations require an account on both sides.
+
+**Product decisions (taken with the user, 2026-06-24):**
+- **Invite to an already-created room** (the invite is the authorized delivery of 22.7's joinToken), not a challenge-creates-room model.
+- **Per-user STOMP push + REST list** for delivery (real-time when online, pullable when offline).
+- **Ephemeral in Redis, tied to the room** (24h TTL), no Flyway migration.
+
+**Leader architecture decisions:**
+- **accept = server-side join**: reads `joinToken` from the stored Room and calls `RoomService.joinRoom` — the token never travels to the client. Reusing `joinRoom` means the inviter is notified by the **existing `RoomJoinedEvent`** (9.5); no new accept event (no duplicate signal).
+- **Invitation identity = roomId** from the invitee's view (≤1 invitation per (room, invitee)); accept/decline keyed by `{roomId}`.
+- **No SCAN**: per-invitee Redis hash `invitations:user:{inviteeId}` (field=roomId → serialized `Invitation`), TTL-on-write; liveness re-validated against the RoomStore at read/accept and stale entries pruned lazily.
+- **Error reuse**: friend gate → `FRIEND_NOT_FOUND` (existing); full/bot/legacy room → `ROOM_FULL` (existing); duplicate (room,invitee) → idempotent overwrite. Only two new codes.
+
+**The feature-20 bug this surfaced and fixed (substantive deviation):** per-user push (`convertAndSendToUser`) resolves a user's sessions via `SimpUserRegistry`, which is populated from the WebSocket **session** principal — NOT the message header. Feature 20's `StompAuthInterceptor` set the user on a `StompHeaderAccessor.wrap(...)` copy, enough for `@MessageMapping` name resolution but it never triggered `StompSubProtocolHandler`'s `setUserChangeCallback`, so the registry stayed empty and every per-user push was silently dropped (server logged "pushed" but nothing arrived). Fix: set the principal on the existing **mutable** inbound accessor (`MessageHeaderAccessor.getAccessor(...)`) when mutable, with the old wrap-and-rebuild kept as a defensive fallback. Minimal, additive; the anonymous CONNECT path returns early before the new code; all 5 `StompAuthIT` cases (anonymous, valid-JWT identified, invalid-JWT-stays-anonymous, spoof rejections) stayed green. Per-user push would never have worked without this — a real latent defect in the shipped feature 20.
+
+**REST surface (all `/api/me`, Bearer JWT):** `POST /invitations` `{roomId, friendUserId}`; `GET /invitations`; `POST /invitations/{roomId}/accept` (→ joined `RoomResponse`); `DELETE /invitations/{roomId}` (decline); `DELETE /invitations/{roomId}/to/{inviteeUserId}` (cancel). **STOMP:** new user-destination `/user/queue/invitations` (`WebSocketConfig` added `/queue` to the broker + `setUserDestinationPrefix("/user")`); sealed `InvitationEvent` family with discriminator `type()` — `InvitationReceivedEvent` (→ invitee), `InvitationDeclinedEvent` (→ inviter), `InvitationCancelledEvent` (→ invitee). Accept emits no event (reuses `RoomJoinedEvent`).
+
+**Error codes:** two new, auto-derived via `codeOf()` — `INVITATION_NOT_FOUND` (404, extends `NotFoundException`), `NOT_ROOM_MEMBER` (403, wired like `InvalidJoinTokenException`). `ErrorResponse.allowableValues` → 21; `OpenApiIT` canary asserts the exact 21-code set.
+
+**Reviewer verdict:** approved. `./init.sh` green on TWO independent clean runs (no flake reproduced). New `InvitationIT` (20 cases — send happy + 404 non-friend + 404 room + 403 non-member + 409 full; GET lists live-only with stale pruning; accept performs the join + inviter receives `RoomJoinedEvent`; accept-after-full → 409/404; decline; cancel; **per-user push received by an authenticated invitee client subscribed to `/user/queue/invitations`** via Awaitility; token-less session does NOT receive it; 401 on every endpoint; anonymous game-create regression). Transaction scoping correct (only the JPA friendship check is `@Transactional(readOnly=true)`; pure-Redis paths carry no annotation).
+
+**Files touched:**
+
+New (15): `cache/{InvitationStore,RedisInvitationStore}.java`; `domain/Invitation.java`; `service/InvitationService.java`; `web/me/{InvitationController,SendInvitationRequest,InvitationResponse}.java`; `websocket/{InvitationEvent,InvitationReceivedEvent,InvitationDeclinedEvent,InvitationCancelledEvent}.java`; `exception/{InvitationNotFoundException,NotRoomMemberException}.java`; test `web/me/InvitationIT.java`; `notes/23.9-direct-invitations.md`.
+
+Modified (8): `config/WebSocketConfig.java` (/queue broker + user-destination prefix), `config/RedisConfig.java` (`invitationRedisTemplate` bean), `websocket/StompAuthInterceptor.java` (the feature-20 fix above), `exception/GlobalExceptionHandler.java` (403 handler for `NotRoomMemberException`), `exception/ErrorResponse.java` (+2 codes → 21), `config/OpenApiIT.java` (canary → 21), `docs/architecture.md` (Invitations subsection + user-destination + API contract), `README.md` (endpoints + user-queue subscription).
+
+**Verification:** `./init.sh` green and deterministic. Cross-repo: new REST surface + a NEW STOMP user-destination (`/user/queue/invitations`, requires an authenticated CONNECT) — the frontend builds the invite UI and subscribes to the user queue; additive, no existing contract changed.
+
+**Commit note:** the leader did NOT run git. All 15 new files untracked + the 8 modifications unstaged — flagged to the user for `git add` (the user batches/handles commits). Prior commit: `3daea6f feat: sync docker compose file to EC2 on deploy` (feature 26); friends-list (23.8) is also uncommitted ahead of it.
+
+**Non-blocking follow-up (reviewer-flagged, deferred by leader+user at close):** `InvitationService.cancel` only enforces the 403 `NOT_ROOM_MEMBER` when the room still exists (`room != null && !isMember`). If a room TTL'd out but a stale invitation lingers, a non-member's cancel would skip the 403 and just delete the dead entry. Harmless (no leak; you can only have created the invitation as a member, and the room is already gone) — noted, not fixed.
+
+**Social pair COMPLETE** (friends 23.8 + invitations 23.9). Next per the user's roadmap: a **profile-support** backend feature (expose `createdAt` on `/api/me`, a `GET /api/me/stats` aggregate, a `PATCH /api/me` for rename/password) to round out the frontend's user-profile page — discussed 2026-06-24, not yet promoted. `random-matchmaking` (24) stays deferred.
+
+**Feature note:** [`notes/23.9-direct-invitations.md`](../notes/23.9-direct-invitations.md).
+
+## 2026-06-26 — profile-edit (feature 23.91)
+
+**Status:** done. Full harness cycle (leader plan → user-approved breakdown → implementer → reviewer → user OK). No reject loop; no substantive deviations. First feature of the **profile-support arc** (a small-features breakdown the user chose after we found the win/loss gap: profile-edit → game-result-persistence → me-stats → game-review).
+
+**Summary:** Rounds out the authenticated user's own-profile surface for the frontend's profile page. Three additive changes, **no Flyway migration** (createdAt, display_name, password_hash columns already existed): (1) expose `createdAt` on `GET /api/me` ("member since"); (2) `PATCH /api/me` `{ displayName }` to rename; (3) `PUT /api/me/password` `{ currentPassword, newPassword }` to change the password. Email change stayed out of scope (unique login identity, needs re-verification); avatar + public-profile are later follow-ups.
+
+**Origin (the win/loss-gap conversation, 2026-06-24/26):** while scoping a frontend user-profile page (which also wants game review + general stats), the user/frontend found that the archived `games` table records only `status` (CHECKMATE/STALEMATE/DRAW/ABANDONED/TIMEOUT), NOT who won. Confirmed against the schema: there is no winner/result column. The winner IS computed at runtime in every terminal path (`GameAbandonService`, `GameTimeoutService`, `BotMoveService` all build a `winnerId` and broadcast it on their STOMP events) but the archive (`mapper.toEntity`) drops it. So from history: CHECKMATE/TIMEOUT/DRAW are derivable from `final_fen`, but ABANDONED's winner is unrecoverable. This corrected an earlier leader claim that stats could be a pure JPQL aggregate with no schema change — they cannot; the result must be persisted. The user chose to split profile-support into small features and start with `profile-edit`.
+
+**Leader decisions:**
+- **Two endpoints, not one PATCH with optional fields** — password change has distinct semantics (verify current) and security posture, so it gets its own `PUT /api/me/password`.
+- **OAuth-only users (password_hash null)**: `PasswordEncoder.matches(plain, null)` returns false → same **401 INVALID_CREDENTIALS** as a wrong current password. No new error code, no leak of OAuth-only status.
+- **Domain mutators, not exposed setters**: `User` gained public `rename(String)` + `changePasswordHash(String)`; the package-private setters stayed. `ProfileService` mutates a **re-loaded managed** `User` (`findById`) inside `@Transactional` (dirty-checking), never the detached `@AuthenticationPrincipal`.
+- **`MeResponse.of(User)` factory** de-dups the three construction sites (MeController, AuthService.toMeResponse, ProfileService) so the `createdAt` addition landed in one place; `AuthResponse.user` (register/login) now also carries createdAt (additive, `AuthEndpointsIT` stayed green).
+- **No JWT re-issue** on either change (displayName isn't a claim; password change can't revoke stateless tokens) — documented.
+- **Snapshot vs live**: a rename reflects in the friends list (entity join, 23.8) but NOT in past games (denormalized snapshot — audit-correct, intentional).
+- **Defensive missing-by-id** → `IllegalStateException` (500): genuinely unreachable (the JWT filter already loaded the user), so a 500 is the honest signal for a can't-happen state; inventing a 4xx code would be wrong. Reviewer concurred (non-blocking).
+
+**Reviewer verdict:** approved. `./init.sh` green — 197 IT + 173 unit = **370 tests**, 0 failures/errors. New `ProfileIT` (10 cases: createdAt non-null; PATCH rename 200 + persisted + id/email unchanged; PATCH blank/too-long → 400; PUT correct-current → 204 then new-password login 200 / old-password 401; PUT wrong-current → 401; PUT OAuth-only null-hash → 401; PUT weak → 400; 401-no-token on both). `ErrorResponse` canary stays at 21; no migration (V3 latest).
+
+**Files touched:**
+
+New (5): `service/ProfileService.java`; `web/auth/{UpdateProfileRequest,ChangePasswordRequest}.java`; test `web/auth/ProfileIT.java`; `notes/23.91-profile-edit.md`.
+
+Modified (6): `domain/User.java` (public `rename`/`changePasswordHash`; setters stay package-private), `web/auth/MeResponse.java` (+createdAt, `of(User)` factory, corrected JavaDoc), `web/auth/MeController.java` (+ctor injecting ProfileService, `@PatchMapping`, `@PutMapping("/password")`, full Springdoc), `service/auth/AuthService.java` (`toMeResponse` delegates to `MeResponse.of`), `docs/architecture.md` (Profile-editing subsection + createdAt + snapshot-vs-live note), `README.md` (Authentication subsection).
+
+**Verification:** `./init.sh` green. Cross-repo: additive (createdAt on `/api/me` + two new endpoints); no breaking change; frontend reads the new field and wires the edit UI.
+
+**Commit note:** the leader did NOT run git. All 5 new files untracked + 6 modifications unstaged — flagged to the user for `git add`. Now THREE features sit uncommitted ahead of `3daea6f`: friends-list (23.8), direct-invitations (23.9), profile-edit (23.91).
+
+**Next in the profile-support arc:** `game-result-persistence` (the foundation — V4 migration adding a `result` column, thread the already-computed `winnerId` into the 4 terminal archive paths, backfill old rows from `final_fen` where derivable, expose `result` in the my-games summary) → then `me-stats` (`GET /api/me/stats` aggregate) → `game-review` (`GET /api/me/games/{id}` with the full move list). `random-matchmaking` (24) stays deferred.
+
+**Feature note:** [`notes/23.91-profile-edit.md`](../notes/23.91-profile-edit.md).

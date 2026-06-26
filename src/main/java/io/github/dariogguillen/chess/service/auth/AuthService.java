@@ -153,6 +153,6 @@ public class AuthService {
   }
 
   private static MeResponse toMeResponse(User user) {
-    return new MeResponse(user.getId(), user.getEmail(), user.getDisplayName());
+    return MeResponse.of(user);
   }
 }
