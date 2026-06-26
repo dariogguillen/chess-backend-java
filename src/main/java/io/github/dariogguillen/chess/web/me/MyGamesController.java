@@ -20,6 +20,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -98,6 +99,47 @@ public class MyGamesController {
     Page<ArchivedGamePlayerView> archived =
         gameHistoryService.findByUser(userId, PageRequest.of(page, size));
     return archived.map(view -> toSummary(view, userId));
+  }
+
+  @Operation(
+      summary = "Get one archived game with its full move list",
+      description =
+          "Returns a single archived (terminal-status) game the caller participated in, with the "
+              + "FULL ordered move list (move_idx ascending) plus the starting and final FEN, so "
+              + "the frontend can replay it move-by-move. Requires a valid Bearer JWT. The caller "
+              + "must be a participant (white_user_id OR black_user_id matches): a non-participant, "
+              + "an unknown game id, and an anonymous game (both user ids null) ALL return the same "
+              + "404 GAME_NOT_FOUND (no-leak — a non-participant cannot tell a game exists).")
+  @ApiResponse(
+      responseCode = "200",
+      description = "The archived game with its full move list.",
+      content =
+          @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MyGameDetail.class)))
+  @ApiResponse(
+      responseCode = "401",
+      description =
+          "Missing, malformed, expired, or unsigned-by-us JWT. Body is the standard ErrorResponse "
+              + "envelope with code AUTHENTICATION_REQUIRED.",
+      content =
+          @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = ErrorResponse.class)))
+  @ApiResponse(
+      responseCode = "404",
+      description =
+          "No archived game with that id exists for which the caller was a participant. The "
+              + "not-found and not-a-participant cases are indistinguishable (no-leak). Body is the "
+              + "standard ErrorResponse envelope with code GAME_NOT_FOUND.",
+      content =
+          @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = ErrorResponse.class)))
+  @GetMapping("/{id}")
+  public MyGameDetail getMyGame(
+      @AuthenticationPrincipal User currentUser, @PathVariable("id") UUID id) {
+    return gameHistoryService.detailForUser(id, currentUser.getId());
   }
 
   /**

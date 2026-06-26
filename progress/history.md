@@ -2707,3 +2707,62 @@ Modified: `domain/Game.java`, `service/{GameService,GameAbandonService,GameTimeo
 **Next in the arc:** `me-stats` (`GET /api/me/stats` — JPQL aggregate of W/L/D, total, win % over `games.result` cross-referenced with the user's side) → then `game-review` (`GET /api/me/games/{id}` with the full move list). `random-matchmaking` (24) stays deferred.
 
 **Feature note:** [`notes/23.92-game-result-persistence.md`](../notes/23.92-game-result-persistence.md).
+
+## 2026-06-26 — me-stats (feature 23.93)
+
+**Status:** done. Full harness cycle (leader plan → implementer → reviewer APPROVE first pass → user OK). No reject loop; no deviations. Third of the **profile-support arc** (profile-edit → game-result-persistence → THIS → game-review).
+
+**Summary:** A single new authenticated endpoint `GET /api/me/stats` returns the user's overall W/L/D record — `{ total, wins, losses, draws, unknown, winRate }` — built on the `games.result` column from 23.92. The win/loss derivation cross-references `result` with the user's side (`white_user_id` vs `black_user_id`). Computed by ONE JPQL aggregate query (conditional `SUM(CASE...)` + `COUNT`), not by loading the game list.
+
+**Leader decisions (minor/defensible, stated in the plan):**
+- **NULL-result legacy rows** (old ABANDONED, winner unrecoverable) count toward `total` and surface as a separate `unknown` bucket, EXCLUDED from W/L/D and the winRate denominator → `total == wins + losses + draws + unknown` (reconciles with the my-games list).
+- **Bot games INCLUDED** (the human side carries the userId; the `whiteUserId=:uid OR blackUserId=:uid` filter naturally includes them). A vs-human-only split is a later follow-up.
+- **winRate** = `wins / (wins + losses + draws)` (double), computed in Java with a divide-by-zero guard → 0.0 when no decided games.
+- **MVP = overall record only**; a by-side (as-white/as-black) breakdown deferred.
+
+**Implementation:** `GameHistoryRepository.statsForUser(UUID)` — the conditional-sum aggregate `@Query` with FQN enum literals (house JPQL style) and `COALESCE(SUM(...),0L)` so a zero-games user yields all-zero buckets (no NULL/NPE) → projected into a single-row `UserGameStatsView`. `GameHistoryService.statsFor(UUID)` (`@Transactional(readOnly=true)`) builds `MyStatsResponse` (winRate computed in `MyStatsResponse.from` with the guard). New `MeStatsController` (`/api/me/stats`, `@AuthenticationPrincipal User`, full Springdoc). No migration (V4 latest); no new error code (canary stays 21; both OpenApiIT canaries green with the new operation). The service→web-DTO dependency mirrors the established `ProfileService → MeResponse` pattern.
+
+**Reviewer verdict:** approved (first pass). `./init.sh` green — 181 unit + 212 IT = 393 tests, 0 failures (2 pre-existing binary-gated skips). New `MeStatsIT` (8 cases): 401 no-auth; empty → all-zero + winRate 0.0; win-as-white AND win-as-black both count as wins; loss each side; DRAW; NULL → unknown (totals reconcile); another user's games excluded; mixed 2W/1L/1D/1unknown → winRate 0.5, total 5. Reviewer specifically verified the SELECT-vs-record component-order alignment and that win/loss aren't symmetric/swapped.
+
+**Files touched:**
+
+New (5): `persistence/UserGameStatsView.java`; `web/me/{MyStatsResponse,MeStatsController}.java`; test `web/me/MeStatsIT.java`; `notes/23.93-me-stats.md`.
+
+Modified (4): `persistence/GameHistoryRepository.java` (+`statsForUser` aggregate query), `service/GameHistoryService.java` (+`statsFor`), `docs/architecture.md` (Per-user stats subsection), `README.md` (endpoint).
+
+**Verification:** `./init.sh` green. Cross-repo: additive new endpoint; the frontend's profile page renders the W/L/D record.
+
+**Commit note:** the user committed the prior four-feature batch (23.8–23.92) before this feature, so the working tree was clean at start; me-stats is now uncommitted on its own (5 new files + 4 mods) — flagged for `git add`. No migration in this feature.
+
+**Next in the arc:** `game-review` (the last) — `GET /api/me/games/{id}` returning the full move list (the `moves` table already stores them) so the frontend replays a game; first verify whether a game-detail-with-moves endpoint already exists. After that the profile-support arc is complete. `random-matchmaking` (24) stays deferred.
+
+**Feature note:** [`notes/23.93-me-stats.md`](../notes/23.93-me-stats.md).
+
+## 2026-06-26 — game-review (feature 23.94)
+
+**Status:** done. Full harness cycle (leader plan → exploration confirming no existing endpoint → implementer → reviewer APPROVE first pass → user OK). No reject loop; no deviations. **Fourth and LAST of the profile-support arc** — the arc (profile-edit → game-result-persistence → me-stats → game-review) is now COMPLETE.
+
+**Summary:** A new authenticated endpoint `GET /api/me/games/{id}` returns one archived game with its FULL ordered move list (from/to/promotion) plus startingFen/finalFen, so the frontend can replay it move-by-move. Confirmed by exploration that no such endpoint existed (the other history endpoints return summaries with moveCount only; the live `GET /api/games/{id}` serves ACTIVE Redis games, no auth).
+
+**Design (internal; no product decision):**
+- **Authorization-in-the-WHERE + no-leak 404**: the query restricts to the caller being a participant (`g.whiteUserId = :uid OR g.blackUserId = :uid`); empty → `GameNotFoundException` → 404 `GAME_NOT_FOUND`. A non-participant, a non-existent id, and an anonymous game (both user ids null) all return the SAME 404 (no existence leak). Reuses the existing error code — canary stays 21.
+- **`LEFT JOIN FETCH g.moves`** (NOT inner): `moves` is `FetchType.LAZY` and `spring.jpa.open-in-view` is false, so the fetch-join loads moves in-transaction; LEFT (not inner) so a zero-move terminal game (a timeout/abandon before any move) is still returned. The zero-move IT pins this exact choice (inner would 404 it).
+- **`MyGameDetail`** (web.me record): gameId, roomId, whiteDisplayName, blackDisplayName, selfSide (so the UI orients the board), status, result (nullable for legacy rows), startingFen, finalFen, endedAt, moves. The move element REUSES `GameStateResponse.MoveSummary` (cross-package web.me → web.game) to keep the frontend's replay parser uniform across the live and archived surfaces — documented decision.
+- Endpoint added to the existing `MyGamesController` as `@GetMapping("/{id}")` (no collision with the collection-root list endpoint). `detailForUser(gameId, userId)` on `GameHistoryService` (`@Transactional(readOnly=true)`) maps inside the tx.
+- No Flyway migration (V4 latest); no new error code.
+
+**Reviewer verdict:** approved (first pass). `./init.sh` green. New `GameReviewIT` (7 cases): 401 no-auth; 200 full ordered moves as WHITE (order + from/to + a QUEEN promotion + fens + result + selfSide=WHITE); 200 as BLACK; zero-move game → 200 empty moves (pins the LEFT JOIN FETCH); non-participant → 404; unknown id → 404; anonymous game → 404. Reviewer specifically verified the LEFT-not-inner choice, the no-leak 404 across all three cases, the selfSide derivation both sides, and the asserted move ORDER (not just count). Malformed-UUID path var → 400 via the existing handler (not 500).
+
+**Files touched:**
+
+New (3): `web/me/MyGameDetail.java`; test `web/me/GameReviewIT.java`; `notes/23.94-game-review.md`.
+
+Modified (5): `persistence/GameHistoryRepository.java` (+`findByIdForUser` LEFT JOIN FETCH), `service/GameHistoryService.java` (+`detailForUser`), `web/me/MyGamesController.java` (+`@GetMapping("/{id}")`), `docs/architecture.md`, `README.md`.
+
+**Verification:** `./init.sh` green. Cross-repo: additive read endpoint; the frontend builds the replay UI.
+
+**Commit note:** the leader did NOT run git. 3 new files untracked + 5 mods unstaged — flagged for `git add`. me-stats (23.93) is also still uncommitted. No migration in this feature.
+
+**PROFILE-SUPPORT ARC COMPLETE.** The frontend can now build the full profile page: identity + createdAt + edit/password (23.91), per-game result (23.92), W/L/D stats (23.93), and game replay (23.94). Remaining profile follow-ups (avatar upload, public profile of another user) are out of the arc. Next backlog item: `random-matchmaking` (24, still deferred), or Bot Phase 2 / the Lichess-API "learn" section. The user is deploying the latest changes after this close.
+
+**Feature note:** [`notes/23.94-game-review.md`](../notes/23.94-game-review.md).

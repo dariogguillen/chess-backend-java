@@ -938,6 +938,81 @@ as `/api/me/games` (`idx_games_white_user_id` /
 them. A vs-human-only split, and a by-side (as-white / as-black)
 breakdown, are deferred follow-ups; the MVP is the overall record only.
 
+### Single archived game for replay (feature 23.94)
+
+Feature 23.94 (`game-review`) adds the authenticated read endpoint
+`GET /api/me/games/{id}`, returning ONE archived game with its FULL
+ordered move list so the frontend can replay it move-by-move. It is the
+**fourth and last** feature of the profile-support arc and completes it.
+The list endpoint `GET /api/me/games` and the aggregate `GET
+/api/me/stats` only ever expose a `moveCount`; this is the one surface
+that ships the moves themselves. There is no Flyway migration and no new
+error code.
+
+```
+GET /api/me/games/{id}
+Authorization: Bearer <jwt>
+
+200 OK
+{
+  "gameId": "0d52a8a0-…",
+  "roomId": "ROOM01",
+  "whiteDisplayName": "Alice",
+  "blackDisplayName": "Bob",
+  "selfSide": "WHITE",
+  "status": "CHECKMATE",
+  "result": "WHITE_WIN",
+  "startingFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+  "finalFen":    "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3",
+  "endedAt": "2026-05-19T10:23:11.123Z",
+  "moves": [
+    { "from": "e2", "to": "e4", "promotion": null },
+    { "from": "a7", "to": "a8", "promotion": "QUEEN" }
+  ]
+}
+```
+
+The body is a `MyGameDetail` record. `selfSide` (the side the caller
+played) lets the UI orient and flip the board; the two display names are
+the audit-time snapshots frozen on `games.{white,black}_display_name`,
+not live user rows. The per-move element **reuses
+`GameStateResponse.MoveSummary`** (`{ from, to, promotion }`, lowercase
+algebraic squares, `promotion` the nullable `Piece` enum name) — the
+same DTO the live-game surface uses, so the frontend's replay parser is
+uniform across the live and archived endpoints. `result` is nullable for
+legacy `ABANDONED` rows whose winner is unrecoverable.
+
+**Participant-only authorization as a no-leak 404.** The caller must be
+a participant (`white_user_id = :uid OR black_user_id = :uid`). The
+authorization is folded into the `WHERE` clause of
+`GameHistoryRepository.findByIdForUser(gameId, userId)`, so a
+non-participant, an unknown game id, and an anonymous game (both
+user-id columns `null`) are **structurally indistinguishable** — each
+yields `Optional.empty()`, which the service maps to a single `404
+GAME_NOT_FOUND` (reusing the existing `GameNotFoundException`; the
+`ErrorResponse.allowableValues` canary stays at 21). This is the same
+no-leak discipline the friends endpoints use: returning 403 for a real
+game the caller does not own would confirm the game exists. A missing /
+invalid Bearer JWT is `401 AUTHENTICATION_REQUIRED` from the
+`/api/me/**` chain, before the controller runs.
+
+**`LEFT JOIN FETCH g.moves` (LEFT, not inner).** The `moves`
+association is `FetchType.LAZY` and `spring.jpa.open-in-view` is
+`false`, so the move list must be fetched inside the read transaction —
+the query is `SELECT g FROM GameEntity g LEFT JOIN FETCH g.moves WHERE
+…`, and the service maps the entity to the DTO while the transaction is
+still open. The join must be **LEFT**: a terminal game that ended before
+any move was played (e.g. a timeout/abandon with zero moves) has no rows
+in `moves`, and an `INNER JOIN FETCH` would silently drop it, 404-ing a
+game the caller actually played. LEFT returns the game with an empty
+`moves` array — the correct replay payload. `@OrderBy("moveIdx ASC")` on
+the association guarantees playback order without a re-sort. A dedicated
+IT seeds a zero-move game and asserts `200` with `moves: []`, so a
+future change to `INNER` fails the suite.
+
+**Cross-repo.** Additive read endpoint; the frontend builds the
+move-by-move replay UI on top of `startingFen` + the ordered `moves`.
+
 ### Friends (feature 23.8)
 
 Feature 23.8 (`friends-list`) lets authenticated users build a mutual

@@ -1,11 +1,16 @@
 package io.github.dariogguillen.chess.service;
 
 import io.github.dariogguillen.chess.domain.Game;
+import io.github.dariogguillen.chess.domain.Side;
+import io.github.dariogguillen.chess.exception.GameNotFoundException;
 import io.github.dariogguillen.chess.persistence.ArchivedGamePlayerView;
 import io.github.dariogguillen.chess.persistence.GameEntity;
 import io.github.dariogguillen.chess.persistence.GameEntityMapper;
 import io.github.dariogguillen.chess.persistence.GameHistoryRepository;
+import io.github.dariogguillen.chess.persistence.MoveEntity;
 import io.github.dariogguillen.chess.persistence.UserGameStatsView;
+import io.github.dariogguillen.chess.web.game.GameStateResponse.MoveSummary;
+import io.github.dariogguillen.chess.web.me.MyGameDetail;
 import io.github.dariogguillen.chess.web.me.MyStatsResponse;
 import java.util.List;
 import java.util.UUID;
@@ -128,5 +133,64 @@ public class GameHistoryService {
   public MyStatsResponse statsFor(UUID userId) {
     UserGameStatsView view = repository.statsForUser(userId);
     return MyStatsResponse.from(view);
+  }
+
+  /**
+   * Returns one archived game with its FULL ordered move list, for the authenticated {@code GET
+   * /api/me/games/{id}} replay endpoint (feature 23.94, `game-review`). The lookup is scoped to the
+   * caller being a participant: the underlying {@link GameHistoryRepository#findByIdForUser(UUID,
+   * UUID)} query restricts to {@code white_user_id = userId OR black_user_id = userId}, so a
+   * non-participant, an unknown game id, and an anonymous game (both user ids null) are all
+   * indistinguishable — every one yields an empty result and this method throws {@link
+   * GameNotFoundException} (→ 404 {@code GAME_NOT_FOUND}, the no-leak contract).
+   *
+   * <p>{@code @Transactional(readOnly = true)} keeps the persistence context open across the
+   * entity-to-DTO mapping below. With {@code spring.jpa.open-in-view = false} the session is closed
+   * by the time the controller maps, so the mapping MUST run inside this method; the {@code LEFT
+   * JOIN FETCH g.moves} in the query also initialises the lazy {@code moves} collection in the same
+   * round-trip, so {@link #toDetail(GameEntity, UUID)} touches no un-fetched association.
+   *
+   * @param gameId the archived game's id; non-null.
+   * @param userId the authenticated caller's id; non-null.
+   * @return the game projected into a {@link MyGameDetail}.
+   * @throws GameNotFoundException if no archived game with that id exists for which the caller was
+   *     a participant.
+   */
+  @Transactional(readOnly = true)
+  public MyGameDetail detailForUser(UUID gameId, UUID userId) {
+    GameEntity entity =
+        repository
+            .findByIdForUser(gameId, userId)
+            .orElseThrow(() -> new GameNotFoundException(gameId));
+    return toDetail(entity, userId);
+  }
+
+  /**
+   * Maps a fetched {@link GameEntity} (with its {@code moves} already initialised by the {@code
+   * LEFT JOIN FETCH}) to a {@link MyGameDetail}, deriving {@code selfSide} from whether {@code
+   * userId} matches {@code whiteUserId}. Called only from {@link #detailForUser(UUID, UUID)} while
+   * the transaction is still open.
+   */
+  private static MyGameDetail toDetail(GameEntity entity, UUID userId) {
+    Side selfSide = userId.equals(entity.getWhiteUserId()) ? Side.WHITE : Side.BLACK;
+    List<MoveSummary> moves =
+        entity.getMoves().stream().map(GameHistoryService::toMoveSummary).toList();
+    return new MyGameDetail(
+        entity.getId(),
+        entity.getRoomId(),
+        entity.getWhiteDisplayName(),
+        entity.getBlackDisplayName(),
+        selfSide,
+        entity.getStatus(),
+        entity.getResult(),
+        entity.getStartingFen(),
+        entity.getFinalFen(),
+        entity.getEndedAt(),
+        moves);
+  }
+
+  /** Projects a persisted {@link MoveEntity} to the wire-format {@link MoveSummary} shape. */
+  private static MoveSummary toMoveSummary(MoveEntity move) {
+    return new MoveSummary(move.getFromSquare(), move.getToSquare(), move.getPromotion());
   }
 }

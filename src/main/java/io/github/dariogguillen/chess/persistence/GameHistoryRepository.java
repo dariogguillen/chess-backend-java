@@ -1,6 +1,7 @@
 package io.github.dariogguillen.chess.persistence;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.Page;
@@ -141,4 +142,37 @@ public interface GameHistoryRepository extends JpaRepository<GameEntity, UUID> {
           + "FROM GameEntity g "
           + "WHERE g.whiteUserId = :userId OR g.blackUserId = :userId")
   UserGameStatsView statsForUser(@Param("userId") UUID userId);
+
+  /**
+   * Returns ONE archived game by id, restricted to the caller being a participant — the {@code
+   * userId} must match either {@code white_user_id} or {@code black_user_id}. Added by feature
+   * 23.94 (`game-review`) to back the authenticated {@code GET /api/me/games/{id}} endpoint.
+   * Folding the authorization into the {@code WHERE} clause makes the "not found" and "not a
+   * participant" cases structurally indistinguishable: both yield an empty {@link Optional}, which
+   * the service maps to a single 404 {@code GAME_NOT_FOUND} (no leak of a game's existence to a
+   * non-participant). An anonymous game (both user-id columns {@code null}) never matches a
+   * non-null {@code userId}, so it is also a 404 for any authenticated caller.
+   *
+   * <p><strong>{@code LEFT JOIN FETCH g.moves} (LEFT, not inner).</strong> The {@code moves}
+   * association is {@link jakarta.persistence.FetchType#LAZY} and {@code spring.jpa.open-in-view}
+   * is {@code false}, so without a fetch-join the move list would not be initialised inside the
+   * transaction and the service-layer mapping would throw a {@code LazyInitializationException}.
+   * The fetch-join loads the moves in the same round-trip. It must be a {@code LEFT} join: a game
+   * that terminated before any move was played (e.g. a timeout/abandon with zero moves) has no rows
+   * in {@code moves}, and an {@code INNER JOIN FETCH} would silently drop that game from the result
+   * — the caller would get a spurious 404 for a game they actually played. {@code LEFT} returns the
+   * game with an empty move list, which is the correct replay payload.
+   *
+   * <p>{@code @OrderBy("moveIdx ASC")} on {@link GameEntity#getMoves()} guarantees the fetched
+   * moves arrive in playback order, so the service maps them without re-sorting.
+   *
+   * @param gameId the archived game's id to look up.
+   * @param userId the authenticated caller's id; must match one side for the game to be returned.
+   * @return the game with its moves eagerly fetched, or empty when no such game exists OR the
+   *     caller is not a participant.
+   */
+  @Query(
+      "SELECT g FROM GameEntity g LEFT JOIN FETCH g.moves "
+          + "WHERE g.id = :gameId AND (g.whiteUserId = :userId OR g.blackUserId = :userId)")
+  Optional<GameEntity> findByIdForUser(@Param("gameId") UUID gameId, @Param("userId") UUID userId);
 }
