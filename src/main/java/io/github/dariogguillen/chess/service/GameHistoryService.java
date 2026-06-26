@@ -5,6 +5,8 @@ import io.github.dariogguillen.chess.persistence.ArchivedGamePlayerView;
 import io.github.dariogguillen.chess.persistence.GameEntity;
 import io.github.dariogguillen.chess.persistence.GameEntityMapper;
 import io.github.dariogguillen.chess.persistence.GameHistoryRepository;
+import io.github.dariogguillen.chess.persistence.UserGameStatsView;
+import io.github.dariogguillen.chess.web.me.MyStatsResponse;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -103,5 +105,28 @@ public class GameHistoryService {
   @Transactional(readOnly = true)
   public Page<ArchivedGamePlayerView> findByUser(UUID userId, Pageable pageable) {
     return repository.findByUserId(userId, pageable);
+  }
+
+  /**
+   * Returns the aggregate win/loss/draw record for {@code userId}, computed by a single JPQL
+   * conditional-sum query that never loads the game rows. Added by feature 23.93 (`me-stats`) to
+   * back the authenticated {@code GET /api/me/stats} endpoint.
+   *
+   * <p>The four buckets reconcile with {@code total} ({@code total == wins + losses + draws +
+   * unknown}); {@code unknown} holds legacy NULL-result games (old ABANDONED rows). The {@code
+   * winRate} is computed here — not in JPQL — over decided games ({@code wins + losses + draws})
+   * with a divide-by-zero guard that returns {@code 0.0} when no games are decided.
+   *
+   * <p>A user with zero games yields {@code total=0}, all-zero buckets, and {@code winRate=0.0}:
+   * the repository's {@code COALESCE(SUM(...), 0L)} guards the empty aggregate, so this method
+   * never sees a {@code null} view or a {@code null} sum.
+   *
+   * @param userId the authenticated user's id; non-null.
+   * @return the user's aggregate record as a {@link MyStatsResponse}.
+   */
+  @Transactional(readOnly = true)
+  public MyStatsResponse statsFor(UUID userId) {
+    UserGameStatsView view = repository.statsForUser(userId);
+    return MyStatsResponse.from(view);
   }
 }

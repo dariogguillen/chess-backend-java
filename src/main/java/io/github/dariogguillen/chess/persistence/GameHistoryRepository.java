@@ -90,4 +90,55 @@ public interface GameHistoryRepository extends JpaRepository<GameEntity, UUID> {
           + "WHERE g.whiteUserId = :userId OR g.blackUserId = :userId "
           + "ORDER BY g.endedAt DESC")
   Page<ArchivedGamePlayerView> findByUserId(@Param("userId") UUID userId, Pageable pageable);
+
+  /**
+   * Returns the user's aggregate win/loss/draw record as a single-row {@link UserGameStatsView},
+   * computed entirely in SQL with conditional sums — the game rows are never loaded. Added by
+   * feature 23.93 (`me-stats`) to back the authenticated {@code GET /api/me/stats} endpoint. The
+   * {@code WHERE} clause hits the same two partial indexes ({@code idx_games_white_user_id} /
+   * {@code idx_games_black_user_id}) as {@link #findByUserId(UUID, Pageable)}, so guest games never
+   * enter the aggregate.
+   *
+   * <p>Each bucket is a {@code COALESCE(SUM(CASE WHEN ... THEN 1L ELSE 0L END), 0L)}: the {@code
+   * COALESCE} is essential because {@code SUM} over zero matched rows returns {@code NULL} in SQL,
+   * which would bind {@code null} into the {@code long} record components and throw. Wrapping each
+   * sum in {@code COALESCE(..., 0L)} makes the zero-games case yield {@code total=0} with all-zero
+   * buckets, never a {@code NullPointerException}.
+   *
+   * <p>The win/loss derivation cross-references {@code result} with the user's side: a win is
+   * {@code (result = WHITE_WIN AND user is white)} OR {@code (result = BLACK_WIN AND user is
+   * black)}; a loss is the mirror; {@code result = DRAW} is a draw; {@code result IS NULL} (legacy
+   * ABANDONED rows whose winner is unrecoverable) is counted in {@code total} but bucketed as
+   * {@code unknown}, excluded from W/L/D. The enum literals are fully-qualified in the JPQL string,
+   * matching the house style (see {@link FriendshipRepository}'s {@code FriendshipStatus} usage).
+   * The {@code winRate} is NOT computed here — that division is a Java concern (divide-by-zero
+   * guard) in {@link io.github.dariogguillen.chess.service.GameHistoryService}.
+   *
+   * @param userId the authenticated user's id; matched against both white_user_id and
+   *     black_user_id.
+   * @return a single-row aggregate; for a user with zero games, {@code total=0} and all-zero
+   *     buckets.
+   */
+  @Query(
+      "SELECT new io.github.dariogguillen.chess.persistence.UserGameStatsView("
+          + "COUNT(g), "
+          + "COALESCE(SUM(CASE WHEN "
+          + "(g.result = io.github.dariogguillen.chess.domain.GameResult.WHITE_WIN "
+          + "AND g.whiteUserId = :userId) "
+          + "OR (g.result = io.github.dariogguillen.chess.domain.GameResult.BLACK_WIN "
+          + "AND g.blackUserId = :userId) "
+          + "THEN 1L ELSE 0L END), 0L), "
+          + "COALESCE(SUM(CASE WHEN "
+          + "(g.result = io.github.dariogguillen.chess.domain.GameResult.WHITE_WIN "
+          + "AND g.blackUserId = :userId) "
+          + "OR (g.result = io.github.dariogguillen.chess.domain.GameResult.BLACK_WIN "
+          + "AND g.whiteUserId = :userId) "
+          + "THEN 1L ELSE 0L END), 0L), "
+          + "COALESCE(SUM(CASE WHEN "
+          + "g.result = io.github.dariogguillen.chess.domain.GameResult.DRAW "
+          + "THEN 1L ELSE 0L END), 0L), "
+          + "COALESCE(SUM(CASE WHEN g.result IS NULL THEN 1L ELSE 0L END), 0L)) "
+          + "FROM GameEntity g "
+          + "WHERE g.whiteUserId = :userId OR g.blackUserId = :userId")
+  UserGameStatsView statsForUser(@Param("userId") UUID userId);
 }

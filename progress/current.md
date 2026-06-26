@@ -1,8 +1,65 @@
 # Current session
 
-**Status:** closed — no active feature. Feature `game-result-persistence`
-(priority 23.92) closed on **2026-06-26** with reviewer approval (pass 2) and
-explicit user sign-off. See `progress/history.md` for the full entry.
+**Status:** ACTIVE — feature `me-stats` (priority 23.93) in_progress.
+Plan locked below, awaiting user approval before dispatching the implementer.
+
+## Feature 23.93 `me-stats` — plan (2026-06-26)
+
+Third of the **profile-support arc** (profile-edit → game-result-persistence →
+THIS → game-review). The per-user W/L/D aggregate, built on the `games.result`
+column from 23.92. Commit note: the user committed the four-feature batch
+(23.8–23.92) before this; the working tree is clean at start.
+
+### Endpoint
+`GET /api/me/stats` (Bearer JWT) → `MyStatsResponse { total, wins, losses,
+draws, unknown, winRate }`. 401 without a token.
+
+### Leader decisions (minor/defensible; stated for objection)
+- **NULL-result legacy rows** (old ABANDONED, winner unrecoverable) → counted in
+  `total`, exposed as a separate `unknown` bucket, EXCLUDED from W/L/D + winRate.
+  So `total == wins + losses + draws + unknown` (reconciles with the my-games list).
+- **Bot games INCLUDED** (the human side carries the userId). A vs-human-only
+  split is a later follow-up.
+- **winRate = wins/(wins+losses+draws)** (double), 0.0 when no decided games.
+- **MVP = overall record only**; by-side (as-white/as-black) breakdown deferred.
+
+### Derivation
+- win = (result=WHITE_WIN AND user is white_user_id) OR (result=BLACK_WIN AND
+  user is black_user_id); loss = the mirror; result=DRAW → draws; result NULL →
+  unknown.
+
+### Implementation
+- **One JPQL aggregate** on `GameHistoryRepository`: `SUM(CASE WHEN ...)` + COUNT
+  → a `UserGameStatsView` record via constructor expression. FQN enum literals in
+  the JPQL string (house style). No row-loading; single-row result. Zero games →
+  0/0 sums (COALESCE if a null can slip through). `@Query` filters
+  `whiteUserId = :uid OR blackUserId = :uid`.
+- **`GameHistoryService.statsFor(UUID)`** (`@Transactional(readOnly=true)`).
+- **New `MeStatsController`** (`web.me`, `/api/me/stats`), `@AuthenticationPrincipal
+  User`, full Springdoc.
+- **`MyStatsResponse`** record (`web.me`) with `@Schema` per field.
+- No migration (V4 latest); no new error code (canary stays 21).
+
+### Files
+- Create: `web/me/MeStatsController.java`, `web/me/MyStatsResponse.java`,
+  `persistence/UserGameStatsView.java`, test `web/me/MeStatsIT.java`,
+  `notes/23.93-me-stats.md`.
+- Modify: `persistence/GameHistoryRepository.java` (+aggregate query),
+  `service/GameHistoryService.java` (+statsFor), `docs/architecture.md`, `README.md`.
+
+### Verification
+`./init.sh` via `MeStatsIT`: 401 no-auth; empty → all-zero + winRate 0.0; win as
+white AND win as black both count; loss each side; DRAW; NULL → unknown (totals
+reconcile); other users' games excluded; mixed-record winRate math (2W/1L/1D +
+1 unknown → winRate 0.5, total 5). Reuse the MyGamesIT seeding/register helpers
+(terminal games carry a result since 23.92).
+
+### Cross-repo
+Additive: new endpoint. The frontend's profile page renders the W/L/D record.
+
+### Next step
+Esperar OK del user → dispatch `implementer` → `./init.sh` → `reviewer` → user OK
+→ `done` + nota + history. (Después: `game-review`, el último del arco.)
 
 ---
 

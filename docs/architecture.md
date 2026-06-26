@@ -887,6 +887,57 @@ its own nested `PlayerView`. The two-field shape preserves the
 pre-feature-19 wire format byte-for-byte and isolates the contract
 from any future field added to `Player`.
 
+### Per-user stats (feature 23.93)
+
+Feature 23.93 (`me-stats`) adds a single authenticated read endpoint,
+`GET /api/me/stats`, returning the caller's aggregate win/loss/draw
+record. It is the third feature of the profile-support arc and is
+built directly on the `games.result` column shipped by 23.92
+(`game-result-persistence`); there is no Flyway migration.
+
+```
+GET /api/me/stats
+Authorization: Bearer <jwt>
+
+200 OK
+{
+  "total": 5,
+  "wins": 2,
+  "losses": 1,
+  "draws": 1,
+  "unknown": 1,
+  "winRate": 0.5
+}
+```
+
+A missing / invalid Bearer JWT returns 401 with the
+`AUTHENTICATION_REQUIRED` `ErrorResponse` envelope (the `/api/me/**`
+chain's `anyRequest().authenticated()` rule enforces it). The buckets
+reconcile: `total == wins + losses + draws + unknown`.
+
+**Derivation.** The win/loss split cross-references the persisted
+`result` with the user's side: a win is `(result = WHITE_WIN AND user
+is white_user_id) OR (result = BLACK_WIN AND user is black_user_id)`;
+a loss is the mirror; `result = DRAW` is a draw. Legacy `NULL`-result
+rows (old `ABANDONED` games whose winner is unrecoverable) land in the
+`unknown` bucket — they count toward `total` but are **excluded** from
+W/L/D and from the `winRate` denominator. `winRate = wins / (wins +
+losses + draws)` as a double, and is `0.0` when there are no decided
+games (the divide-by-zero guard lives in Java, not JPQL).
+
+The whole aggregate is **one JPQL conditional-sum query**
+(`GameHistoryRepository.statsForUser`) — `COUNT(g)` plus four
+`COALESCE(SUM(CASE WHEN ... THEN 1L ELSE 0L END), 0L)` buckets,
+projected into the `UserGameStatsView` record. The game rows are never
+loaded; the counts come back in a single row. The same partial indexes
+as `/api/me/games` (`idx_games_white_user_id` /
+`idx_games_black_user_id`) keep guest games out of the aggregate.
+
+**Bot games are included** — the human side carries the user id, so the
+`white_user_id = :uid OR black_user_id = :uid` filter naturally counts
+them. A vs-human-only split, and a by-side (as-white / as-black)
+breakdown, are deferred follow-ups; the MVP is the overall record only.
+
 ### Friends (feature 23.8)
 
 Feature 23.8 (`friends-list`) lets authenticated users build a mutual
