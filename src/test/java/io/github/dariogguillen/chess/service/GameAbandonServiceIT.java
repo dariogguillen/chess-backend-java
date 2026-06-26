@@ -11,8 +11,10 @@ import static org.mockito.Mockito.verify;
 
 import io.github.dariogguillen.chess.TestcontainersConfiguration;
 import io.github.dariogguillen.chess.domain.Game;
+import io.github.dariogguillen.chess.domain.GameResult;
 import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.domain.Player;
+import io.github.dariogguillen.chess.persistence.GameEntity;
 import io.github.dariogguillen.chess.persistence.GameHistoryRepository;
 import io.github.dariogguillen.chess.websocket.GameAbandonedEvent;
 import java.util.List;
@@ -73,6 +75,30 @@ class GameAbandonServiceIT {
 
     verify(messagingTemplate, times(1))
         .convertAndSend(eq("/topic/games/" + game.id()), any(GameAbandonedEvent.class));
+  }
+
+  @Test
+  void abandon_whiteAbandons_blackWins_resultPersistedAndOnRedis() {
+    Game game = saveOngoingGame();
+
+    gameAbandonService.abandon(game.id(), game.white().id());
+
+    // The non-abandoner (black) wins; the result must be on BOTH the Redis active copy and the
+    // archived Postgres row (they must not disagree).
+    Game persisted = gameStore.findById(game.id()).orElseThrow();
+    assertThat(persisted.result()).isEqualTo(GameResult.BLACK_WIN);
+    GameEntity archived = repository.findById(game.id()).orElseThrow();
+    assertThat(archived.getResult()).isEqualTo(GameResult.BLACK_WIN);
+  }
+
+  @Test
+  void abandon_blackAbandons_whiteWins_resultPersisted() {
+    Game game = saveOngoingGame();
+
+    gameAbandonService.abandon(game.id(), game.black().id());
+
+    GameEntity archived = repository.findById(game.id()).orElseThrow();
+    assertThat(archived.getResult()).isEqualTo(GameResult.WHITE_WIN);
   }
 
   @Test

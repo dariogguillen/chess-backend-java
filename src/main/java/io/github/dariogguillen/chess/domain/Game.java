@@ -70,6 +70,13 @@ import java.util.UUID;
  *     bot-difficulty}) and read by {@code BotMoveService} on every bot move. Unlike the clock
  *     fields it is a single independent nullable — {@code null} is a legitimate "no Elo limit"
  *     state, so the compact constructor tolerates it with no extra invariant.
+ * @param result who won the game, or {@code null} for a non-terminal game (feature 23.92, {@code
+ *     game-result-persistence}). Set at every terminal transition — {@code GameService.applyMove}
+ *     on checkmate/draw, and {@code GameAbandonService}/{@code GameTimeoutService}/{@code
+ *     BotMoveService} on their respective terminal paths — so the Redis active copy and the
+ *     Postgres archive agree on the winner. Like {@code botElo} it is a single independent
+ *     nullable: {@code null} is a legitimate "game not yet decided" state, so the compact
+ *     constructor tolerates it with no extra invariant.
  */
 public record Game(
     UUID id,
@@ -84,7 +91,8 @@ public record Game(
     Long blackTimeRemainingMs,
     Instant lastMoveAt,
     Long incrementMs,
-    Integer botElo) {
+    Integer botElo,
+    GameResult result) {
 
   public Game {
     Objects.requireNonNull(id, "id");
@@ -151,7 +159,21 @@ public record Game(
       String fen,
       GameStatus status,
       List<Move> moves) {
-    this(id, roomId, white, black, startingFen, fen, status, moves, null, null, null, null, null);
+    this(
+        id,
+        roomId,
+        white,
+        black,
+        startingFen,
+        fen,
+        status,
+        moves,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null);
   }
 
   /**
@@ -201,6 +223,60 @@ public record Game(
         blackTimeRemainingMs,
         lastMoveAt,
         incrementMs,
+        null,
+        null);
+  }
+
+  /**
+   * Convenience constructor for the feature-23.5 call shape — a game with the four clock fields and
+   * a bot Elo but no result (the historical shape before feature 23.92, {@code
+   * game-result-persistence}). Equivalent to {@code new Game(..., null)} for {@code result}. Keeps
+   * the bot create / archive-mapper call sites that build a not-yet-terminal game compiling
+   * unchanged and lets Jackson deserialise pre-feature-23.92 Redis games (which lack the {@code
+   * result} component) by passing {@code null}.
+   *
+   * @param id the game identifier; not null.
+   * @param roomId the id of the room this game belongs to; not null, not blank.
+   * @param white the player playing the white pieces; distinct from {@code black}.
+   * @param black the player playing the black pieces; distinct from {@code white}.
+   * @param startingFen the FEN of the position the game started from; not null, not blank.
+   * @param fen the current position in Forsyth-Edwards Notation; not null, not blank.
+   * @param status the current status of the game; not null.
+   * @param moves the history of moves played so far; defensively copied.
+   * @param whiteTimeRemainingMs white's remaining clock in milliseconds, or {@code null} (untimed).
+   * @param blackTimeRemainingMs black's remaining clock in milliseconds, or {@code null} (untimed).
+   * @param lastMoveAt the clock anchor instant, or {@code null} (untimed).
+   * @param incrementMs the per-move Fischer increment in milliseconds, or {@code null} (untimed).
+   * @param botElo the target bot strength, or {@code null} for a non-bot game.
+   */
+  public Game(
+      UUID id,
+      String roomId,
+      Player white,
+      Player black,
+      String startingFen,
+      String fen,
+      GameStatus status,
+      List<Move> moves,
+      Long whiteTimeRemainingMs,
+      Long blackTimeRemainingMs,
+      Instant lastMoveAt,
+      Long incrementMs,
+      Integer botElo) {
+    this(
+        id,
+        roomId,
+        white,
+        black,
+        startingFen,
+        fen,
+        status,
+        moves,
+        whiteTimeRemainingMs,
+        blackTimeRemainingMs,
+        lastMoveAt,
+        incrementMs,
+        botElo,
         null);
   }
 
@@ -228,8 +304,8 @@ public record Game(
    * also rewrites {@code fen}, appends to {@code moves}, and advances the clock).
    *
    * @param status the new status; non-null.
-   * @return a new {@link Game} with the same id / players / FEN / moves / clock / bot Elo and the
-   *     given status.
+   * @return a new {@link Game} with the same id / players / FEN / moves / clock / bot Elo / result
+   *     and the given status.
    */
   public Game withStatus(GameStatus status) {
     return new Game(
@@ -245,7 +321,40 @@ public record Game(
         blackTimeRemainingMs,
         lastMoveAt,
         incrementMs,
-        botElo);
+        botElo,
+        result);
+  }
+
+  /**
+   * Returns a copy of this game with {@code result} replaced. All other fields — including {@code
+   * status}, the clock, and the bot Elo — are carried through by-reference.
+   *
+   * <p>Used by the terminal-path services ({@code GameAbandonService.abandon}, {@code
+   * GameTimeoutService.timeout}, {@code BotMoveService.failGame}) to stamp the winner onto a game
+   * that was already flipped to a terminal {@code status} via {@link #withStatus(GameStatus)}, so
+   * both the Redis active copy and the archived row carry it. {@code GameService.applyMove} builds
+   * the terminal {@link Game} directly with the result already set, so it does not use this helper.
+   *
+   * @param result who won, or {@code null} for a draw / not-yet-decided game.
+   * @return a new {@link Game} with the same id / players / FEN / moves / status / clock / bot Elo
+   *     and the given result.
+   */
+  public Game withResult(GameResult result) {
+    return new Game(
+        id,
+        roomId,
+        white,
+        black,
+        startingFen,
+        fen,
+        status,
+        moves,
+        whiteTimeRemainingMs,
+        blackTimeRemainingMs,
+        lastMoveAt,
+        incrementMs,
+        botElo,
+        result);
   }
 
   /**
@@ -260,7 +369,7 @@ public record Game(
    * @param blackTimeRemainingMs black's new remaining clock in milliseconds.
    * @param lastMoveAt the new clock anchor instant.
    * @return a new {@link Game} with the given clock state and all other fields unchanged (including
-   *     {@code botElo}).
+   *     {@code botElo} and {@code result}).
    */
   public Game withClock(Long whiteTimeRemainingMs, Long blackTimeRemainingMs, Instant lastMoveAt) {
     return new Game(
@@ -276,6 +385,7 @@ public record Game(
         blackTimeRemainingMs,
         lastMoveAt,
         incrementMs,
-        botElo);
+        botElo,
+        result);
   }
 }

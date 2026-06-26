@@ -3,6 +3,7 @@ package io.github.dariogguillen.chess.service.bot;
 import io.github.dariogguillen.chess.config.BotConfig;
 import io.github.dariogguillen.chess.config.BotProperties;
 import io.github.dariogguillen.chess.domain.Game;
+import io.github.dariogguillen.chess.domain.GameResult;
 import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.domain.Move;
 import io.github.dariogguillen.chess.domain.Player;
@@ -152,6 +153,7 @@ public class BotMoveService {
    */
   private void failGame(UUID gameId) {
     AtomicBoolean transitioned = new AtomicBoolean(false);
+    UUID[] winnerHolder = new UUID[1];
     Game updated =
         gameStore.compute(
             gameId,
@@ -163,14 +165,21 @@ public class BotMoveService {
                 return existing;
               }
               transitioned.set(true);
-              return existing.withStatus(GameStatus.ABANDONED);
+              // The human (the non-bot side) wins by forfeit. Derive the winner id and the result
+              // from the same comparison and stamp the result onto the active game inside the
+              // compute block so the Redis copy and the archived row agree on who won.
+              UUID winnerId =
+                  existing.white().isBot() ? existing.black().id() : existing.white().id();
+              winnerHolder[0] = winnerId;
+              GameResult result = GameResult.fromWinner(existing, winnerId);
+              return existing.withStatus(GameStatus.ABANDONED).withResult(result);
             });
     if (updated == null || !transitioned.get()) {
       return;
     }
     gameHistoryService.archive(updated);
     // The human is whichever side is not the bot; they win by forfeit.
-    UUID winnerId = updated.white().isBot() ? updated.black().id() : updated.white().id();
+    UUID winnerId = winnerHolder[0];
     GameEngineFailedEvent event =
         new GameEngineFailedEvent(
             gameId,

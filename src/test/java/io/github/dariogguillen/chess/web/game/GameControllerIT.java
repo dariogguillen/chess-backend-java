@@ -13,6 +13,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.dariogguillen.chess.TestcontainersConfiguration;
+import io.github.dariogguillen.chess.domain.GameResult;
 import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.persistence.GameEntity;
 import io.github.dariogguillen.chess.persistence.GameHistoryRepository;
@@ -171,9 +172,38 @@ class GameControllerIT {
 
     GameEntity archived = gameHistoryRepository.findById(setup.gameId()).orElseThrow();
     assertThat(archived.getStatus()).isEqualTo(GameStatus.CHECKMATE);
+    // Fool's Mate: black delivers the mate (the 4th half-move), so black won. The persisted result
+    // must reflect WHO won end-to-end, not just the status (feature 23.92).
+    assertThat(archived.getResult()).isEqualTo(GameResult.BLACK_WIN);
     assertThat(archived.getMoves()).hasSize(4);
     assertThat(archived.getWhitePlayerId()).isEqualTo(setup.whitePlayerId());
     assertThat(archived.getBlackPlayerId()).isEqualTo(setup.blackPlayerId());
+  }
+
+  @Test
+  @Transactional
+  void moveSequence_scholarsMate_archivesWhiteWinResult() throws Exception {
+    // Scholar's Mate: white delivers the mate, so the persisted result is WHITE_WIN — the mirror
+    // of the Fool's Mate (BLACK_WIN) case above.
+    //   1. e2-e4  e7-e5
+    //   2. f1-c4  b8-c6
+    //   3. d1-h5  g8-f6??
+    //   4. h5-f7#  (white's queen mates on f7)
+    GameSetup setup = createGame("Alice", "Bob");
+
+    applyMove(setup.gameId(), setup.whitePlayerId(), "e2", "e4").andExpect(status().isOk());
+    applyMove(setup.gameId(), setup.blackPlayerId(), "e7", "e5").andExpect(status().isOk());
+    applyMove(setup.gameId(), setup.whitePlayerId(), "f1", "c4").andExpect(status().isOk());
+    applyMove(setup.gameId(), setup.blackPlayerId(), "b8", "c6").andExpect(status().isOk());
+    applyMove(setup.gameId(), setup.whitePlayerId(), "d1", "h5").andExpect(status().isOk());
+    applyMove(setup.gameId(), setup.blackPlayerId(), "g8", "f6").andExpect(status().isOk());
+    applyMove(setup.gameId(), setup.whitePlayerId(), "h5", "f7")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status", equalTo("CHECKMATE")));
+
+    GameEntity archived = gameHistoryRepository.findById(setup.gameId()).orElseThrow();
+    assertThat(archived.getStatus()).isEqualTo(GameStatus.CHECKMATE);
+    assertThat(archived.getResult()).isEqualTo(GameResult.WHITE_WIN);
   }
 
   @Test

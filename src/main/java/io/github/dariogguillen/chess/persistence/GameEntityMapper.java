@@ -64,6 +64,9 @@ public class GameEntityMapper {
             game.fen(),
             game.status(),
             Instant.now(clock));
+    // Feature 23.92: persist who won. The result is set on the entity (not the constructor) the
+    // same way status uses a setter — null for a non-terminal game or an undecided draw-not-yet.
+    entity.setResult(game.result());
 
     List<MoveEntity> moveEntities = new ArrayList<>(game.moves().size());
     int idx = 0;
@@ -102,13 +105,14 @@ public class GameEntityMapper {
       moves.add(new Move(new Square(me.getFromSquare()), new Square(me.getToSquare()), promotion));
     }
     return new Game(
-        entity.getId(),
-        entity.getRoomId(),
-        white,
-        black,
-        entity.getStartingFen(),
-        entity.getFinalFen(),
-        entity.getStatus(),
-        moves);
+            entity.getId(),
+            entity.getRoomId(),
+            white,
+            black,
+            entity.getStartingFen(),
+            entity.getFinalFen(),
+            entity.getStatus(),
+            moves)
+        .withResult(entity.getResult());
   }
 }

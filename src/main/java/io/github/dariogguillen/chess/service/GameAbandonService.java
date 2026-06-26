@@ -1,6 +1,7 @@
 package io.github.dariogguillen.chess.service;
 
 import io.github.dariogguillen.chess.domain.Game;
+import io.github.dariogguillen.chess.domain.GameResult;
 import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.websocket.GameAbandonedEvent;
 import java.time.Clock;
@@ -66,6 +67,13 @@ public class GameAbandonService {
    * mutation enters the block first wins, the second observes the terminal status and returns the
    * existing value unchanged.
    *
+   * <p>The {@link GameResult} (feature 23.92, {@code game-result-persistence}) is stamped onto the
+   * game <em>inside</em> the {@code compute} block, alongside the {@code withStatus(ABANDONED)}
+   * flip, so the Redis active copy and the Postgres archive carry the same winner. The winner is
+   * the side that did not abandon, derived once and reused for both the persisted result and the
+   * broadcast {@code winnerId} (the wire payload is unchanged — it still carries a {@code winnerId}
+   * UUID).
+   *
    * <p>The archive runs <em>outside</em> the {@code compute} block (unlike the move path, which
    * runs it inside). The reasoning: the abandon path has no race against further moves on the same
    * game once {@code ABANDONED} is committed — terminal status is irrevocable — so there is no
@@ -83,6 +91,7 @@ public class GameAbandonService {
    */
   public void abandon(UUID gameId, UUID abandonedBy) {
     AtomicBoolean transitioned = new AtomicBoolean(false);
+    UUID[] winnerHolder = new UUID[1];
     Game updated =
         gameStore.compute(
             gameId,
@@ -94,14 +103,22 @@ public class GameAbandonService {
                 return existing;
               }
               transitioned.set(true);
-              return existing.withStatus(GameStatus.ABANDONED);
+              // The winner is the side that did NOT abandon. Derive the winner id and the result
+              // from the same comparison and stamp the result onto the active game inside the
+              // compute block so the Redis copy and the archived row agree on who won.
+              UUID winnerId =
+                  existing.white().id().equals(abandonedBy)
+                      ? existing.black().id()
+                      : existing.white().id();
+              winnerHolder[0] = winnerId;
+              GameResult result = GameResult.fromWinner(existing, winnerId);
+              return existing.withStatus(GameStatus.ABANDONED).withResult(result);
             });
     if (updated == null || !transitioned.get()) {
       return;
     }
     gameHistoryService.archive(updated);
-    UUID winnerId =
-        updated.white().id().equals(abandonedBy) ? updated.black().id() : updated.white().id();
+    UUID winnerId = winnerHolder[0];
     GameAbandonedEvent event =
         new GameAbandonedEvent(gameId, abandonedBy, winnerId, updated.fen(), Instant.now(clock));
     log.info(

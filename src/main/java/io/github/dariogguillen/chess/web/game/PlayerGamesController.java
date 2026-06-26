@@ -85,6 +85,7 @@ public class PlayerGamesController {
         opponentDisplayName,
         selfRole,
         view.status(),
+        view.result(),
         view.endedAt(),
         view.moveCount());
   }

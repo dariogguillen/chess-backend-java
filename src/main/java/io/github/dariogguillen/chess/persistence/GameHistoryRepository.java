@@ -55,7 +55,7 @@ public interface GameHistoryRepository extends JpaRepository<GameEntity, UUID> {
   @Query(
       "SELECT new io.github.dariogguillen.chess.persistence.ArchivedGamePlayerView("
           + "g.id, g.roomId, g.whitePlayerId, g.whiteDisplayName, g.blackPlayerId, "
-          + "g.blackDisplayName, g.whiteUserId, g.blackUserId, g.status, g.endedAt, "
+          + "g.blackDisplayName, g.whiteUserId, g.blackUserId, g.status, g.result, g.endedAt, "
           + "SIZE(g.moves)) "
           + "FROM GameEntity g "
           + "WHERE g.whitePlayerId = :playerId OR g.blackPlayerId = :playerId "
@@ -84,7 +84,7 @@ public interface GameHistoryRepository extends JpaRepository<GameEntity, UUID> {
   @Query(
       "SELECT new io.github.dariogguillen.chess.persistence.ArchivedGamePlayerView("
           + "g.id, g.roomId, g.whitePlayerId, g.whiteDisplayName, g.blackPlayerId, "
-          + "g.blackDisplayName, g.whiteUserId, g.blackUserId, g.status, g.endedAt, "
+          + "g.blackDisplayName, g.whiteUserId, g.blackUserId, g.status, g.result, g.endedAt, "
           + "SIZE(g.moves)) "
           + "FROM GameEntity g "
           + "WHERE g.whiteUserId = :userId OR g.blackUserId = :userId "

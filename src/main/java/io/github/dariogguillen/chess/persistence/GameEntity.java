@@ -1,5 +1,6 @@
 package io.github.dariogguillen.chess.persistence;
 
+import io.github.dariogguillen.chess.domain.GameResult;
 import io.github.dariogguillen.chess.domain.GameStatus;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
@@ -86,6 +87,17 @@ public class GameEntity {
   @Enumerated(EnumType.STRING)
   @Column(name = "status", nullable = false, length = 20)
   private GameStatus status;
+
+  /**
+   * Who won the game (feature 23.92, {@code game-result-persistence}). Mapped with {@link
+   * EnumType#STRING} like {@link #status}: the column stores the {@link GameResult} constant's name
+   * (e.g. {@code "WHITE_WIN"}). Nullable — a draw maps to {@link GameResult#DRAW}, but legacy
+   * {@code ABANDONED} rows archived before this feature (whose winner is not recoverable from the
+   * {@code final_fen}) stay {@code null}, as do any rows whose status is non-terminal.
+   */
+  @Enumerated(EnumType.STRING)
+  @Column(name = "result", nullable = true, length = 20)
+  private GameResult result;
 
   @Column(name = "ended_at", nullable = false)
   private Instant endedAt;
@@ -178,6 +190,10 @@ public class GameEntity {
     return status;
   }
 
+  public GameResult getResult() {
+    return result;
+  }
+
   public Instant getEndedAt() {
     return endedAt;
   }
@@ -228,6 +244,10 @@ public class GameEntity {
 
   void setStatus(GameStatus status) {
     this.status = status;
+  }
+
+  void setResult(GameResult result) {
+    this.result = result;
   }
 
   void setEndedAt(Instant endedAt) {

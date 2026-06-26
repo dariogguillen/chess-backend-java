@@ -116,6 +116,7 @@ public class MyGamesController {
         opponentDisplayName,
         selfSide,
         view.status(),
+        view.result(),
         view.endedAt(),
         view.moveCount());
   }

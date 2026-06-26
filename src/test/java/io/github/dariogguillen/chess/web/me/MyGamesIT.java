@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.dariogguillen.chess.TestcontainersConfiguration;
 import io.github.dariogguillen.chess.domain.Game;
+import io.github.dariogguillen.chess.domain.GameResult;
 import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.domain.Move;
 import io.github.dariogguillen.chess.domain.Piece;
@@ -109,10 +110,14 @@ class MyGamesIT {
     RegisteredUser bob = register("bob@example.com", "supersecret", "Bob");
 
     // Alice plays two terminal games (one as white, one as black). Bob plays one against a guest.
-    Game aliceWhiteGame = newTerminalGame(GameStatus.CHECKMATE, alice.id(), "Alice", null, "Guest");
+    Game aliceWhiteGame =
+        newTerminalGame(GameStatus.CHECKMATE, alice.id(), "Alice", null, "Guest")
+            .withResult(GameResult.WHITE_WIN);
     gameHistoryService.archive(aliceWhiteGame);
     Thread.sleep(10);
-    Game aliceBlackGame = newTerminalGame(GameStatus.STALEMATE, null, "Guest", alice.id(), "Alice");
+    Game aliceBlackGame =
+        newTerminalGame(GameStatus.STALEMATE, null, "Guest", alice.id(), "Alice")
+            .withResult(GameResult.DRAW);
     gameHistoryService.archive(aliceBlackGame);
     Thread.sleep(10);
     Game bobGame = newTerminalGame(GameStatus.CHECKMATE, bob.id(), "Bob", null, "Guest");
@@ -134,9 +139,12 @@ class MyGamesIT {
     assertThat(content.get(0).get("selfSide").asText()).isEqualTo("BLACK");
     assertThat(content.get(0).get("opponentDisplayName").asText()).isEqualTo("Guest");
     assertThat(content.get(0).get("status").asText()).isEqualTo("STALEMATE");
+    // The result (feature 23.92) rides on the wire: the stalemate is a DRAW.
+    assertThat(content.get(0).get("result").asText()).isEqualTo("DRAW");
     assertThat(content.get(1).get("gameId").asText()).isEqualTo(aliceWhiteGame.id().toString());
     assertThat(content.get(1).get("selfSide").asText()).isEqualTo("WHITE");
     assertThat(content.get(1).get("opponentDisplayName").asText()).isEqualTo("Guest");
+    assertThat(content.get(1).get("result").asText()).isEqualTo("WHITE_WIN");
 
     // Bob's game must not appear in Alice's list.
     String resp = result.getResponse().getContentAsString();

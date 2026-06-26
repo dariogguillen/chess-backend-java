@@ -1,6 +1,7 @@
 package io.github.dariogguillen.chess.service;
 
 import io.github.dariogguillen.chess.domain.Game;
+import io.github.dariogguillen.chess.domain.GameResult;
 import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.domain.Side;
 import io.github.dariogguillen.chess.websocket.GameTimedOutEvent;
@@ -96,7 +97,12 @@ public class GameTimeoutService {
                 return existing;
               }
               transitioned.set(true);
-              return existing.withStatus(GameStatus.TIMEOUT);
+              // The side to move when the flag fired is the side that flagged (the loser). Stamp
+              // the result onto the active game inside the compute block so the Redis copy and the
+              // archived row agree on who won — the same derivation drives the broadcast winnerId.
+              boolean whiteFlagged = existing.moves().size() % 2 == 0;
+              GameResult result = GameResult.fromLoserToMove(whiteFlagged);
+              return existing.withStatus(GameStatus.TIMEOUT).withResult(result);
             });
     if (updated == null || !transitioned.get()) {
       return;

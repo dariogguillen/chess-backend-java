@@ -832,6 +832,7 @@ Authorization: Bearer <jwt>
       "opponentDisplayName": "Bob",
       "selfSide": "WHITE",
       "status": "CHECKMATE",
+      "result": "WHITE_WIN",
       "endedAt": "2026-05-21T10:23:11.123Z",
       "moveCount": 4
     }
@@ -853,6 +854,15 @@ guest-friendly `GET /api/players/{id}/games` stays open and
 unchanged for anonymous play — the two endpoints serve two distinct
 audiences and the frontend switches between them based on auth
 state.
+
+The `result` field (feature 23.92, `game-result-persistence`) is
+`WHITE_WIN` / `BLACK_WIN` / `DRAW`, or `null` for legacy archived
+rows whose winner could not be recovered at backfill time (old
+`ABANDONED` games — see "Game history in Postgres" below). It is
+additive: the frontend reads it for the read-only profile and the
+upcoming `me-stats` aggregate. Both history surfaces
+(`MyGameSummary` on `/api/me/games` and `PlayerGameSummary` on
+`/api/players/{id}/games`) carry it.
 
 **Write surface — authenticated game creation populates the FK
 columns.** When `POST /api/rooms` or `POST /api/rooms/{id}/join` is
@@ -2022,16 +2032,24 @@ already finished.
   and Redis still holds the previous (non-terminal) state. The
   inverse ordering — Redis advances, archive silently fails — would
   produce a ghost terminal game observable in no history query;
-  failing loud is the safer default for a portfolio backend.
+  failing loud is the safer default for a portfolio backend. The
+  three async terminal paths — `GameAbandonService`,
+  `GameTimeoutService`, `BotMoveService.failGame` — archive **after**
+  the `compute` lambda commits the terminal status to Redis (terminal
+  status is irrevocable, so there is no further-move race to guard;
+  pulling the JDBC round-trip out of the Redis lock shrinks the
+  critical section).
 - **Schema.** Two tables, both managed by Flyway under
   `src/main/resources/db/migration/`:
     - `games` — one row per archived game with denormalised player
       info (`white_player_id`, `white_display_name`,
       `black_player_id`, `black_display_name`), `starting_fen`,
-      `final_fen`, `status` (`VARCHAR(20)`, JPA-enforced enum), and
-      `ended_at` (`TIMESTAMPTZ`). `id`, `white_player_id`, and
-      `black_player_id` are native Postgres `uuid`; `room_id` is
-      `VARCHAR(6)` (the 6-char short code is not a UUID).
+      `final_fen`, `status` (`VARCHAR(20)`, JPA-enforced enum),
+      `result` (`VARCHAR(20)` nullable, JPA-enforced enum; feature
+      23.92, see below), and `ended_at` (`TIMESTAMPTZ`). `id`,
+      `white_player_id`, and `black_player_id` are native Postgres
+      `uuid`; `room_id` is `VARCHAR(6)` (the 6-char short code is
+      not a UUID).
     - `moves` — N rows per game, PK `(game_id, move_idx)`, FK
       cascade-deletes from `games`, `from_square` / `to_square` as
       `VARCHAR(2)` / nullable `promotion` as `VARCHAR(10)` (the
@@ -2039,6 +2057,48 @@ already finished.
   Two indexes on `games (white_player_id, ended_at DESC)` and
   `(black_player_id, ended_at DESC)` make the history query a
   single indexed scan.
+- **The `result` column — who won (feature 23.92,
+  `game-result-persistence`).** `status` records *how* a game ended;
+  `result` records *who* won. It is a nullable `GameResult` enum
+  `{ WHITE_WIN, BLACK_WIN, DRAW }` (`VARCHAR(20)`,
+  `@Enumerated(STRING)`, same house style as `status`: no `CHECK`,
+  no Postgres ENUM). The two are orthogonal — a `TIMEOUT` can be a
+  `WHITE_WIN` or a `BLACK_WIN`, a `STALEMATE` is always a `DRAW`.
+  The winner is **derived once per terminal path** and stamped onto
+  the `Game` (so the Redis active copy and the archived row never
+  disagree) via a single `GameResult` derivation
+  (`GameResult.fromWinner` / `fromLoserToMove`) instead of the
+  white-vs-black logic being re-spelled at each call site:
+    - `GameService.applyMove` — `CHECKMATE` → the side that just
+      moved delivered mate and won (`WHITE_WIN` if white moved);
+      `STALEMATE` / `DRAW` → `DRAW`.
+    - `GameAbandonService` — the non-abandoner wins.
+    - `GameTimeoutService` — the non-flagged side wins (the side *to
+      move* at flag time is the loser).
+    - `BotMoveService.failGame` — the human (non-bot side) wins.
+  The STOMP event payloads are unchanged on the wire — they still
+  carry the same `winnerId` UUID, now derived from the same
+  `GameResult` that is persisted. **Persisting the derived result at
+  write time** (rather than recomputing it on read from
+  `status` + `final_fen`) keeps the read path a trivial column read
+  and lets the next feature (`me-stats`) aggregate W/L/D with a plain
+  `GROUP BY result`.
+- **`result` backfill (`V4__add_game_result.sql`).** `V4` adds the
+  column and runs a one-time `UPDATE` deriving `result` for existing
+  rows from `status` + the FEN active-color (the 2nd
+  space-separated field of `final_fen`, `'w'` or `'b'`): for a
+  `CHECKMATE` / `TIMEOUT` the side *to move* in the final FEN is the
+  mated/flagged loser, so `'w'` → `BLACK_WIN` and `'b'` →
+  `WHITE_WIN`; `STALEMATE` / `DRAW` → `DRAW`. **`ABANDONED` rows are
+  left `NULL`** on purpose: the abandoner (the loser) is the
+  disconnected player, an identity known only at runtime when the
+  grace timer fired and *not* encoded anywhere in the FEN — so an
+  old `ABANDONED` row's winner is unrecoverable, and `NULL`
+  ("unknown") is the honest value. New `ABANDONED` games archived
+  after this feature do carry the result. The wire DTOs
+  (`MyGameSummary`, `PlayerGameSummary`) expose `result` as a
+  nullable field so the frontend renders these legacy unknowns
+  gracefully.
 - **UUID end-to-end.** Every column that is conceptually a UUID is a
   native Postgres `uuid` on the DB side, a `java.util.UUID` on the
   JPA entity, and a `java.util.UUID` on the domain record. Spring

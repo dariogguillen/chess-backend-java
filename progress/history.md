@@ -2673,3 +2673,37 @@ Modified (6): `domain/User.java` (public `rename`/`changePasswordHash`; setters 
 **Next in the profile-support arc:** `game-result-persistence` (the foundation — V4 migration adding a `result` column, thread the already-computed `winnerId` into the 4 terminal archive paths, backfill old rows from `final_fen` where derivable, expose `result` in the my-games summary) → then `me-stats` (`GET /api/me/stats` aggregate) → `game-review` (`GET /api/me/games/{id}` with the full move list). `random-matchmaking` (24) stays deferred.
 
 **Feature note:** [`notes/23.91-profile-edit.md`](../notes/23.91-profile-edit.md).
+
+## 2026-06-26 — game-result-persistence (feature 23.92)
+
+**Status:** done. Full harness cycle (leader plan → implementer → reviewer REJECT on a red build → implementer fix → reviewer APPROVE pass 2 → user OK). Second of the **profile-support arc** (profile-edit → THIS → me-stats → game-review); the foundation for per-user W/L/D stats.
+
+**Summary:** The archived `games` table stored only `status` (CHECKMATE/STALEMATE/DRAW/ABANDONED/TIMEOUT), never WHO won — even though the winner is computed at runtime in all four terminal paths and broadcast on the STOMP events, it was dropped at archive time. This feature introduces a `GameResult` enum (WHITE_WIN | BLACK_WIN | DRAW), threads it through the `Game` record, sets it at every terminal transition, persists it via a new nullable `games.result` column (V4), backfills existing rows from `final_fen` where derivable, and exposes `result` in both history list surfaces. `me-stats` (next) aggregates on this column.
+
+**Origin:** the win/loss gap the user/frontend found while scoping the profile page (see the 23.91 entry). Confirmed: no winner/result column existed; the runtime `winnerId` (in `GameAbandonService`/`GameTimeoutService`/`BotMoveService` + the checkmate path) was broadcast but never archived.
+
+**Design (internal data-modeling; no product decision):**
+- **`GameResult` enum** { WHITE_WIN, BLACK_WIN, DRAW } + pure helpers (`fromWinner`, `fromLoserToMove`) so the four terminal paths AND the broadcast `winnerId` share one derivation.
+- **`Game` record → nullable 14th component `result`**, same backwards-compatible evolution as `timeControl`/`botElo`: compact ctor tolerates null; 8/12/13-arg convenience ctors delegate `result=null`; `withResult` added; `withStatus`/`withClock` carry it. No call site broke.
+- **Result set at every terminal transition** so Redis active-game and the archived row agree: `applyMove` CHECKMATE → `whiteToMove ? WHITE_WIN : BLACK_WIN` (side that just moved delivered mate), STALEMATE/DRAW → DRAW; the three async services stamp it INSIDE the `gameStore.compute` lambda (implementer's choice, documented) — which required moving the winner derivation before the (out-of-lock) `archive(...)` call. The broadcast `winnerId` is now derived from the same `GameResult`; STOMP wire payloads unchanged.
+- **Persist**: `GameEntity.result` (`@Enumerated(STRING)`, nullable, length 20, package-private setter set in `toEntity`); `toDomain` maps it back.
+- **V4 migration**: `ADD COLUMN result VARCHAR(20) NULL` + one-time backfill from `status`+`final_fen` — STALEMATE/DRAW→DRAW; CHECKMATE/TIMEOUT with `split_part(final_fen,' ',2)='w'`→BLACK_WIN (white to move = mated/flagged = loser), `='b'`→WHITE_WIN; ABANDONED/other→NULL (unrecoverable, abandoner not in FEN). Documented in-SQL.
+- **Expose**: `result` added to `ArchivedGamePlayerView` + both JPQL SELECTs (findByUserId AND findByPlayerId), `MyGameSummary`, and additively the legacy `PlayerGameSummary` (`/api/players/{id}/games`) since it shares the projection. No new error code (canary stays 21).
+
+**The reject/fix loop (the known async-IT flake, finally squashed):** pass-1 review found `./init.sh` RED (deterministically, twice) on `TimeControlIT.timeoutOnAlreadyTerminalGame_isNoOp` — `expected 0 but was 1`. Root cause: the test's `untilAsserted` gate waited ONLY for the Redis status to flip to TIMEOUT, but `GameTimeoutService` archives to Postgres OUTSIDE the `compute` lock on the async path, so `archiveCountBefore = count()` captured 0 before the natural archive landed (then count→1, failing the post-no-op equality). This is the exact flaky pattern the leader notes have warned about since 23.7 — and it was PRE-EXISTING (present in HEAD), surfaced (not introduced) by this feature, which owns `GameTimeoutService` and modified `TimeControlIT`. Fix (test-only): extend the gate to also assert `historyRepository.findById(gameId).isPresent()` (mirroring the sibling test) so the baseline is captured after the archive lands; the no-op proof is preserved (count stays 1==1), not weakened. Pass-2 review: production code byte-identical to pass-1 (mtime-verified), `./init.sh` green twice and deterministic, and an audit confirmed no other `baseline-before-status-only-gate` race remains in the terminal-path ITs. **This closes the long-carried TimeControlIT flake.**
+
+**Reviewer verdict:** approved (pass 2). `./init.sh` green twice — 181 unit + 204 IT, 0 failures (2 binary-gated Fairy-Stockfish skips). New tests: `GameResultTest` (6, the helper), `GameServiceIT` (stalemate→DRAW end-to-end), `GameResultBackfillIT` (V4 derivation: CHECKMATE/TIMEOUT both sides, STALEMATE, DRAW, ABANDONED→NULL); terminal-path ITs extended to assert the archived `result` per path.
+
+**Files touched:**
+
+New (6): `domain/GameResult.java`; `db/migration/V4__add_game_result.sql`; tests `domain/GameResultTest.java`, `service/GameServiceIT.java`, `persistence/GameResultBackfillIT.java`; `notes/23.92-game-result-persistence.md`.
+
+Modified: `domain/Game.java`, `service/{GameService,GameAbandonService,GameTimeoutService,bot/BotMoveService}.java`, `persistence/{GameEntity,GameEntityMapper,ArchivedGamePlayerView,GameHistoryRepository}.java`, `web/me/{MyGameSummary,MyGamesController}.java`, `web/game/{PlayerGameSummary,PlayerGamesController}.java`, `docs/architecture.md`, and ITs (`GameControllerIT`, `GameAbandonServiceIT`, `BotMoveServiceIT`, `TimeControlIT`, `GameHistoryRepositoryIT`, `GameEntityMapperTest`, `MyGamesIT`, `PlayerGamesControllerIT`).
+
+**Verification:** `./init.sh` green and deterministic. Cross-repo: additive (`result` on both history list surfaces); no breaking change; the frontend reads it for the profile history. me-stats (next) aggregates the column.
+
+**Commit note:** the leader did NOT run git. 6 new files untracked + the modifications unstaged — flagged to the user for `git add`. Now FOUR features sit uncommitted ahead of `3daea6f`: friends-list (23.8), direct-invitations (23.9), profile-edit (23.91), game-result-persistence (23.92). The V4 migration runs against prod RDS on the eventual push (after V3 from friends).
+
+**Next in the arc:** `me-stats` (`GET /api/me/stats` — JPQL aggregate of W/L/D, total, win % over `games.result` cross-referenced with the user's side) → then `game-review` (`GET /api/me/games/{id}` with the full move list). `random-matchmaking` (24) stays deferred.
+
+**Feature note:** [`notes/23.92-game-result-persistence.md`](../notes/23.92-game-result-persistence.md).

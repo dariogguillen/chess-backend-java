@@ -1,5 +1,6 @@
 package io.github.dariogguillen.chess.web.game;
 
+import io.github.dariogguillen.chess.domain.GameResult;
 import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.domain.Side;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -22,6 +23,8 @@ import java.util.UUID;
  *     player sat on.
  * @param status the terminal status of the game ({@code CHECKMATE}, {@code STALEMATE}, {@code
  *     DRAW}, {@code ABANDONED}, or {@code TIMEOUT}).
+ * @param result who won the game (feature 23.92, {@code game-result-persistence}); {@code null} for
+ *     legacy rows whose winner could not be recovered at backfill time.
  * @param endedAt the timestamp the game was archived; serialised as ISO-8601 by Jackson.
  * @param moveCount the number of moves played in the game.
  */
@@ -35,6 +38,14 @@ public record PlayerGameSummary(
             example = "CHECKMATE",
             allowableValues = {"CHECKMATE", "STALEMATE", "DRAW", "ABANDONED", "TIMEOUT"})
         GameStatus status,
+    @Schema(
+            description =
+                "Who won the game. WHITE_WIN / BLACK_WIN / DRAW. Null for legacy archived games "
+                    + "whose winner was unknown at backfill time.",
+            example = "WHITE_WIN",
+            nullable = true,
+            allowableValues = {"WHITE_WIN", "BLACK_WIN", "DRAW"})
+        GameResult result,
     @Schema(description = "Instant the game was archived.", example = "2026-05-19T10:23:11.123Z")
         Instant endedAt,
     @Schema(description = "Number of moves played in the game.", example = "42") int moveCount) {}

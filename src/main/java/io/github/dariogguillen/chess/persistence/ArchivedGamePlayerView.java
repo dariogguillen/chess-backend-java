@@ -1,5 +1,6 @@
 package io.github.dariogguillen.chess.persistence;
 
+import io.github.dariogguillen.chess.domain.GameResult;
 import io.github.dariogguillen.chess.domain.GameStatus;
 import java.time.Instant;
 import java.util.UUID;
@@ -32,6 +33,9 @@ import java.util.UUID;
  * @param whiteUserId the FK to {@code users(id)} for the white side; {@code null} for guest white.
  * @param blackUserId the FK to {@code users(id)} for the black side; {@code null} for guest black.
  * @param status the terminal status of the game.
+ * @param result who won the game (feature 23.92, {@code game-result-persistence}); {@code null} for
+ *     legacy rows whose winner could not be recovered at backfill time (old {@code ABANDONED}
+ *     history).
  * @param endedAt the archive timestamp.
  * @param moveCount the number of move rows associated with the game ({@code SIZE(g.moves)} in the
  *     JPQL projection).
@@ -46,5 +50,6 @@ public record ArchivedGamePlayerView(
     UUID whiteUserId,
     UUID blackUserId,
     GameStatus status,
+    GameResult result,
     Instant endedAt,
     int moveCount) {}

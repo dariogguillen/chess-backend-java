@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import io.github.dariogguillen.chess.TestcontainersConfiguration;
 import io.github.dariogguillen.chess.domain.Game;
+import io.github.dariogguillen.chess.domain.GameResult;
 import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.domain.Move;
 import io.github.dariogguillen.chess.domain.Piece;
@@ -78,7 +79,9 @@ class PlayerGamesControllerIT {
     UUID carolId = UUID.randomUUID();
 
     // Game A: archived first, Alice is WHITE, opponent Bob.
-    Game gameA = newTerminalGame(GameStatus.CHECKMATE, aliceId, "Alice", bobId, "Bob");
+    Game gameA =
+        newTerminalGame(GameStatus.CHECKMATE, aliceId, "Alice", bobId, "Bob")
+            .withResult(GameResult.WHITE_WIN);
     gameHistoryService.archive(gameA);
 
     // Sleep a millisecond so the `ended_at` ordering is strict, even on hosts with low-resolution
@@ -87,7 +90,9 @@ class PlayerGamesControllerIT {
     Thread.sleep(10);
 
     // Game B: archived second, Alice is BLACK, opponent Carol.
-    Game gameB = newTerminalGame(GameStatus.STALEMATE, carolId, "Carol", aliceId, "Alice");
+    Game gameB =
+        newTerminalGame(GameStatus.STALEMATE, carolId, "Carol", aliceId, "Alice")
+            .withResult(GameResult.DRAW);
     gameHistoryService.archive(gameB);
 
     mockMvc
@@ -99,11 +104,13 @@ class PlayerGamesControllerIT {
         .andExpect(jsonPath("$[0].selfRole", equalTo("BLACK")))
         .andExpect(jsonPath("$[0].opponentDisplayName", equalTo("Carol")))
         .andExpect(jsonPath("$[0].status", equalTo("STALEMATE")))
+        .andExpect(jsonPath("$[0].result", equalTo("DRAW")))
         .andExpect(jsonPath("$[0].moveCount", equalTo(1)))
         .andExpect(jsonPath("$[1].gameId", equalTo(gameA.id().toString())))
         .andExpect(jsonPath("$[1].selfRole", equalTo("WHITE")))
         .andExpect(jsonPath("$[1].opponentDisplayName", equalTo("Bob")))
         .andExpect(jsonPath("$[1].status", equalTo("CHECKMATE")))
+        .andExpect(jsonPath("$[1].result", equalTo("WHITE_WIN")))
         .andExpect(jsonPath("$[1].moveCount", equalTo(1)));
   }
 

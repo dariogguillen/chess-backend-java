@@ -14,6 +14,7 @@ import static org.mockito.Mockito.when;
 
 import io.github.dariogguillen.chess.TestcontainersConfiguration;
 import io.github.dariogguillen.chess.domain.Game;
+import io.github.dariogguillen.chess.domain.GameResult;
 import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.domain.Move;
 import io.github.dariogguillen.chess.domain.Player;
@@ -115,7 +116,13 @@ class BotMoveServiceIT {
             () -> {
               Game persisted = gameStore.findById(game.id()).orElseThrow();
               assertThat(persisted.status()).isEqualTo(GameStatus.ABANDONED);
+              // The human (black here; the bot is white) wins by forfeit. The result must be on the
+              // Redis active copy AND the archived row — assert both inside untilAsserted so the
+              // archive read never races the async compute -> archive -> broadcast steps.
+              assertThat(persisted.result()).isEqualTo(GameResult.BLACK_WIN);
               assertThat(repository.findById(game.id())).isPresent();
+              assertThat(repository.findById(game.id()).orElseThrow().getResult())
+                  .isEqualTo(GameResult.BLACK_WIN);
             });
     verify(messagingTemplate, timeout(POLL_TIMEOUT.toMillis()).times(1))
         .convertAndSend(eq("/topic/games/" + game.id()), any(GameEngineFailedEvent.class));

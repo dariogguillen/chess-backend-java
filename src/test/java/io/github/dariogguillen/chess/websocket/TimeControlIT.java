@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.github.dariogguillen.chess.TestcontainersConfiguration;
 import io.github.dariogguillen.chess.domain.Game;
+import io.github.dariogguillen.chess.domain.GameResult;
 import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.persistence.GameHistoryRepository;
 import io.github.dariogguillen.chess.service.GameStore;
@@ -115,6 +116,13 @@ class TimeControlIT {
               Game persisted = gameStore.findById(setup.gameId()).orElseThrow();
               assertThat(persisted.status()).isEqualTo(GameStatus.TIMEOUT);
               assertThat(historyRepository.findById(setup.gameId())).isPresent();
+              // White (to move) flagged, so black wins on time. The result must be on BOTH the
+              // Redis
+              // active copy and the archived row — assert inside untilAsserted so the archive read
+              // never races the async compute -> archive -> broadcast steps.
+              assertThat(persisted.result()).isEqualTo(GameResult.BLACK_WIN);
+              assertThat(historyRepository.findById(setup.gameId()).orElseThrow().getResult())
+                  .isEqualTo(GameResult.BLACK_WIN);
             });
 
     String rawJson = blackQueue.poll(RECEIVE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
@@ -132,14 +140,19 @@ class TimeControlIT {
   void timeoutOnAlreadyTerminalGame_isNoOp() throws Exception {
     GameSetup setup = setupTimedGame("Alice", "Bob");
 
-    // Wait for the natural flag to land the game in TIMEOUT and archive it.
+    // Wait for the natural flag to land the game in TIMEOUT and archive it. The archive runs after
+    // the status flip on the async path, so gate on BOTH the Redis status AND the archived row
+    // being present — otherwise the baseline below races the natural archive and captures 0 before
+    // it lands.
     Awaitility.await()
         .atMost(Duration.ofMillis(INITIAL_MS + 2_500L))
         .pollInterval(Duration.ofMillis(50))
         .untilAsserted(
-            () ->
-                assertThat(gameStore.findById(setup.gameId()).orElseThrow().status())
-                    .isEqualTo(GameStatus.TIMEOUT));
+            () -> {
+              assertThat(gameStore.findById(setup.gameId()).orElseThrow().status())
+                  .isEqualTo(GameStatus.TIMEOUT);
+              assertThat(historyRepository.findById(setup.gameId())).isPresent();
+            });
 
     long archiveCountBefore = historyRepository.count();
 

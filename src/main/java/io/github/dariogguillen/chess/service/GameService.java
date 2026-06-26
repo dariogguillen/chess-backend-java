@@ -1,6 +1,8 @@
 package io.github.dariogguillen.chess.service;
 
 import io.github.dariogguillen.chess.domain.Game;
+import io.github.dariogguillen.chess.domain.GameResult;
+import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.domain.Move;
 import io.github.dariogguillen.chess.domain.Player;
 import io.github.dariogguillen.chess.domain.Side;
@@ -145,6 +147,11 @@ public class GameService {
             }
             newLastMoveAt = now;
           }
+          // Stamp the winner at the terminal transition so the Redis active copy and the Postgres
+          // archive agree. CHECKMATE: the side that just moved delivered mate — whiteToMove is true
+          // when WHITE was to move for THIS move, so the white side won. STALEMATE/DRAW: a draw.
+          // Non-terminal moves leave result null.
+          GameResult result = deriveResult(outcome.state().currentStatus(), whiteToMove);
           Game updated =
               new Game(
                   existing.id(),
@@ -158,7 +165,9 @@ public class GameService {
                   newWhiteMs,
                   newBlackMs,
                   newLastMoveAt,
-                  existing.incrementMs());
+                  existing.incrementMs(),
+                  existing.botElo(),
+                  result);
           // Archive to Postgres BEFORE the GameStore.compute write completes (the store writes
           // the lambda's return value). If archive throws, the compute lambda throws, the move
           // request fails with 500, and Redis still holds the previous state — strictly better
@@ -176,6 +185,25 @@ public class GameService {
     rescheduleFlagTimer(updated);
     broadcastMoveEvent(updated, playerId, move);
     return updated;
+  }
+
+  /**
+   * Derives the {@link GameResult} a move produced, from the terminal status and the side that
+   * moved. {@code whiteToMove} is the side that just played: on {@link GameStatus#CHECKMATE} that
+   * side delivered mate and is the winner ({@link GameResult#WHITE_WIN} when white moved); on
+   * {@link GameStatus#STALEMATE} or {@link GameStatus#DRAW} it is a {@link GameResult#DRAW}. Any
+   * non-terminal status (the common case) yields {@code null} — the game is not yet decided.
+   *
+   * <p>Note the contrast with {@link GameResult#fromLoserToMove(boolean)}, used by the
+   * clock/abandon paths where the relevant side is the one <em>to move</em> (the loser). Here the
+   * relevant side is the one that <em>just moved</em> (the winner), so the mapping is inverted.
+   */
+  private static GameResult deriveResult(GameStatus status, boolean whiteToMove) {
+    return switch (status) {
+      case CHECKMATE -> whiteToMove ? GameResult.WHITE_WIN : GameResult.BLACK_WIN;
+      case STALEMATE, DRAW -> GameResult.DRAW;
+      default -> null;
+    };
   }
 
   /**

@@ -3,6 +3,7 @@ package io.github.dariogguillen.chess.persistence;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.github.dariogguillen.chess.domain.Game;
+import io.github.dariogguillen.chess.domain.GameResult;
 import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.domain.Move;
 import io.github.dariogguillen.chess.domain.Piece;
@@ -126,6 +127,27 @@ class GameEntityMapperTest {
     // present must stay present with the same inner value.
     assertThat(roundTripped.moves().get(0).promotion()).isEmpty();
     assertThat(roundTripped.moves().get(1).promotion()).contains(Piece.QUEEN);
+  }
+
+  @Test
+  void toEntity_carriesResult_andToDomainMapsItBack() {
+    Game original = newGame(GameStatus.CHECKMATE, List.of()).withResult(GameResult.WHITE_WIN);
+
+    GameEntity entity = mapper.toEntity(original);
+    assertThat(entity.getResult()).isEqualTo(GameResult.WHITE_WIN);
+
+    Game roundTripped = mapper.toDomain(entity);
+    assertThat(roundTripped.result()).isEqualTo(GameResult.WHITE_WIN);
+  }
+
+  @Test
+  void toEntity_nullResult_mapsToNull() {
+    // An 8-arg game leaves result null (a non-terminal or legacy archive shape).
+    Game original = newGame(GameStatus.CHECKMATE, List.of());
+
+    GameEntity entity = mapper.toEntity(original);
+    assertThat(entity.getResult()).isNull();
+    assertThat(mapper.toDomain(entity).result()).isNull();
   }
 
   private static Game newGame(GameStatus status, List<Move> moves) {

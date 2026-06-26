@@ -3,6 +3,7 @@ package io.github.dariogguillen.chess.persistence;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.github.dariogguillen.chess.TestcontainersConfiguration;
+import io.github.dariogguillen.chess.domain.GameResult;
 import io.github.dariogguillen.chess.domain.GameStatus;
 import io.github.dariogguillen.chess.service.GameHistoryService;
 import java.time.Instant;
@@ -130,6 +131,34 @@ class GameHistoryRepositoryIT {
 
     List<ArchivedGamePlayerView> views = repository.findByPlayerId(solo, Limit.of(3));
     assertThat(views).hasSize(3);
+  }
+
+  @Test
+  void findByPlayerId_carriesResultInProjection() {
+    UUID player = UUID.randomUUID();
+    GameEntity game =
+        newGameEntity(UUID.randomUUID(), player, UUID.randomUUID(), "Winner", "Loser");
+    game.setResult(GameResult.WHITE_WIN);
+    repository.save(game);
+    repository.flush();
+
+    List<ArchivedGamePlayerView> views = repository.findByPlayerId(player, Limit.of(50));
+    assertThat(views).hasSize(1);
+    assertThat(views.get(0).result()).isEqualTo(GameResult.WHITE_WIN);
+  }
+
+  @Test
+  void findByPlayerId_legacyNullResult_projectsNull() {
+    UUID player = UUID.randomUUID();
+    // newGameEntity leaves result null, mirroring a legacy ABANDONED archive whose winner was
+    // unrecoverable at backfill time.
+    GameEntity game = newGameEntity(UUID.randomUUID(), player, UUID.randomUUID(), "Ann", "Bob");
+    repository.save(game);
+    repository.flush();
+
+    List<ArchivedGamePlayerView> views = repository.findByPlayerId(player, Limit.of(50));
+    assertThat(views).hasSize(1);
+    assertThat(views.get(0).result()).isNull();
   }
 
   @Test
